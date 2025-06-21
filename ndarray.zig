@@ -220,11 +220,11 @@ test "strideAll" {
 test "stride" {
     const Structure2d = NamedIndex(Index2d);
     const idx: Structure2d = .{ .shape = .{ .row = 6, .col = 8 }, .strides = .{ .row = 8, .col = 1 }, .offset = 1 };
-    const stepped = idx.stride("row", 2);
-    try std.testing.expectEqual(3, stepped.shape.row);
-    try std.testing.expectEqual(8, stepped.shape.col);
-    try std.testing.expectEqual(16, stepped.strides.row);
-    try std.testing.expectEqual(1, stepped.strides.col);
+    const stepped = idx.stride("col", 3);
+    try std.testing.expectEqual(6, stepped.shape.row);
+    try std.testing.expectEqual(3, stepped.shape.col);
+    try std.testing.expectEqual(8, stepped.strides.row);
+    try std.testing.expectEqual(3, stepped.strides.col);
     try std.testing.expectEqual(1, stepped.offset);
 }
 

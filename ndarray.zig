@@ -41,6 +41,10 @@ fn NamedIndex(comptime Key: type) type {
             // }
         }
 
+        pub fn iterKeys(self: *const @This()) KeyIterator(Key) {
+            return KeyIterator(Key).init(self.shape);
+        }
+
         /// Return the offset into the linear buffer for the given structured index.
         /// If the index is out of bounds, return null.
         pub fn linear(self: *const @This(), index: Key) ?usize {
@@ -127,6 +131,56 @@ fn NamedIndex(comptime Key: type) type {
     };
 }
 
+/// Iterates over all valid indices for a `NamedIndex` with given shape.
+/// Iteration order is determined by field order.
+/// The last field in the struct varies the quickest.
+pub fn KeyIterator(comptime Key: type) type {
+    const Field = meta.FieldEnum(Key);
+    const fnames = meta.fieldNames(Field);
+
+    const fnames_rev = comptime rev: {
+        var fnames_rev_: [fnames.len][]const u8 = undefined;
+        @memcpy(&fnames_rev_, fnames);
+        std.mem.reverse([]const u8, &fnames_rev_);
+        break :rev fnames_rev_;
+    };
+
+    return struct {
+        next_: Key,
+        shape: Key,
+
+        pub fn init(shape: Key) @This() {
+            var start: Key = undefined;
+            inline for (fnames) |fname| {
+                @field(start, fname) = 0;
+            }
+            return .{ .next_ = start, .shape = shape };
+        }
+
+        pub fn next(self: *@This()) ?Key {
+            if (@field(self.next_, fnames[0]) >= @field(self.shape, fnames[0]))
+                return null;
+            const result = self.next_;
+
+            // Update next
+            inline for (fnames_rev) |fname| {
+                if (@field(self.next_, fname) + 1 < @field(self.shape, fname)) {
+                    @field(self.next_, fname) += 1;
+                    break;
+                } else {
+                    // carry over
+                    if (!std.mem.eql(u8, fname, fnames[0])) {
+                        @field(self.next_, fname) = 0;
+                    } else {
+                        @field(self.next_, fname) = @field(self.shape, fname);
+                    }
+                }
+            }
+            return result;
+        }
+    };
+}
+
 const Index2d = struct { row: usize, col: usize };
 
 test "init strides" {
@@ -183,4 +237,24 @@ test "slice" {
     try std.testing.expectEqual(8, sliced.strides.row);
     try std.testing.expectEqual(1, sliced.strides.col);
     try std.testing.expectEqual(19, sliced.offset);
+}
+
+test "iterKeys" {
+    const Structure2d = NamedIndex(Index2d);
+    const idx: Structure2d = .{ .shape = .{ .row = 2, .col = 3 }, .strides = .{ .row = 3, .col = 1 }, .offset = 0 };
+    const expected_indices: [6]Index2d = .{
+        .{ .row = 0, .col = 0 },
+        .{ .row = 0, .col = 1 },
+        .{ .row = 0, .col = 2 },
+        .{ .row = 1, .col = 0 },
+        .{ .row = 1, .col = 1 },
+        .{ .row = 1, .col = 2 },
+    };
+    var iter = idx.iterKeys();
+    var i: usize = 0;
+    while (iter.next()) |next| {
+        try std.testing.expectEqual(expected_indices[i], next);
+        i += 1;
+    }
+    try std.testing.expectEqual(expected_indices.len, i);
 }

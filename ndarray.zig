@@ -117,8 +117,7 @@ fn NamedIndex(comptime Key: type) type {
                 @field(offset_lookup, field.name) = 0;
             }
             @field(offset_lookup, axis) = start;
-            const add_offset = self.linearUnchecked(offset_lookup);
-            const new_offset = self.offset + add_offset;
+            const new_offset = self.linearUnchecked(offset_lookup);
             return .{
                 .shape = new_shape,
                 .strides = self.strides,
@@ -155,33 +154,33 @@ test "linear invalid index" {
 
 test "strideAll" {
     const Structure2d = NamedIndex(Index2d);
-    const idx: Structure2d = .{ .shape = .{ .row = 6, .col = 8 }, .strides = .{ .row = 8, .col = 1 }, .offset = 0 };
+    const idx: Structure2d = .{ .shape = .{ .row = 6, .col = 8 }, .strides = .{ .row = 8, .col = 1 }, .offset = 1 };
     const stepped = idx.strideAll(.{ .row = 2, .col = 1 });
     try std.testing.expectEqual(3, stepped.shape.row);
     try std.testing.expectEqual(8, stepped.shape.col);
     try std.testing.expectEqual(16, stepped.strides.row);
     try std.testing.expectEqual(1, stepped.strides.col);
-    try std.testing.expectEqual(0, stepped.offset);
+    try std.testing.expectEqual(1, stepped.offset);
 }
 
 test "stride" {
     const Structure2d = NamedIndex(Index2d);
-    const idx: Structure2d = .{ .shape = .{ .row = 6, .col = 8 }, .strides = .{ .row = 8, .col = 1 }, .offset = 0 };
+    const idx: Structure2d = .{ .shape = .{ .row = 6, .col = 8 }, .strides = .{ .row = 8, .col = 1 }, .offset = 1 };
     const stepped = idx.stride("row", 2);
     try std.testing.expectEqual(3, stepped.shape.row);
     try std.testing.expectEqual(8, stepped.shape.col);
     try std.testing.expectEqual(16, stepped.strides.row);
     try std.testing.expectEqual(1, stepped.strides.col);
-    try std.testing.expectEqual(0, stepped.offset);
+    try std.testing.expectEqual(1, stepped.offset);
 }
 
 test "slice" {
     const Structure2d = NamedIndex(Index2d);
-    const idx: Structure2d = .{ .shape = .{ .row = 6, .col = 8 }, .strides = .{ .row = 8, .col = 1 }, .offset = 0 };
+    const idx: Structure2d = .{ .shape = .{ .row = 6, .col = 8 }, .strides = .{ .row = 8, .col = 1 }, .offset = 3 };
     const sliced = idx.slice("row", 2, 5);
     try std.testing.expectEqual(3, sliced.shape.row);
     try std.testing.expectEqual(8, sliced.shape.col);
     try std.testing.expectEqual(8, sliced.strides.row);
     try std.testing.expectEqual(1, sliced.strides.col);
-    try std.testing.expectEqual(16, sliced.offset);
+    try std.testing.expectEqual(19, sliced.offset);
 }

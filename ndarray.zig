@@ -185,22 +185,8 @@ fn NamedIndex(comptime Key: type) type {
         ) NamedIndex(RenamedStructField(Key, old_name, new_name)) {
         // zig fmt: on
             const NewKey = RenamedStructField(Key, old_name, new_name);
-            var new_shape: NewKey = undefined;
-            var new_strides: NewKey = undefined;
-            comptime var matched = false;
-            inline for (fields) |field| {
-                if (comptime std.mem.eql(u8, field.name, old_name)) {
-                    @field(new_shape, new_name) = @field(self.shape, old_name);
-                    @field(new_strides, new_name) = @field(self.strides, old_name);
-                    matched = true;
-                } else {
-                    const fname = field.name;
-                    @field(new_shape, fname) = @field(self.shape, fname);
-                    @field(new_strides, fname) = @field(self.strides, fname);
-                }
-            }
-            if (!matched)
-                @compileError("rename: field not found in struct: " ++ old_name);
+            const new_shape: NewKey = @bitCast(self.shape);
+            const new_strides: NewKey = @bitCast(self.strides);
             return .{
                 .shape = new_shape,
                 .strides = new_strides,
@@ -280,6 +266,7 @@ fn RenamedStructField(comptime OldKey: type, old_name: [:0]const u8, new_name: [
     const old_struct = @typeInfo(OldKey).@"struct";
     const new_fields = comptime fields: {
         var new_fields: [old_struct.fields.len]Type.StructField = undefined;
+        var matched = false;
         for (0..old_struct.fields.len) |fi| {
             const old_field = old_struct.fields[fi];
             if (std.mem.eql(u8, old_field.name, old_name)) {
@@ -291,10 +278,13 @@ fn RenamedStructField(comptime OldKey: type, old_name: [:0]const u8, new_name: [
                     .name = new_name,
                 };
                 new_fields[fi] = new_field;
+                matched = true;
             } else {
                 new_fields[fi] = old_field;
             }
         }
+        if (!matched)
+            @compileError("rename: field not found in struct: " ++ old_name);
         break :fields new_fields;
     };
     const new_struct: Type.Struct = .{

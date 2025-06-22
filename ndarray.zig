@@ -11,6 +11,32 @@ fn NamedIndex(comptime Key: type) type {
         pub const Field = meta.FieldEnum(Key);
         const fields = meta.fields(Field);
 
+        const usize_null: ?usize = null;
+
+        pub const KeyOptional = optional_type: {
+            const optional_fields = fields: {
+                var optional_fields_: [fields.len]Type.StructField = undefined;
+                for (0..fields.len) |fi| {
+                    optional_fields_[fi] = .{
+                        .name = fields[fi].name,
+                        .type = @Type(.{ .optional = .{ .child = usize } }),
+                        .default_value_ptr = &usize_null,
+                        .is_comptime = false,
+                        .alignment = 0,
+                    };
+                }
+                break :fields optional_fields_;
+            };
+            const type_info: Type = .{ .@"struct" = .{
+                .layout = .auto,
+                .fields = &optional_fields,
+                .decls = &[_]Type.Declaration{},
+                .is_tuple = false,
+            } };
+            const type_ = @Type(type_info);
+            break :optional_type type_;
+        };
+
         /// Create contiguous index in "row-major" order, where the last field is treated as the
         /// 'row' dimension.
         pub fn initContiguous(shape: Key) @This() {
@@ -97,6 +123,28 @@ fn NamedIndex(comptime Key: type) type {
                     new_size += 1;
                 }
                 @field(new_shape, field.name) = new_size;
+            }
+            return .{
+                .shape = new_shape,
+                .strides = new_strides,
+                .offset = self.offset,
+            };
+        }
+
+        pub fn strideAllOptional(self: *const @This(), steps: KeyOptional) @This() {
+            var new_strides = self.strides;
+            var new_shape = self.shape;
+            inline for (fields) |field| {
+                if (@field(steps, field.name)) |step| {
+                    if (step == 0)
+                        @panic("step must be positive");
+                    @field(new_strides, field.name) *= step;
+                    var new_size = @field(self.shape, field.name) / step;
+                    if (@field(self.shape, field.name) % step > 0) {
+                        new_size += 1;
+                    }
+                    @field(new_shape, field.name) = new_size;
+                }
             }
             return .{
                 .shape = new_shape,
@@ -206,6 +254,17 @@ test "linear invalid index" {
     try std.testing.expectEqual(expected, idx.linear(query));
 }
 
+test "stride" {
+    const Structure2d = NamedIndex(Index2d);
+    const idx: Structure2d = .{ .shape = .{ .row = 6, .col = 8 }, .strides = .{ .row = 8, .col = 1 }, .offset = 1 };
+    const stepped = idx.stride("col", 3);
+    try std.testing.expectEqual(6, stepped.shape.row);
+    try std.testing.expectEqual(3, stepped.shape.col);
+    try std.testing.expectEqual(8, stepped.strides.row);
+    try std.testing.expectEqual(3, stepped.strides.col);
+    try std.testing.expectEqual(1, stepped.offset);
+}
+
 test "strideAll" {
     const Structure2d = NamedIndex(Index2d);
     const idx: Structure2d = .{ .shape = .{ .row = 6, .col = 8 }, .strides = .{ .row = 8, .col = 1 }, .offset = 1 };
@@ -217,15 +276,32 @@ test "strideAll" {
     try std.testing.expectEqual(1, stepped.offset);
 }
 
-test "stride" {
+test "strideAllOptional" {
     const Structure2d = NamedIndex(Index2d);
+    const KeyOptional = Structure2d.KeyOptional;
+
+    // Test with both fields set
     const idx: Structure2d = .{ .shape = .{ .row = 6, .col = 8 }, .strides = .{ .row = 8, .col = 1 }, .offset = 1 };
-    const stepped = idx.stride("col", 3);
-    try std.testing.expectEqual(6, stepped.shape.row);
-    try std.testing.expectEqual(3, stepped.shape.col);
-    try std.testing.expectEqual(8, stepped.strides.row);
-    try std.testing.expectEqual(3, stepped.strides.col);
+    const steps: KeyOptional = .{ .row = 2, .col = 1 };
+    const stepped = idx.strideAllOptional(steps);
+    try std.testing.expectEqual(3, stepped.shape.row);
+    try std.testing.expectEqual(8, stepped.shape.col);
+    try std.testing.expectEqual(16, stepped.strides.row);
+    try std.testing.expectEqual(1, stepped.strides.col);
     try std.testing.expectEqual(1, stepped.offset);
+
+    // Test with only one field set
+    // const steps_row: KeyOptional = .{ .row = 2, .col = null };
+    const stepped_row = idx.strideAllOptional(.{ .row = 2 });
+    try std.testing.expectEqual(3, stepped_row.shape.row);
+    try std.testing.expectEqual(8, stepped_row.shape.col);
+    try std.testing.expectEqual(16, stepped_row.strides.row);
+    try std.testing.expectEqual(1, stepped_row.strides.col);
+    try std.testing.expectEqual(1, stepped_row.offset);
+
+    // Test with no fields set (should be identical to original)
+    const stepped_none = idx.strideAllOptional(.{});
+    try std.testing.expectEqual(idx, stepped_none);
 }
 
 test "slice" {

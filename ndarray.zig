@@ -3,6 +3,9 @@ const meta = std.meta;
 const Type = std.builtin.Type;
 
 fn NamedIndex(comptime Key: type) type {
+    const key_info = @typeInfo(Key).@"struct";
+    if (key_info.layout != .@"packed")
+        @compileError("Key struct must have packed layout.");
     return struct {
         shape: Key,
         strides: Key,
@@ -69,7 +72,7 @@ fn NamedIndex(comptime Key: type) type {
         }
 
         pub fn iterKeys(self: *const @This()) KeyIterator(Key) {
-            return KeyIterator(Key).init(self.shape);
+            return KeyIterator(Key).init(self.shape, self.strides);
         }
 
         /// Return the offset into the linear buffer for the given structured index.
@@ -207,54 +210,68 @@ fn NamedIndex(comptime Key: type) type {
     };
 }
 
-// TODO: this should iterate in 'linear' order, instead.
-// That is, in the order in which the elements appear in the underlying buffer.
 /// Iterates over all valid indices for a `NamedIndex` with given shape.
-/// Iteration order is determined by field order.
-/// The last field in the struct varies the quickest.
+/// Iteration order is according to stride order.
+/// That is, the keys are returned in the order they are encountered in the underlying buffer.
 pub fn KeyIterator(comptime Key: type) type {
     const Field = meta.FieldEnum(Key);
     const fnames = meta.fieldNames(Field);
 
-    const fnames_rev = comptime rev: {
-        var fnames_rev_: [fnames.len][]const u8 = undefined;
-        @memcpy(&fnames_rev_, fnames);
-        std.mem.reverse([]const u8, &fnames_rev_);
-        break :rev fnames_rev_;
-    };
-
     return struct {
-        next_: Key,
-        shape: Key,
+        next_arr: [fnames.len]usize,
+        shape_arr: [fnames.len]usize,
+        dims_desc: [fnames.len]usize,
 
-        pub fn init(shape: Key) @This() {
-            var start: Key = undefined;
-            inline for (fnames) |fname| {
-                @field(start, fname) = 0;
+        pub fn init(shape: Key, strides: Key) @This() {
+            var start: [fnames.len]usize = undefined;
+            var shape_arr: [fnames.len]usize = undefined;
+            var strides_arr: [fnames.len]usize = @bitCast(strides);
+            inline for (fnames, 0..) |fname, fi| {
+                start[fi] = 0;
+                shape_arr[fi] = @field(shape, fname);
             }
-            return .{ .next_ = start, .shape = shape };
+
+            const dims_desc = argsort: {
+                var argsort: [fnames.len]usize = undefined;
+                for (0..fnames.len) |i| {
+                    argsort[i] = i;
+                }
+                const strides_slice: []usize = strides_arr[0..];
+                std.mem.sort(usize, argsort[0..], strides_slice, fnames_lt);
+                break :argsort argsort;
+            };
+            return .{ .next_arr = start, .shape_arr = shape_arr, .dims_desc = dims_desc };
         }
 
         pub fn next(self: *@This()) ?Key {
-            if (@field(self.next_, fnames[0]) >= @field(self.shape, fnames[0]))
+            if (self.next_arr[self.dims_desc[0]] >= self.shape_arr[self.dims_desc[0]])
                 return null;
-            const result = self.next_;
+            const result_arr = self.next_arr;
 
             // Update next
-            inline for (fnames_rev) |fname| {
-                if (@field(self.next_, fname) + 1 < @field(self.shape, fname)) {
-                    @field(self.next_, fname) += 1;
+            inline for (0..fnames.len) |di| {
+                const dim_idx = fnames.len - 1 - di;
+                const dim = self.dims_desc[dim_idx];
+                if (self.next_arr[dim] + 1 < self.shape_arr[dim]) {
+                    self.next_arr[dim] += 1;
                     break;
                 } else {
                     // carry over
-                    if (!std.mem.eql(u8, fname, fnames[0])) {
-                        @field(self.next_, fname) = 0;
+                    if (dim_idx != 0) {
+                        self.next_arr[dim] = 0;
                     } else {
-                        @field(self.next_, fname) = @field(self.shape, fname);
+                        self.next_arr[dim] = self.shape_arr[dim];
                     }
                 }
             }
+
+            const result: Key = @bitCast(result_arr);
             return result;
+        }
+
+        fn fnames_lt(shape_arr: []usize, lhs: usize, rhs: usize) bool {
+            // descending order
+            return shape_arr[lhs] > shape_arr[rhs];
         }
     };
 }
@@ -290,7 +307,7 @@ fn RenamedStructField(comptime OldKey: type, old_name: [:0]const u8, new_name: [
     return @Type(Type{ .@"struct" = new_struct });
 }
 
-const Index2d = struct { row: usize, col: usize };
+const Index2d = packed struct { row: usize, col: usize };
 
 test "init strides" {
     const Structure2d = NamedIndex(Index2d);
@@ -411,6 +428,51 @@ test "iterKeys" {
     try std.testing.expectEqual(expected_indices.len, i);
 }
 
+test "iterKeys 3d, major in middle" {
+    const Index3d = packed struct { x: usize, y: usize, z: usize };
+    const Structure3d = NamedIndex(Index3d);
+    // Make y the major dimension (stride 1 for y, then z, then x)
+    const idx: Structure3d = .{
+        .shape = .{ .x = 2, .y = 3, .z = 4 },
+        .strides = .{ .x = 12, .y = 1, .z = 3 },
+        .offset = 0,
+    };
+    // The iteration order should be: y varies fastest, then z, then x
+    const expected_indices: [24]Index3d = .{
+        .{ .x = 0, .y = 0, .z = 0 },
+        .{ .x = 0, .y = 1, .z = 0 },
+        .{ .x = 0, .y = 2, .z = 0 },
+        .{ .x = 0, .y = 0, .z = 1 },
+        .{ .x = 0, .y = 1, .z = 1 },
+        .{ .x = 0, .y = 2, .z = 1 },
+        .{ .x = 0, .y = 0, .z = 2 },
+        .{ .x = 0, .y = 1, .z = 2 },
+        .{ .x = 0, .y = 2, .z = 2 },
+        .{ .x = 0, .y = 0, .z = 3 },
+        .{ .x = 0, .y = 1, .z = 3 },
+        .{ .x = 0, .y = 2, .z = 3 },
+        .{ .x = 1, .y = 0, .z = 0 },
+        .{ .x = 1, .y = 1, .z = 0 },
+        .{ .x = 1, .y = 2, .z = 0 },
+        .{ .x = 1, .y = 0, .z = 1 },
+        .{ .x = 1, .y = 1, .z = 1 },
+        .{ .x = 1, .y = 2, .z = 1 },
+        .{ .x = 1, .y = 0, .z = 2 },
+        .{ .x = 1, .y = 1, .z = 2 },
+        .{ .x = 1, .y = 2, .z = 2 },
+        .{ .x = 1, .y = 0, .z = 3 },
+        .{ .x = 1, .y = 1, .z = 3 },
+        .{ .x = 1, .y = 2, .z = 3 },
+    };
+    var iter = idx.iterKeys();
+    var i: usize = 0;
+    while (iter.next()) |next| {
+        try std.testing.expectEqual(expected_indices[i], next);
+        i += 1;
+    }
+    try std.testing.expectEqual(expected_indices.len, i);
+}
+
 test "count" {
     const Structure2d = NamedIndex(Index2d);
     const idx1: Structure2d = .{
@@ -430,7 +492,7 @@ test "count" {
 }
 
 test "rename" {
-    const IJ = struct { i: usize, j: usize };
+    const IJ = packed struct { i: usize, j: usize };
     const IndexIJ = NamedIndex(IJ);
     const idx: IndexIJ = .initContiguous(.{
         .i = 5,

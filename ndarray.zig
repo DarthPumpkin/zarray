@@ -92,17 +92,12 @@ fn NamedIndex(comptime Key: type) type {
         /// Stride a given axis by a given step size.
         /// Equivalent to `::step` syntax in python.
         /// Panics if `step` is zero.
-        pub fn stride(self: *const @This(), comptime axis: []const u8, step: usize) @This() {
-            if (step == 0)
-                @panic("step must be positive");
+        pub fn strideAxis(self: *const @This(), comptime axis: []const u8, step: usize) @This() {
             var new_strides = self.strides;
             var new_shape = self.shape;
-            @field(new_strides, axis) *= step;
-            var new_size = @field(self.shape, axis) / step;
-            if (@field(self.shape, axis) % step > 0) {
-                new_size += 1;
-            }
-            @field(new_shape, axis) = new_size;
+            const new_dim = &@field(new_shape, axis);
+            const new_stride = &@field(new_strides, axis);
+            strideInplace(step, new_dim, new_stride);
             return .{
                 .shape = new_shape,
                 .strides = new_strides,
@@ -110,40 +105,16 @@ fn NamedIndex(comptime Key: type) type {
             };
         }
 
-        pub fn strideAll(self: *const @This(), steps: Key) @This() {
-            var new_strides = self.strides;
-            var new_shape = self.shape;
-            inline for (fields) |field| {
-                const step = @field(steps, field.name);
-                if (step == 0)
-                    @panic("step must be positive");
-                @field(new_strides, field.name) *= step;
-                var new_size = @field(self.shape, field.name) / step;
-                if (@field(self.shape, field.name) % step > 0) {
-                    new_size += 1;
-                }
-                @field(new_shape, field.name) = new_size;
-            }
-            return .{
-                .shape = new_shape,
-                .strides = new_strides,
-                .offset = self.offset,
-            };
-        }
-
-        pub fn strideAllOptional(self: *const @This(), steps: KeyOptional) @This() {
+        /// Stride multiple axes by given step sizes.
+        /// axes whose value is null in `steps` are skipped.
+        pub fn stride(self: *const @This(), steps: KeyOptional) @This() {
             var new_strides = self.strides;
             var new_shape = self.shape;
             inline for (fields) |field| {
                 if (@field(steps, field.name)) |step| {
-                    if (step == 0)
-                        @panic("step must be positive");
-                    @field(new_strides, field.name) *= step;
-                    var new_size = @field(self.shape, field.name) / step;
-                    if (@field(self.shape, field.name) % step > 0) {
-                        new_size += 1;
-                    }
-                    @field(new_shape, field.name) = new_size;
+                    const new_dim = &@field(new_shape, field.name);
+                    const new_stride = &@field(new_strides, field.name);
+                    strideInplace(step, new_dim, new_stride);
                 }
             }
             return .{
@@ -156,7 +127,7 @@ fn NamedIndex(comptime Key: type) type {
         /// Slice a given axis.
         /// Equivalent to `start:end` syntax in python.
         /// Panics if `start` or `end` are out of bounds.
-        pub fn slice(self: *const @This(), comptime axis: []const u8, start: usize, end: usize) @This() {
+        pub fn sliceAxis(self: *const @This(), comptime axis: []const u8, start: usize, end: usize) @This() {
             const old_size = @field(self.shape, axis);
             if (end > old_size)
                 @panic("slice end out of bounds");
@@ -175,6 +146,17 @@ fn NamedIndex(comptime Key: type) type {
                 .strides = self.strides,
                 .offset = new_offset,
             };
+        }
+
+        fn strideInplace(step: usize, out_dim: *usize, out_stride: *usize) void {
+            if (step == 0)
+                @panic("step must be positive");
+            out_stride.* *= step;
+            const orig_dim = out_dim.*;
+            out_dim.* /= step;
+            if (orig_dim % step > 0) {
+                out_dim.* += 1;
+            }
         }
     };
 }
@@ -254,10 +236,10 @@ test "linear invalid index" {
     try std.testing.expectEqual(expected, idx.linear(query));
 }
 
-test "stride" {
+test "strideAxis" {
     const Structure2d = NamedIndex(Index2d);
     const idx: Structure2d = .{ .shape = .{ .row = 6, .col = 8 }, .strides = .{ .row = 8, .col = 1 }, .offset = 1 };
-    const stepped = idx.stride("col", 3);
+    const stepped = idx.strideAxis("col", 3);
     try std.testing.expectEqual(6, stepped.shape.row);
     try std.testing.expectEqual(3, stepped.shape.col);
     try std.testing.expectEqual(8, stepped.strides.row);
@@ -265,25 +247,14 @@ test "stride" {
     try std.testing.expectEqual(1, stepped.offset);
 }
 
-test "strideAll" {
-    const Structure2d = NamedIndex(Index2d);
-    const idx: Structure2d = .{ .shape = .{ .row = 6, .col = 8 }, .strides = .{ .row = 8, .col = 1 }, .offset = 1 };
-    const stepped = idx.strideAll(.{ .row = 2, .col = 1 });
-    try std.testing.expectEqual(3, stepped.shape.row);
-    try std.testing.expectEqual(8, stepped.shape.col);
-    try std.testing.expectEqual(16, stepped.strides.row);
-    try std.testing.expectEqual(1, stepped.strides.col);
-    try std.testing.expectEqual(1, stepped.offset);
-}
-
-test "strideAllOptional" {
+test "stride" {
     const Structure2d = NamedIndex(Index2d);
     const KeyOptional = Structure2d.KeyOptional;
 
     // Test with both fields set
     const idx: Structure2d = .{ .shape = .{ .row = 6, .col = 8 }, .strides = .{ .row = 8, .col = 1 }, .offset = 1 };
     const steps: KeyOptional = .{ .row = 2, .col = 1 };
-    const stepped = idx.strideAllOptional(steps);
+    const stepped = idx.stride(steps);
     try std.testing.expectEqual(3, stepped.shape.row);
     try std.testing.expectEqual(8, stepped.shape.col);
     try std.testing.expectEqual(16, stepped.strides.row);
@@ -291,8 +262,7 @@ test "strideAllOptional" {
     try std.testing.expectEqual(1, stepped.offset);
 
     // Test with only one field set
-    // const steps_row: KeyOptional = .{ .row = 2, .col = null };
-    const stepped_row = idx.strideAllOptional(.{ .row = 2 });
+    const stepped_row = idx.stride(.{ .row = 2 });
     try std.testing.expectEqual(3, stepped_row.shape.row);
     try std.testing.expectEqual(8, stepped_row.shape.col);
     try std.testing.expectEqual(16, stepped_row.strides.row);
@@ -300,14 +270,14 @@ test "strideAllOptional" {
     try std.testing.expectEqual(1, stepped_row.offset);
 
     // Test with no fields set (should be identical to original)
-    const stepped_none = idx.strideAllOptional(.{});
+    const stepped_none = idx.stride(.{});
     try std.testing.expectEqual(idx, stepped_none);
 }
 
-test "slice" {
+test "sliceAxis" {
     const Structure2d = NamedIndex(Index2d);
     const idx: Structure2d = .{ .shape = .{ .row = 6, .col = 8 }, .strides = .{ .row = 8, .col = 1 }, .offset = 3 };
-    const sliced = idx.slice("row", 2, 5);
+    const sliced = idx.sliceAxis("row", 2, 5);
     try std.testing.expectEqual(3, sliced.shape.row);
     try std.testing.expectEqual(8, sliced.shape.col);
     try std.testing.expectEqual(8, sliced.strides.row);

@@ -13,6 +13,7 @@ fn NamedIndex(comptime Key: type) type {
 
         const usize_null: ?usize = null;
 
+        pub const Key_ = Key;
         pub const KeyOptional = optional_type: {
             const optional_fields = fields: {
                 var optional_fields_: [fields.len]Type.StructField = undefined;
@@ -172,9 +173,42 @@ fn NamedIndex(comptime Key: type) type {
             }
             return prod;
         }
+
+        /// Rename an axis.
+        // zig fmt: off
+        pub fn rename(self: *const @This(),
+            comptime old_name: [:0]const u8,
+            comptime new_name: [:0]const u8
+        ) NamedIndex(RenamedStructField(Key, old_name, new_name)) {
+        // zig fmt: on
+            const NewKey = RenamedStructField(Key, old_name, new_name);
+            var new_shape: NewKey = undefined;
+            var new_strides: NewKey = undefined;
+            comptime var matched = false;
+            inline for (fields) |field| {
+                if (comptime std.mem.eql(u8, field.name, old_name)) {
+                    @field(new_shape, new_name) = @field(self.shape, old_name);
+                    @field(new_strides, new_name) = @field(self.strides, old_name);
+                    matched = true;
+                } else {
+                    const fname = field.name;
+                    @field(new_shape, fname) = @field(self.shape, fname);
+                    @field(new_strides, fname) = @field(self.strides, fname);
+                }
+            }
+            if (!matched)
+                @compileError("rename: field not found in struct: " ++ old_name);
+            return .{
+                .shape = new_shape,
+                .strides = new_strides,
+                .offset = self.offset,
+            };
+        }
     };
 }
 
+// TODO: this should iterate in 'linear' order, instead.
+// That is, in the order in which the elements appear in the underlying buffer.
 /// Iterates over all valid indices for a `NamedIndex` with given shape.
 /// Iteration order is determined by field order.
 /// The last field in the struct varies the quickest.
@@ -223,6 +257,37 @@ pub fn KeyIterator(comptime Key: type) type {
             return result;
         }
     };
+}
+
+fn RenamedStructField(comptime OldKey: type, old_name: [:0]const u8, new_name: [:0]const u8) type {
+    const old_struct = @typeInfo(OldKey).@"struct";
+    const new_fields = comptime fields: {
+        var new_fields: [old_struct.fields.len]Type.StructField = undefined;
+        for (0..old_struct.fields.len) |fi| {
+            const old_field = old_struct.fields[fi];
+            if (std.mem.eql(u8, old_field.name, old_name)) {
+                const new_field: Type.StructField = .{
+                    .alignment = old_field.alignment,
+                    .default_value_ptr = old_field.default_value_ptr,
+                    .is_comptime = old_field.is_comptime,
+                    .type = old_field.type,
+                    .name = new_name,
+                };
+                new_fields[fi] = new_field;
+            } else {
+                new_fields[fi] = old_field;
+            }
+        }
+        break :fields new_fields;
+    };
+    const new_struct: Type.Struct = .{
+        .layout = old_struct.layout,
+        .backing_integer = old_struct.backing_integer,
+        .fields = &new_fields,
+        .decls = old_struct.decls,
+        .is_tuple = old_struct.is_tuple,
+    };
+    return @Type(Type{ .@"struct" = new_struct });
 }
 
 const Index2d = struct { row: usize, col: usize };
@@ -362,4 +427,30 @@ test "count" {
         .offset = 0,
     };
     try std.testing.expectEqual(@as(usize, 0), idx2.count());
+}
+
+test "rename" {
+    const IJ = struct { i: usize, j: usize };
+    const IndexIJ = NamedIndex(IJ);
+    const idx: IndexIJ = .initContiguous(.{
+        .i = 5,
+        .j = 3,
+    });
+    const idx_from = idx.rename("i", "from");
+
+    // Check that the renamed indices have the expected field names and values
+    try std.testing.expectEqual(idx.shape.i, idx_from.shape.from);
+    try std.testing.expectEqual(idx.shape.j, idx_from.shape.j);
+
+    // Check that the strides are preserved
+    try std.testing.expectEqual(idx.strides.i, idx_from.strides.from);
+    try std.testing.expectEqual(idx.strides.j, idx_from.strides.j);
+
+    // Check that the offset is preserved
+    try std.testing.expectEqual(idx.offset, idx_from.offset);
+
+    // Toggle this manually to verify that it throws a compileError.
+    if (false) {
+        _ = idx.rename("nonexisting", "foo");
+    }
 }

@@ -124,10 +124,26 @@ fn NamedIndex(comptime Key: type) type {
             };
         }
 
+        fn strideInplace(step: usize, out_dim: *usize, out_stride: *usize) void {
+            if (step == 0)
+                @panic("step must be positive");
+            out_stride.* *= step;
+            const orig_dim = out_dim.*;
+            out_dim.* /= step;
+            if (orig_dim % step > 0) {
+                out_dim.* += 1;
+            }
+        }
+
         /// Slice a given axis.
         /// Equivalent to `start:end` syntax in python.
         /// Panics if `start` or `end` are out of bounds.
-        pub fn sliceAxis(self: *const @This(), comptime axis: []const u8, start: usize, end: usize) @This() {
+        // zig fmt: off
+        pub fn sliceAxis(self: *const @This(),
+            comptime axis: []const u8,
+            start: usize,
+            end: usize) @This() {
+        // zig fmt: on
             const old_size = @field(self.shape, axis);
             if (end > old_size)
                 @panic("slice end out of bounds");
@@ -148,15 +164,13 @@ fn NamedIndex(comptime Key: type) type {
             };
         }
 
-        fn strideInplace(step: usize, out_dim: *usize, out_stride: *usize) void {
-            if (step == 0)
-                @panic("step must be positive");
-            out_stride.* *= step;
-            const orig_dim = out_dim.*;
-            out_dim.* /= step;
-            if (orig_dim % step > 0) {
-                out_dim.* += 1;
+        /// Return the number of elements in this index.
+        pub fn count(self: *const @This()) usize {
+            var prod: usize = 1;
+            inline for (fields) |field| {
+                prod *= @field(self.shape, field.name);
             }
+            return prod;
         }
     };
 }
@@ -215,14 +229,21 @@ const Index2d = struct { row: usize, col: usize };
 
 test "init strides" {
     const Structure2d = NamedIndex(Index2d);
-    const idx: Structure2d = .{ .shape = .{ .row = 4, .col = 5 }, .strides = .{ .row = 5, .col = 1 } };
+    const idx: Structure2d = .{
+        .shape = .{ .row = 4, .col = 5 },
+        .strides = .{ .row = 5, .col = 1 },
+    };
     const idx2 = Structure2d.initContiguous(.{ .row = 4, .col = 5 });
     try std.testing.expectEqual(idx, idx2);
 }
 
 test "linear index" {
     const Structure2d = NamedIndex(Index2d);
-    const idx: Structure2d = .{ .shape = .{ .row = 4, .col = 5 }, .strides = .{ .row = 5, .col = 1 }, .offset = 7 };
+    const idx: Structure2d = .{
+        .shape = .{ .row = 4, .col = 5 },
+        .strides = .{ .row = 5, .col = 1 },
+        .offset = 7,
+    };
     const query: Index2d = .{ .row = 2, .col = 3 };
     const expected = 20;
     try std.testing.expectEqual(expected, idx.linearUnchecked(query));
@@ -230,7 +251,11 @@ test "linear index" {
 
 test "linear invalid index" {
     const Structure2d = NamedIndex(Index2d);
-    const idx: Structure2d = .{ .shape = .{ .row = 4, .col = 5 }, .strides = .{ .row = 5, .col = 1 }, .offset = 7 };
+    const idx: Structure2d = .{
+        .shape = .{ .row = 4, .col = 5 },
+        .strides = .{ .row = 5, .col = 1 },
+        .offset = 7,
+    };
     const query: Index2d = .{ .row = 4, .col = 3 };
     const expected = null;
     try std.testing.expectEqual(expected, idx.linear(query));
@@ -238,7 +263,11 @@ test "linear invalid index" {
 
 test "strideAxis" {
     const Structure2d = NamedIndex(Index2d);
-    const idx: Structure2d = .{ .shape = .{ .row = 6, .col = 8 }, .strides = .{ .row = 8, .col = 1 }, .offset = 1 };
+    const idx: Structure2d = .{
+        .shape = .{ .row = 6, .col = 8 },
+        .strides = .{ .row = 8, .col = 1 },
+        .offset = 1,
+    };
     const stepped = idx.strideAxis("col", 3);
     try std.testing.expectEqual(6, stepped.shape.row);
     try std.testing.expectEqual(3, stepped.shape.col);
@@ -252,7 +281,11 @@ test "stride" {
     const KeyOptional = Structure2d.KeyOptional;
 
     // Test with both fields set
-    const idx: Structure2d = .{ .shape = .{ .row = 6, .col = 8 }, .strides = .{ .row = 8, .col = 1 }, .offset = 1 };
+    const idx: Structure2d = .{
+        .shape = .{ .row = 6, .col = 8 },
+        .strides = .{ .row = 8, .col = 1 },
+        .offset = 1,
+    };
     const steps: KeyOptional = .{ .row = 2, .col = 1 };
     const stepped = idx.stride(steps);
     try std.testing.expectEqual(3, stepped.shape.row);
@@ -276,7 +309,11 @@ test "stride" {
 
 test "sliceAxis" {
     const Structure2d = NamedIndex(Index2d);
-    const idx: Structure2d = .{ .shape = .{ .row = 6, .col = 8 }, .strides = .{ .row = 8, .col = 1 }, .offset = 3 };
+    const idx: Structure2d = .{
+        .shape = .{ .row = 6, .col = 8 },
+        .strides = .{ .row = 8, .col = 1 },
+        .offset = 3,
+    };
     const sliced = idx.sliceAxis("row", 2, 5);
     try std.testing.expectEqual(3, sliced.shape.row);
     try std.testing.expectEqual(8, sliced.shape.col);
@@ -287,7 +324,11 @@ test "sliceAxis" {
 
 test "iterKeys" {
     const Structure2d = NamedIndex(Index2d);
-    const idx: Structure2d = .{ .shape = .{ .row = 2, .col = 3 }, .strides = .{ .row = 3, .col = 1 }, .offset = 0 };
+    const idx: Structure2d = .{
+        .shape = .{ .row = 2, .col = 3 },
+        .strides = .{ .row = 3, .col = 1 },
+        .offset = 0,
+    };
     const expected_indices: [6]Index2d = .{
         .{ .row = 0, .col = 0 },
         .{ .row = 0, .col = 1 },
@@ -303,4 +344,22 @@ test "iterKeys" {
         i += 1;
     }
     try std.testing.expectEqual(expected_indices.len, i);
+}
+
+test "count" {
+    const Structure2d = NamedIndex(Index2d);
+    const idx1: Structure2d = .{
+        .shape = .{ .row = 5, .col = 2 },
+        .strides = .{ .row = 2, .col = 1 },
+        .offset = 7,
+    };
+    try std.testing.expectEqual(@as(usize, 10), idx1.count());
+
+    // Test with a degenerate dimension
+    const idx2: Structure2d = .{
+        .shape = .{ .row = 0, .col = 4 },
+        .strides = .{ .row = 4, .col = 1 },
+        .offset = 0,
+    };
+    try std.testing.expectEqual(@as(usize, 0), idx2.count());
 }

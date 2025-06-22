@@ -1,4 +1,5 @@
 const std = @import("std");
+const mem = std.mem;
 const meta = std.meta;
 const Type = std.builtin.Type;
 
@@ -47,8 +48,8 @@ fn NamedIndex(comptime Key: type) type {
             const rank = fields.len;
             const fields_rev = comptime rev: {
                 var fields_rev_: [rank]Type.EnumField = undefined;
-                std.mem.copyForwards(Type.EnumField, &fields_rev_, fields);
-                std.mem.reverse(Type.EnumField, &fields_rev_);
+                mem.copyForwards(Type.EnumField, &fields_rev_, fields);
+                mem.reverse(Type.EnumField, &fields_rev_);
                 break :rev fields_rev_;
             };
 
@@ -223,7 +224,7 @@ pub fn KeyIterator(comptime Key: type) type {
                     argsort[i] = i;
                 }
                 const strides_slice: []usize = strides_arr[0..];
-                std.mem.sort(usize, argsort[0..], strides_slice, fnames_lt);
+                mem.sort(usize, argsort[0..], strides_slice, fnames_lt);
                 break :argsort argsort;
             };
             return .{ .next_arr = start, .shape_arr = shape_arr, .dims_desc = dims_desc };
@@ -269,7 +270,7 @@ fn RenamedStructField(comptime OldKey: type, old_name: [:0]const u8, new_name: [
         var matched = false;
         for (0..old_struct.fields.len) |fi| {
             const old_field = old_struct.fields[fi];
-            if (std.mem.eql(u8, old_field.name, old_name)) {
+            if (mem.eql(u8, old_field.name, old_name)) {
                 const new_field: Type.StructField = .{
                     .alignment = old_field.alignment,
                     .default_value_ptr = old_field.default_value_ptr,

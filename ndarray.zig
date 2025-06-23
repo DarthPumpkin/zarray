@@ -12,23 +12,20 @@ const Type = std.builtin.Type;
 // - how should we interface with blas?
 //   - wrap blas functions, or
 //   - export NamedArray to blas arguments
-fn NamedIndex(comptime Key: type) type {
-    const key_info = @typeInfo(Key).@"struct";
-    if (key_info.layout != .@"packed")
-        @compileError("Key struct must have packed layout.");
+fn NamedIndex(comptime AxisEnum: type) type {
+    _ = @typeInfo(AxisEnum).@"enum";
+    const field_names = meta.fieldNames(AxisEnum);
     return struct {
-        shape: Key,
-        strides: Key,
+        shape: Axes,
+        strides: Axes,
         offset: usize = 0,
 
-        pub const Field = meta.FieldEnum(Key);
-        const field_names = meta.fieldNames(Key);
+        pub const Axis = AxisEnum;
+        pub const Axes = KeyStruct(field_names);
 
         const usize_null: ?usize = null;
-
-        pub const Key_ = Key;
         /// Same fields as `Key`, but they are optional.
-        pub const KeyOptional = optional_type: {
+        pub const AxesOptional = optional_type: {
             const optional_fields = fields: {
                 var optional_fields_: [field_names.len]Type.StructField = undefined;
                 for (field_names, 0..) |field_name, fi| {
@@ -54,7 +51,7 @@ fn NamedIndex(comptime Key: type) type {
 
         /// Create contiguous index in "row-major" order, where the last field is treated as the
         /// 'row' dimension.
-        pub fn initContiguous(shape: Key) @This() {
+        pub fn initContiguous(shape: Axes) @This() {
             const rank = field_names.len;
             const field_names_rev = comptime rev: {
                 var field_names_rev_: [rank][:0]const u8 = undefined;
@@ -63,7 +60,7 @@ fn NamedIndex(comptime Key: type) type {
                 break :rev field_names_rev_;
             };
 
-            var strides: Key = undefined;
+            var strides: Axes = undefined;
             var next_stride: usize = 1;
             inline for (field_names_rev) |field_name| {
                 @field(strides, field_name) = next_stride;
@@ -82,13 +79,13 @@ fn NamedIndex(comptime Key: type) type {
             // }
         }
 
-        pub fn iterKeys(self: *const @This()) KeyIterator(Key) {
-            return KeyIterator(Key).init(self.shape, self.strides);
+        pub fn iterKeys(self: *const @This()) KeyIterator(Axes) {
+            return KeyIterator(Axes).init(self.shape, self.strides);
         }
 
         /// Return the offset into the linear buffer for the given structured index.
         /// If the index is out of bounds, return null.
-        pub fn linear(self: *const @This(), index: Key) ?usize {
+        pub fn linear(self: *const @This(), index: Axes) ?usize {
             inline for (field_names) |field_name| {
                 if (@field(self.shape, field_name) <= @field(index, field_name))
                     return null;
@@ -96,7 +93,7 @@ fn NamedIndex(comptime Key: type) type {
             return linearUnchecked(self, index);
         }
 
-        pub fn linearUnchecked(self: *const @This(), index: Key) usize {
+        pub fn linearUnchecked(self: *const @This(), index: Axes) usize {
             var sum = self.offset;
             inline for (field_names) |field_name| {
                 sum += @field(self.strides, field_name) * @field(index, field_name);
@@ -107,7 +104,7 @@ fn NamedIndex(comptime Key: type) type {
         /// Stride a single axis by a given step size.
         /// Equivalent to `::step` syntax in python.
         /// Panics if `step` is zero.
-        pub fn strideAxis(self: *const @This(), comptime axis: Field, step: usize) @This() {
+        pub fn strideAxis(self: *const @This(), comptime axis: Axis, step: usize) @This() {
             var new_strides = self.strides;
             var new_shape = self.shape;
             const axis_name = field_names[@intFromEnum(axis)];
@@ -124,7 +121,7 @@ fn NamedIndex(comptime Key: type) type {
 
         /// Stride multiple axes by given step sizes.
         /// axes whose value is null in `steps` are skipped.
-        pub fn stride(self: *const @This(), steps: KeyOptional) @This() {
+        pub fn stride(self: *const @This(), steps: AxesOptional) @This() {
             var new_strides = self.strides;
             var new_shape = self.shape;
             inline for (field_names) |field_name| {
@@ -157,7 +154,7 @@ fn NamedIndex(comptime Key: type) type {
         /// Panics if `start` or `end` are out of bounds.
         // zig fmt: off
         pub fn sliceAxis(self: *const @This(),
-            comptime axis: Field,
+            comptime axis: Axis,
             start: usize,
             end: usize) @This() {
         // zig fmt: on
@@ -169,7 +166,7 @@ fn NamedIndex(comptime Key: type) type {
                 @panic("slice start must be less than end");
             var new_shape = self.shape;
             @field(new_shape, axis_name) = end - start;
-            var offset_lookup = mem.zeroes(Key);
+            var offset_lookup = mem.zeroes(Axes);
             @field(offset_lookup, axis_name) = start;
             const new_offset = self.linearUnchecked(offset_lookup);
             return .{
@@ -183,13 +180,14 @@ fn NamedIndex(comptime Key: type) type {
         /// Panics if size != 1.
         // zig fmt: off
         pub fn squeezeAxis(self: *const @This(),
-            comptime axis: Field
-        ) NamedIndex(RemovedStructField(Key, field_names[@intFromEnum(axis)])) {
+            comptime axis: Axis
+        ) NamedIndex(RemovedStructField(Axis, field_names[@intFromEnum(axis)])) {
         // zig fmt: on
             const axis_name = field_names[@intFromEnum(axis)];
             if (@field(self.shape, axis_name) != 1)
                 @panic("squeezeAxis: axis size must be 1");
-            const NewKey = RemovedStructField(Key, axis_name);
+            const NewEnum = RemovedStructField(Axis, axis_name);
+            const NewKey = KeyStruct(meta.fieldNames(NewEnum));
             const new_shape: NewKey = blk: {
                 var tmp: NewKey = undefined;
                 inline for (field_names) |field_name| {
@@ -227,12 +225,13 @@ fn NamedIndex(comptime Key: type) type {
         /// Rename an axis.
         // zig fmt: off
         pub fn rename(self: *const @This(),
-            comptime axis: Field,
+            comptime axis: Axis,
             comptime new_name: [:0]const u8
-        ) NamedIndex(RenamedStructField(Key, field_names[@intFromEnum(axis)], new_name)) {
+        ) NamedIndex(RenamedStructField(Axis, field_names[@intFromEnum(axis)], new_name)) {
         // zig fmt: on
             const old_name = field_names[@intFromEnum(axis)];
-            const NewKey = RenamedStructField(Key, old_name, new_name);
+            const NewEnum = RenamedStructField(Axis, old_name, new_name);
+            const NewKey = KeyStruct(meta.fieldNames(NewEnum));
             const new_shape: NewKey = @bitCast(self.shape);
             const new_strides: NewKey = @bitCast(self.strides);
             return .{
@@ -246,9 +245,10 @@ fn NamedIndex(comptime Key: type) type {
         // zig fmt: off
         pub fn addEmptyAxis(self: *const @This(),
             comptime axis: [:0]const u8
-        ) NamedIndex(AddedStructField(Key, axis)) {
+        ) NamedIndex(AddedStructField(Axis, axis)) {
         // zig fmt: on
-            const NewKey = AddedStructField(Key, axis);
+            const NewEnum = AddedStructField(Axis, axis);
+            const NewKey = KeyStruct(meta.fieldNames(NewEnum));
             const new_shape: NewKey = blk: {
                 var tmp: NewKey = undefined;
                 inline for (field_names) |field_name| {
@@ -277,13 +277,14 @@ fn NamedIndex(comptime Key: type) type {
         /// Panics if size is not currently 1.
         ///
         /// To add a new axis instead, see `addEmptyAxis`.
-        pub fn broadcastAxis(self: *const @This(), comptime axis: [:0]const u8, new_size: usize) @This() {
-            if (@field(self.shape, axis) != 1)
+        pub fn broadcastAxis(self: *const @This(), comptime axis: Axis, new_size: usize) @This() {
+            const axis_name = field_names[@intFromEnum(axis)];
+            if (@field(self.shape, axis_name) != 1)
                 @panic("broadcastAxis: axis size must be 1");
             var new_shape = self.shape;
-            @field(new_shape, axis) = new_size;
+            @field(new_shape, axis_name) = new_size;
             var new_strides = self.strides;
-            @field(new_strides, axis) = 0;
+            @field(new_strides, axis_name) = 0;
             return .{
                 .shape = new_shape,
                 .strides = new_strides,
@@ -381,8 +382,34 @@ pub fn KeyStruct(comptime names: []const [:0]const u8) type {
     return @Type(Type{ .@"struct" = new_struct });
 }
 
+/// Reify an enum with given field names.
+pub fn KeyEnum(comptime names: []const [:0]const u8) type {
+    // Create an enum type with the given field names.
+    const rank = names.len;
+    const fields = fields: {
+        var fields_: [rank]Type.EnumField = undefined;
+        for (0..rank) |i| {
+            fields_[i] = .{
+                .name = names[i],
+                .value = i,
+            };
+        }
+        break :fields fields_;
+    };
+    const bits = std.math.log2_int_ceil(usize, rank);
+    const TagType = @Type(.{ .int = .{ .bits = bits, .signedness = .unsigned } });
+    const enum_type: Type.Enum = .{
+        .tag_type = TagType,
+        .fields = &fields,
+        .decls = &.{},
+        .is_exhaustive = true,
+    };
+    return @Type(Type{ .@"enum" = enum_type });
+}
+
+// TODO: Take enum value instead of old name
 fn RenamedStructField(comptime OldKey: type, old_name: [:0]const u8, new_name: [:0]const u8) type {
-    const old_struct = @typeInfo(OldKey).@"struct";
+    const old_struct = @typeInfo(OldKey).@"enum";
     const new_field_names = comptime fields: {
         var new_field_names: [old_struct.fields.len][:0]const u8 = undefined;
         var matched = false;
@@ -399,12 +426,13 @@ fn RenamedStructField(comptime OldKey: type, old_name: [:0]const u8, new_name: [
             @compileError("rename: field not found in struct: " ++ old_name);
         break :fields new_field_names;
     };
-    return KeyStruct(&new_field_names);
+    return KeyEnum(&new_field_names);
 }
 
+// TODO: Take enum value instead of name
 /// Return a copy of a given struct with a given field removed
 fn RemovedStructField(comptime OldKey: type, comptime name: [:0]const u8) type {
-    const old_struct = @typeInfo(OldKey).@"struct";
+    const old_struct = @typeInfo(OldKey).@"enum";
     const old_rank = old_struct.fields.len;
     const new_rank = old_rank - 1;
     const new_field_names = comptime fields: {
@@ -427,12 +455,12 @@ fn RemovedStructField(comptime OldKey: type, comptime name: [:0]const u8) type {
         }
         break :fields new_field_names;
     };
-    return KeyStruct(&new_field_names);
+    return KeyEnum(&new_field_names);
 }
 
 /// Return a copy of a given struct with a given field added
 fn AddedStructField(comptime OldKey: type, comptime name: [:0]const u8) type {
-    const old_struct = @typeInfo(OldKey).@"struct";
+    const old_struct = @typeInfo(OldKey).@"enum";
     const old_rank = old_struct.fields.len;
     // Check that the field does not already exist
     inline for (old_struct.fields) |field| {
@@ -449,13 +477,15 @@ fn AddedStructField(comptime OldKey: type, comptime name: [:0]const u8) type {
         new_field_names[old_rank] = name;
         break :fields new_field_names;
     };
-    return KeyStruct(&new_field_names);
+    return KeyEnum(&new_field_names);
 }
 
 const Index2d = packed struct { row: usize, col: usize };
 
+const Index2dEnum = enum { row, col };
+
 test "init strides" {
-    const Structure2d = NamedIndex(Index2d);
+    const Structure2d = NamedIndex(Index2dEnum);
     const idx: Structure2d = .{
         .shape = .{ .row = 4, .col = 5 },
         .strides = .{ .row = 5, .col = 1 },
@@ -465,31 +495,31 @@ test "init strides" {
 }
 
 test "linear index" {
-    const Structure2d = NamedIndex(Index2d);
+    const Structure2d = NamedIndex(Index2dEnum);
     const idx: Structure2d = .{
         .shape = .{ .row = 4, .col = 5 },
         .strides = .{ .row = 5, .col = 1 },
         .offset = 7,
     };
-    const query: Index2d = .{ .row = 2, .col = 3 };
+    const query: Structure2d.Axes = .{ .row = 2, .col = 3 };
     const expected = 20;
     try std.testing.expectEqual(expected, idx.linearUnchecked(query));
 }
 
 test "linear invalid index" {
-    const Structure2d = NamedIndex(Index2d);
+    const Structure2d = NamedIndex(Index2dEnum);
     const idx: Structure2d = .{
         .shape = .{ .row = 4, .col = 5 },
         .strides = .{ .row = 5, .col = 1 },
         .offset = 7,
     };
-    const query: Index2d = .{ .row = 4, .col = 3 };
+    const query: Structure2d.Axes = .{ .row = 4, .col = 3 };
     const expected = null;
     try std.testing.expectEqual(expected, idx.linear(query));
 }
 
 test "strideAxis" {
-    const Structure2d = NamedIndex(Index2d);
+    const Structure2d = NamedIndex(Index2dEnum);
     const idx: Structure2d = .{
         .shape = .{ .row = 6, .col = 8 },
         .strides = .{ .row = 8, .col = 1 },
@@ -504,8 +534,8 @@ test "strideAxis" {
 }
 
 test "stride" {
-    const Structure2d = NamedIndex(Index2d);
-    const KeyOptional = Structure2d.KeyOptional;
+    const Structure2d = NamedIndex(Index2dEnum);
+    const KeyOptional = Structure2d.AxesOptional;
 
     // Test with both fields set
     const idx: Structure2d = .{
@@ -535,7 +565,7 @@ test "stride" {
 }
 
 test "sliceAxis" {
-    const Structure2d = NamedIndex(Index2d);
+    const Structure2d = NamedIndex(Index2dEnum);
     const idx: Structure2d = .{
         .shape = .{ .row = 6, .col = 8 },
         .strides = .{ .row = 8, .col = 1 },
@@ -557,13 +587,13 @@ test "sliceAxis" {
 }
 
 test "iterKeys" {
-    const Structure2d = NamedIndex(Index2d);
+    const Structure2d = NamedIndex(Index2dEnum);
     const idx: Structure2d = .{
         .shape = .{ .row = 2, .col = 3 },
         .strides = .{ .row = 3, .col = 1 },
         .offset = 0,
     };
-    const expected_indices: [6]Index2d = .{
+    const expected_indices: [6]Structure2d.Axes = .{
         .{ .row = 0, .col = 0 },
         .{ .row = 0, .col = 1 },
         .{ .row = 0, .col = 2 },
@@ -571,17 +601,17 @@ test "iterKeys" {
         .{ .row = 1, .col = 1 },
         .{ .row = 1, .col = 2 },
     };
-    var iter = idx.iterKeys();
     var i: usize = 0;
-    while (iter.next()) |next| {
-        try std.testing.expectEqual(expected_indices[i], next);
+    var it = idx.iterKeys();
+    while (it.next()) |key| {
+        try std.testing.expectEqual(expected_indices[i], key);
         i += 1;
     }
-    try std.testing.expectEqual(expected_indices.len, i);
+    try std.testing.expectEqual(i, expected_indices.len);
 }
 
 test "iterKeys 3d, major in middle" {
-    const Index3d = packed struct { x: usize, y: usize, z: usize };
+    const Index3d = enum { x, y, z };
     const Structure3d = NamedIndex(Index3d);
     // Make y the major dimension (stride 1 for y, then z, then x)
     const idx: Structure3d = .{
@@ -590,7 +620,7 @@ test "iterKeys 3d, major in middle" {
         .offset = 0,
     };
     // The iteration order should be: y varies fastest, then z, then x
-    const expected_indices: [24]Index3d = .{
+    const expected_indices: [24]Structure3d.Axes = .{
         .{ .x = 0, .y = 0, .z = 0 },
         .{ .x = 0, .y = 1, .z = 0 },
         .{ .x = 0, .y = 2, .z = 0 },
@@ -626,7 +656,7 @@ test "iterKeys 3d, major in middle" {
 }
 
 test "count" {
-    const Structure2d = NamedIndex(Index2d);
+    const Structure2d = NamedIndex(Index2dEnum);
     const idx1: Structure2d = .{
         .shape = .{ .row = 5, .col = 2 },
         .strides = .{ .row = 2, .col = 1 },
@@ -650,8 +680,8 @@ test "count" {
 // }
 
 test "rename" {
-    const IJ = packed struct { i: usize, j: usize };
-    const IndexIJ = NamedIndex(IJ);
+    const IJEnum = enum { i, j };
+    const IndexIJ = NamedIndex(IJEnum);
     const idx: IndexIJ = .initContiguous(.{
         .i = 5,
         .j = 3,
@@ -676,44 +706,28 @@ test "rename" {
 }
 
 test "RemovedStructField" {
-    const IJK = KeyStruct(&.{ "i", "j", "k" });
-    const IK = RemovedStructField(IJK, "j");
+    const IJKEnum = enum { i, j, k };
+    const IK = RemovedStructField(IJKEnum, "j");
 
     // Test field properties
-    const ik_info = @typeInfo(IK).@"struct";
+    const ik_info = @typeInfo(IK).@"enum";
 
     try std.testing.expectEqual(2, ik_info.fields.len);
     try std.testing.expectEqualStrings("i", ik_info.fields[0].name);
     try std.testing.expectEqualStrings("k", ik_info.fields[1].name);
 
-    try std.testing.expectEqual(usize, ik_info.fields[0].type);
-    try std.testing.expectEqual(usize, ik_info.fields[1].type);
-
-    try std.testing.expectEqual(null, ik_info.fields[0].default_value_ptr);
-    try std.testing.expectEqual(null, ik_info.fields[1].default_value_ptr);
-
-    try std.testing.expectEqual(0, ik_info.fields[0].alignment);
-    try std.testing.expectEqual(0, ik_info.fields[1].alignment);
-
-    try std.testing.expectEqual(false, ik_info.fields[0].is_comptime);
-    try std.testing.expectEqual(false, ik_info.fields[1].is_comptime);
-
-    // Test struct properties
-    try std.testing.expectEqual(Type.ContainerLayout.@"packed", ik_info.layout);
-    try std.testing.expectEqual(false, ik_info.is_tuple);
-    // TODO: Really relevant? Why enforce this?
-    try std.testing.expectEqual(u128, ik_info.backing_integer);
+    try std.testing.expectEqual(u1, ik_info.tag_type);
     try std.testing.expectEqualSlices(Type.Declaration, &.{}, ik_info.decls);
 
     // Toggle to verify that it throws a compileError
     if (false) {
-        RemovedStructField(IJK, "nonexisting");
+        RemovedStructField(IJKEnum, "nonexisting");
     }
 }
 
 test "squeezeAxis" {
-    const IJK = KeyStruct(&.{ "i", "j", "k" });
-    const IndexIJK = NamedIndex(IJK);
+    const IJKEnum = enum { i, j, k };
+    const IndexIJK = NamedIndex(IJKEnum);
 
     // Squeeze the "j" axis (size 1)
     const idx: IndexIJK = .{
@@ -724,7 +738,7 @@ test "squeezeAxis" {
     const squeezed = idx.squeezeAxis(.j);
 
     // The resulting key type should have only "i" and "k"
-    const SqueezedKey = RemovedStructField(IJK, "j");
+    const SqueezedKey = RemovedStructField(IJKEnum, "j");
     const expected: NamedIndex(SqueezedKey) = .{
         .shape = .{ .i = 4, .k = 7 },
         .strides = .{ .i = 7, .k = 1 },
@@ -732,19 +746,15 @@ test "squeezeAxis" {
     };
     try std.testing.expectEqual(expected, squeezed);
 
-    // Toggle to verify that it throws a compileError if axis does not exist
-    if (false) {
-        _ = idx.squeezeAxis("nonexisting");
-    }
     // Toggle to verify that it panics if size is not 1.
     if (false) {
-        _ = idx.squeezeAxis("i");
+        _ = idx.squeezeAxis(.i);
     }
 }
 
 test "addEmptyAxis" {
-    const IJ = KeyStruct(&.{ "i", "j" });
-    const IndexIJ = NamedIndex(IJ);
+    const IJEnum = enum { i, j };
+    const IndexIJ = NamedIndex(IJEnum);
 
     // Add an empty axis "k"
     const idx: IndexIJ = .{
@@ -755,11 +765,11 @@ test "addEmptyAxis" {
     const idx_added = idx.addEmptyAxis("k");
 
     // The resulting key type should have "i", "j", "k"
-    const IJK = KeyStruct(&.{ "i", "j", "k" });
-    const ExpectedIndex = NamedIndex(IJK);
+    // const ExpectedIndex = NamedIndex(IJKEnum);
 
     // Check that the shape and strides are as expected
-    const expected: ExpectedIndex = .{
+    const IJKEnum = AddedStructField(IJEnum, "k");
+    const expected: NamedIndex(IJKEnum) = .{
         .shape = .{ .i = 4, .j = 7, .k = 1 },
         .strides = .{ .i = 7, .j = 1, .k = 0 },
         .offset = 0,
@@ -773,8 +783,8 @@ test "addEmptyAxis" {
 }
 
 test "broadcastAxis" {
-    const IJ = KeyStruct(&.{ "i", "j" });
-    const IndexIJ = NamedIndex(IJ);
+    const IJEnum = enum { i, j };
+    const IndexIJ = NamedIndex(IJEnum);
 
     // Broadcast the "j" axis from size 1 to size 5
     const idx: IndexIJ = .{
@@ -782,7 +792,7 @@ test "broadcastAxis" {
         .strides = .{ .i = 1, .j = 4 },
         .offset = 0,
     };
-    const broadcasted = idx.broadcastAxis("j", 5);
+    const broadcasted = idx.broadcastAxis(.j, 5);
 
     const expected: IndexIJ = .{
         .shape = .{ .i = 4, .j = 5 },
@@ -793,6 +803,6 @@ test "broadcastAxis" {
 
     // Should panic if axis is not size 1
     if (false) {
-        _ = idx.broadcastAxis("i", 5);
+        _ = idx.broadcastAxis(.i, 5);
     }
 }

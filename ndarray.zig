@@ -266,6 +266,32 @@ pub fn KeyIterator(comptime Key: type) type {
     };
 }
 
+/// Reify a key struct with given field names.
+pub fn KeyStruct(comptime names: []const [:0]const u8) type {
+    const rank = names.len;
+    const fields = fields: {
+        var fields_: [rank]Type.StructField = undefined;
+        for (0..rank) |i| {
+            fields_[i] = .{
+                .name = names[i],
+                .type = usize,
+                .default_value_ptr = null,
+                .is_comptime = false,
+                .alignment = 0,
+            };
+        }
+        break :fields fields_;
+    };
+    const new_struct: Type.Struct = .{
+        .layout = .@"packed",
+        .backing_integer = null,
+        .fields = &fields,
+        .decls = &.{},
+        .is_tuple = false,
+    };
+    return @Type(Type{ .@"struct" = new_struct });
+}
+
 fn RenamedStructField(comptime OldKey: type, old_name: [:0]const u8, new_name: [:0]const u8) type {
     const old_struct = @typeInfo(OldKey).@"struct";
     const new_fields = comptime fields: {
@@ -299,6 +325,34 @@ fn RenamedStructField(comptime OldKey: type, old_name: [:0]const u8, new_name: [
         .is_tuple = old_struct.is_tuple,
     };
     return @Type(Type{ .@"struct" = new_struct });
+}
+
+/// Return a copy of a given struct with a given field removed
+fn RemovedStructField(comptime OldKey: type, comptime name: [:0]const u8) type {
+    const old_struct = @typeInfo(OldKey).@"struct";
+    const old_rank = old_struct.fields.len;
+    const new_rank = old_rank - 1;
+    const new_field_names = comptime fields: {
+        var matches: usize = 0;
+        // Check if name is actually a field name
+        for (old_struct.fields) |field| {
+            if (!mem.eql(u8, field.name, name)) {
+                matches += 1;
+            }
+        }
+        if (matches != new_rank)
+            @compileError("RemovedStructField: field not found in struct: " ++ name);
+        var new_field_names: [matches][:0]const u8 = undefined;
+        var idx: usize = 0;
+        for (old_struct.fields) |field| {
+            if (!mem.eql(u8, field.name, name)) {
+                new_field_names[idx] = field.name;
+                idx += 1;
+            }
+        }
+        break :fields new_field_names;
+    };
+    return KeyStruct(&new_field_names);
 }
 
 const Index2d = packed struct { row: usize, col: usize };
@@ -514,5 +568,41 @@ test "rename" {
     // Toggle this manually to verify that it throws a compileError.
     if (false) {
         _ = idx.rename("nonexisting", "foo");
+    }
+}
+
+test "RemovedStructField" {
+    const IJK = KeyStruct(&.{ "i", "j", "k" });
+    const IK = RemovedStructField(IJK, "j");
+
+    // Test field properties
+    const ik_info = @typeInfo(IK).@"struct";
+
+    try std.testing.expectEqual(2, ik_info.fields.len);
+    try std.testing.expectEqualStrings("i", ik_info.fields[0].name);
+    try std.testing.expectEqualStrings("k", ik_info.fields[1].name);
+
+    try std.testing.expectEqual(usize, ik_info.fields[0].type);
+    try std.testing.expectEqual(usize, ik_info.fields[1].type);
+
+    try std.testing.expectEqual(null, ik_info.fields[0].default_value_ptr);
+    try std.testing.expectEqual(null, ik_info.fields[1].default_value_ptr);
+
+    try std.testing.expectEqual(0, ik_info.fields[0].alignment);
+    try std.testing.expectEqual(0, ik_info.fields[1].alignment);
+
+    try std.testing.expectEqual(false, ik_info.fields[0].is_comptime);
+    try std.testing.expectEqual(false, ik_info.fields[1].is_comptime);
+
+    // Test struct properties
+    try std.testing.expectEqual(Type.ContainerLayout.@"packed", ik_info.layout);
+    try std.testing.expectEqual(false, ik_info.is_tuple);
+    // TODO: Really relevant? Why enforce this?
+    try std.testing.expectEqual(u128, ik_info.backing_integer);
+    try std.testing.expectEqualSlices(Type.Declaration, &.{}, ik_info.decls);
+
+    // Toggle to verify that it throws a compileError
+    if (false) {
+        RemovedStructField(IJK, "nonexisting");
     }
 }

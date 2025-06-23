@@ -22,7 +22,7 @@ fn NamedIndex(comptime Key: type) type {
         offset: usize = 0,
 
         pub const Field = meta.FieldEnum(Key);
-        const fields = meta.fields(Field);
+        const field_names = meta.fieldNames(Key);
 
         const usize_null: ?usize = null;
 
@@ -30,10 +30,10 @@ fn NamedIndex(comptime Key: type) type {
         /// Same fields as `Key`, but they are optional.
         pub const KeyOptional = optional_type: {
             const optional_fields = fields: {
-                var optional_fields_: [fields.len]Type.StructField = undefined;
-                for (0..fields.len) |fi| {
+                var optional_fields_: [field_names.len]Type.StructField = undefined;
+                for (field_names, 0..) |field_name, fi| {
                     optional_fields_[fi] = .{
-                        .name = fields[fi].name,
+                        .name = field_name,
                         .type = @Type(.{ .optional = .{ .child = usize } }),
                         .default_value_ptr = &usize_null,
                         .is_comptime = false,
@@ -55,19 +55,19 @@ fn NamedIndex(comptime Key: type) type {
         /// Create contiguous index in "row-major" order, where the last field is treated as the
         /// 'row' dimension.
         pub fn initContiguous(shape: Key) @This() {
-            const rank = fields.len;
-            const fields_rev = comptime rev: {
-                var fields_rev_: [rank]Type.EnumField = undefined;
-                mem.copyForwards(Type.EnumField, &fields_rev_, fields);
-                mem.reverse(Type.EnumField, &fields_rev_);
-                break :rev fields_rev_;
+            const rank = field_names.len;
+            const field_names_rev = comptime rev: {
+                var field_names_rev_: [rank][:0]const u8 = undefined;
+                mem.copyForwards([:0]const u8, &field_names_rev_, field_names);
+                mem.reverse([:0]const u8, &field_names_rev_);
+                break :rev field_names_rev_;
             };
 
             var strides: Key = undefined;
             var next_stride: usize = 1;
-            inline for (fields_rev) |field_info| {
-                @field(strides, field_info.name) = next_stride;
-                next_stride *= @field(shape, field_info.name);
+            inline for (field_names_rev) |field_name| {
+                @field(strides, field_name) = next_stride;
+                next_stride *= @field(shape, field_name);
             }
             return .{
                 .shape = shape,
@@ -76,9 +76,9 @@ fn NamedIndex(comptime Key: type) type {
             };
             // Alternative implementation via indexing
             // inline for (0..rank) |fi| {
-            //     const field_info = fields[rank - 1 - fi];
-            //     @field(strides, field_info.name) = next_stride;
-            //     next_stride *= @field(shape, field_info.name);
+            //     const field_name = field_names[rank - 1 - fi];
+            //     @field(strides, field_name) = next_stride;
+            //     next_stride *= @field(shape, field_name);
             // }
         }
 
@@ -89,8 +89,8 @@ fn NamedIndex(comptime Key: type) type {
         /// Return the offset into the linear buffer for the given structured index.
         /// If the index is out of bounds, return null.
         pub fn linear(self: *const @This(), index: Key) ?usize {
-            inline for (fields) |field_info| {
-                if (@field(self.shape, field_info.name) <= @field(index, field_info.name))
+            inline for (field_names) |field_name| {
+                if (@field(self.shape, field_name) <= @field(index, field_name))
                     return null;
             }
             return linearUnchecked(self, index);
@@ -98,8 +98,8 @@ fn NamedIndex(comptime Key: type) type {
 
         pub fn linearUnchecked(self: *const @This(), index: Key) usize {
             var sum = self.offset;
-            inline for (fields) |field_info| {
-                sum += @field(self.strides, field_info.name) * @field(index, field_info.name);
+            inline for (field_names) |field_name| {
+                sum += @field(self.strides, field_name) * @field(index, field_name);
             }
             return sum;
         }
@@ -110,7 +110,7 @@ fn NamedIndex(comptime Key: type) type {
         pub fn strideAxis(self: *const @This(), comptime axis: Field, step: usize) @This() {
             var new_strides = self.strides;
             var new_shape = self.shape;
-            const axis_name = fields[@intFromEnum(axis)].name;
+            const axis_name = field_names[@intFromEnum(axis)];
             const new_dim = &@field(new_shape, axis_name);
             const new_stride = &@field(new_strides, axis_name);
 
@@ -127,10 +127,10 @@ fn NamedIndex(comptime Key: type) type {
         pub fn stride(self: *const @This(), steps: KeyOptional) @This() {
             var new_strides = self.strides;
             var new_shape = self.shape;
-            inline for (fields) |field| {
-                if (@field(steps, field.name)) |step| {
-                    const new_dim = &@field(new_shape, field.name);
-                    const new_stride = &@field(new_strides, field.name);
+            inline for (field_names) |field_name| {
+                if (@field(steps, field_name)) |step| {
+                    const new_dim = &@field(new_shape, field_name);
+                    const new_stride = &@field(new_strides, field_name);
                     strideInplace(step, new_dim, new_stride);
                 }
             }
@@ -161,7 +161,7 @@ fn NamedIndex(comptime Key: type) type {
             start: usize,
             end: usize) @This() {
         // zig fmt: on
-            const axis_name = fields[@intFromEnum(axis)].name;
+            const axis_name = field_names[@intFromEnum(axis)];
             const old_size = @field(self.shape, axis_name);
             if (end > old_size)
                 @panic("slice end out of bounds");
@@ -184,26 +184,26 @@ fn NamedIndex(comptime Key: type) type {
         // zig fmt: off
         pub fn squeezeAxis(self: *const @This(),
             comptime axis: Field
-        ) NamedIndex(RemovedStructField(Key, fields[@intFromEnum(axis)].name)) {
+        ) NamedIndex(RemovedStructField(Key, field_names[@intFromEnum(axis)])) {
         // zig fmt: on
-            const axis_name = fields[@intFromEnum(axis)].name;
+            const axis_name = field_names[@intFromEnum(axis)];
             if (@field(self.shape, axis_name) != 1)
                 @panic("squeezeAxis: axis size must be 1");
             const NewKey = RemovedStructField(Key, axis_name);
             const new_shape: NewKey = blk: {
                 var tmp: NewKey = undefined;
-                inline for (fields) |field| {
-                    if (comptime !mem.eql(u8, field.name, axis_name)) {
-                        @field(tmp, field.name) = @field(self.shape, field.name);
+                inline for (field_names) |field_name| {
+                    if (comptime !mem.eql(u8, field_name, axis_name)) {
+                        @field(tmp, field_name) = @field(self.shape, field_name);
                     }
                 }
                 break :blk tmp;
             };
             const new_strides: NewKey = blk: {
                 var tmp: NewKey = undefined;
-                inline for (fields) |field| {
-                    if (comptime !mem.eql(u8, field.name, axis_name)) {
-                        @field(tmp, field.name) = @field(self.strides, field.name);
+                inline for (field_names) |field_name| {
+                    if (comptime !mem.eql(u8, field_name, axis_name)) {
+                        @field(tmp, field_name) = @field(self.strides, field_name);
                     }
                 }
                 break :blk tmp;
@@ -218,8 +218,8 @@ fn NamedIndex(comptime Key: type) type {
         /// Return the number of elements in this index.
         pub fn count(self: *const @This()) usize {
             var prod: usize = 1;
-            inline for (fields) |field| {
-                prod *= @field(self.shape, field.name);
+            inline for (field_names) |field_name| {
+                prod *= @field(self.shape, field_name);
             }
             return prod;
         }
@@ -229,9 +229,9 @@ fn NamedIndex(comptime Key: type) type {
         pub fn rename(self: *const @This(),
             comptime axis: Field,
             comptime new_name: [:0]const u8
-        ) NamedIndex(RenamedStructField(Key, fields[@intFromEnum(axis)].name, new_name)) {
+        ) NamedIndex(RenamedStructField(Key, field_names[@intFromEnum(axis)], new_name)) {
         // zig fmt: on
-            const old_name = fields[@intFromEnum(axis)].name;
+            const old_name = field_names[@intFromEnum(axis)];
             const NewKey = RenamedStructField(Key, old_name, new_name);
             const new_shape: NewKey = @bitCast(self.shape);
             const new_strides: NewKey = @bitCast(self.strides);
@@ -251,16 +251,16 @@ fn NamedIndex(comptime Key: type) type {
             const NewKey = AddedStructField(Key, axis);
             const new_shape: NewKey = blk: {
                 var tmp: NewKey = undefined;
-                inline for (fields) |field| {
-                    @field(tmp, field.name) = @field(self.shape, field.name);
+                inline for (field_names) |field_name| {
+                    @field(tmp, field_name) = @field(self.shape, field_name);
                 }
                 @field(tmp, axis) = 1;
                 break :blk tmp;
             };
             const new_strides: NewKey = blk: {
                 var tmp: NewKey = undefined;
-                inline for (fields) |field| {
-                    @field(tmp, field.name) = @field(self.strides, field.name);
+                inline for (field_names) |field_name| {
+                    @field(tmp, field_name) = @field(self.strides, field_name);
                 }
                 // The stride for the new axis is arbitrary, but 0 is standard for broadcasting semantics.
                 @field(tmp, axis) = 0;

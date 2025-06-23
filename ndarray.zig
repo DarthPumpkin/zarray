@@ -104,14 +104,16 @@ fn NamedIndex(comptime Key: type) type {
             return sum;
         }
 
-        /// Stride a given axis by a given step size.
+        /// Stride a single axis by a given step size.
         /// Equivalent to `::step` syntax in python.
         /// Panics if `step` is zero.
-        pub fn strideAxis(self: *const @This(), comptime axis: []const u8, step: usize) @This() {
+        pub fn strideAxis(self: *const @This(), comptime axis: Field, step: usize) @This() {
             var new_strides = self.strides;
             var new_shape = self.shape;
-            const new_dim = &@field(new_shape, axis);
-            const new_stride = &@field(new_strides, axis);
+            const axis_name = fields[@intFromEnum(axis)].name;
+            const new_dim = &@field(new_shape, axis_name);
+            const new_stride = &@field(new_strides, axis_name);
+
             strideInplace(step, new_dim, new_stride);
             return .{
                 .shape = new_shape,
@@ -155,19 +157,20 @@ fn NamedIndex(comptime Key: type) type {
         /// Panics if `start` or `end` are out of bounds.
         // zig fmt: off
         pub fn sliceAxis(self: *const @This(),
-            comptime axis: []const u8,
+            comptime axis: Field,
             start: usize,
             end: usize) @This() {
         // zig fmt: on
-            const old_size = @field(self.shape, axis);
+            const axis_name = fields[@intFromEnum(axis)].name;
+            const old_size = @field(self.shape, axis_name);
             if (end > old_size)
                 @panic("slice end out of bounds");
             if (start >= end)
                 @panic("slice start must be less than end");
             var new_shape = self.shape;
-            @field(new_shape, axis) = end - start;
+            @field(new_shape, axis_name) = end - start;
             var offset_lookup = mem.zeroes(Key);
-            @field(offset_lookup, axis) = start;
+            @field(offset_lookup, axis_name) = start;
             const new_offset = self.linearUnchecked(offset_lookup);
             return .{
                 .shape = new_shape,
@@ -180,16 +183,17 @@ fn NamedIndex(comptime Key: type) type {
         /// Panics if size != 1.
         // zig fmt: off
         pub fn squeezeAxis(self: *const @This(),
-            comptime axis: [:0]const u8
-        ) NamedIndex(RemovedStructField(Key, axis)) {
+            comptime axis: Field
+        ) NamedIndex(RemovedStructField(Key, fields[@intFromEnum(axis)].name)) {
         // zig fmt: on
-            if (@field(self.shape, axis) != 1)
+            const axis_name = fields[@intFromEnum(axis)].name;
+            if (@field(self.shape, axis_name) != 1)
                 @panic("squeezeAxis: axis size must be 1");
-            const NewKey = RemovedStructField(Key, axis);
+            const NewKey = RemovedStructField(Key, axis_name);
             const new_shape: NewKey = blk: {
                 var tmp: NewKey = undefined;
                 inline for (fields) |field| {
-                    if (comptime !mem.eql(u8, field.name, axis)) {
+                    if (comptime !mem.eql(u8, field.name, axis_name)) {
                         @field(tmp, field.name) = @field(self.shape, field.name);
                     }
                 }
@@ -198,7 +202,7 @@ fn NamedIndex(comptime Key: type) type {
             const new_strides: NewKey = blk: {
                 var tmp: NewKey = undefined;
                 inline for (fields) |field| {
-                    if (comptime !mem.eql(u8, field.name, axis)) {
+                    if (comptime !mem.eql(u8, field.name, axis_name)) {
                         @field(tmp, field.name) = @field(self.strides, field.name);
                     }
                 }
@@ -223,10 +227,11 @@ fn NamedIndex(comptime Key: type) type {
         /// Rename an axis.
         // zig fmt: off
         pub fn rename(self: *const @This(),
-            comptime old_name: [:0]const u8,
+            comptime axis: Field,
             comptime new_name: [:0]const u8
-        ) NamedIndex(RenamedStructField(Key, old_name, new_name)) {
+        ) NamedIndex(RenamedStructField(Key, fields[@intFromEnum(axis)].name, new_name)) {
         // zig fmt: on
+            const old_name = fields[@intFromEnum(axis)].name;
             const NewKey = RenamedStructField(Key, old_name, new_name);
             const new_shape: NewKey = @bitCast(self.shape);
             const new_strides: NewKey = @bitCast(self.strides);
@@ -490,7 +495,7 @@ test "strideAxis" {
         .strides = .{ .row = 8, .col = 1 },
         .offset = 1,
     };
-    const stepped = idx.strideAxis("col", 3);
+    const stepped = idx.strideAxis(.col, 3);
     try std.testing.expectEqual(6, stepped.shape.row);
     try std.testing.expectEqual(3, stepped.shape.col);
     try std.testing.expectEqual(8, stepped.strides.row);
@@ -536,7 +541,7 @@ test "sliceAxis" {
         .strides = .{ .row = 8, .col = 1 },
         .offset = 3,
     };
-    const sliced = idx.sliceAxis("row", 2, 5);
+    const sliced = idx.sliceAxis(.row, 2, 5);
     try std.testing.expectEqual(3, sliced.shape.row);
     try std.testing.expectEqual(8, sliced.shape.col);
     try std.testing.expectEqual(8, sliced.strides.row);
@@ -644,7 +649,7 @@ test "rename" {
         .i = 5,
         .j = 3,
     });
-    const idx_from = idx.rename("i", "from");
+    const idx_from = idx.rename(.i, "from");
 
     // Check that the renamed indices have the expected field names and values
     try std.testing.expectEqual(idx.shape.i, idx_from.shape.from);
@@ -709,7 +714,7 @@ test "squeezeAxis" {
         .strides = .{ .i = 7, .j = 49, .k = 1 },
         .offset = 0,
     };
-    const squeezed = idx.squeezeAxis("j");
+    const squeezed = idx.squeezeAxis(.j);
 
     // The resulting key type should have only "i" and "k"
     const SqueezedKey = RemovedStructField(IJK, "j");

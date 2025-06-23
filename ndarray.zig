@@ -547,6 +547,13 @@ test "sliceAxis" {
     try std.testing.expectEqual(8, sliced.strides.row);
     try std.testing.expectEqual(1, sliced.strides.col);
     try std.testing.expectEqual(19, sliced.offset);
+
+    const sliced_again = sliced.sliceAxis(.row, 1, 3);
+    try std.testing.expectEqual(2, sliced_again.shape.row);
+    try std.testing.expectEqual(8, sliced_again.shape.col);
+    try std.testing.expectEqual(8, sliced_again.strides.row);
+    try std.testing.expectEqual(1, sliced_again.strides.col);
+    try std.testing.expectEqual(27, sliced_again.offset);
 }
 
 test "iterKeys" {

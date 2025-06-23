@@ -236,6 +236,55 @@ fn NamedIndex(comptime Key: type) type {
                 .offset = self.offset,
             };
         }
+
+        /// Adds an axis of size 1 to the index.
+        // zig fmt: off
+        pub fn addEmptyAxis(self: *const @This(),
+            comptime axis: [:0]const u8
+        ) NamedIndex(AddedStructField(Key, axis)) {
+        // zig fmt: on
+            const NewKey = AddedStructField(Key, axis);
+            const new_shape: NewKey = blk: {
+                var tmp: NewKey = undefined;
+                inline for (fields) |field| {
+                    @field(tmp, field.name) = @field(self.shape, field.name);
+                }
+                @field(tmp, axis) = 1;
+                break :blk tmp;
+            };
+            const new_strides: NewKey = blk: {
+                var tmp: NewKey = undefined;
+                inline for (fields) |field| {
+                    @field(tmp, field.name) = @field(self.strides, field.name);
+                }
+                // The stride for the new axis is arbitrary, but 0 is standard for broadcasting semantics.
+                @field(tmp, axis) = 0;
+                break :blk tmp;
+            };
+            return .{
+                .shape = new_shape,
+                .strides = new_strides,
+                .offset = self.offset,
+            };
+        }
+
+        /// Broadcasts an existing axis of size 1 to a new size by setting its stride to 0.
+        /// Panics if size is not currently 1.
+        ///
+        /// To add a new axis instead, see `addEmptyAxis`.
+        pub fn broadcastAxis(self: *const @This(), comptime axis: [:0]const u8, new_size: usize) @This() {
+            if (@field(self.shape, axis) != 1)
+                @panic("broadcastAxis: axis size must be 1");
+            var new_shape = self.shape;
+            @field(new_shape, axis) = new_size;
+            var new_strides = self.strides;
+            @field(new_strides, axis) = 0;
+            return .{
+                .shape = new_shape,
+                .strides = new_strides,
+                .offset = self.offset,
+            };
+        }
     };
 }
 
@@ -371,6 +420,28 @@ fn RemovedStructField(comptime OldKey: type, comptime name: [:0]const u8) type {
                 idx += 1;
             }
         }
+        break :fields new_field_names;
+    };
+    return KeyStruct(&new_field_names);
+}
+
+/// Return a copy of a given struct with a given field added
+fn AddedStructField(comptime OldKey: type, comptime name: [:0]const u8) type {
+    const old_struct = @typeInfo(OldKey).@"struct";
+    const old_rank = old_struct.fields.len;
+    // Check that the field does not already exist
+    inline for (old_struct.fields) |field| {
+        if (mem.eql(u8, field.name, name)) {
+            @compileError("AddedStructField: field already exists in struct: " ++ name);
+        }
+    }
+    const new_rank = old_rank + 1;
+    const new_field_names = comptime fields: {
+        var new_field_names: [new_rank][:0]const u8 = undefined;
+        for (0..old_rank) |i| {
+            new_field_names[i] = old_struct.fields[i].name;
+        }
+        new_field_names[old_rank] = name;
         break :fields new_field_names;
     };
     return KeyStruct(&new_field_names);
@@ -648,4 +719,68 @@ test "squeezeAxis" {
         .offset = 0,
     };
     try std.testing.expectEqual(expected, squeezed);
+
+    // Toggle to verify that it throws a compileError if axis does not exist
+    if (false) {
+        _ = idx.squeezeAxis("nonexisting");
+    }
+    // Toggle to verify that it panics if size is not 1.
+    if (false) {
+        _ = idx.squeezeAxis("i");
+    }
+}
+
+test "addEmptyAxis" {
+    const IJ = KeyStruct(&.{ "i", "j" });
+    const IndexIJ = NamedIndex(IJ);
+
+    // Add an empty axis "k"
+    const idx: IndexIJ = .{
+        .shape = .{ .i = 4, .j = 7 },
+        .strides = .{ .i = 7, .j = 1 },
+        .offset = 0,
+    };
+    const idx_added = idx.addEmptyAxis("k");
+
+    // The resulting key type should have "i", "j", "k"
+    const IJK = KeyStruct(&.{ "i", "j", "k" });
+    const ExpectedIndex = NamedIndex(IJK);
+
+    // Check that the shape and strides are as expected
+    const expected: ExpectedIndex = .{
+        .shape = .{ .i = 4, .j = 7, .k = 1 },
+        .strides = .{ .i = 7, .j = 1, .k = 0 },
+        .offset = 0,
+    };
+    try std.testing.expectEqual(expected, idx_added);
+
+    // Toggle to verify that it throws a compileError if axis already exists
+    if (false) {
+        _ = idx.addEmptyAxis("i");
+    }
+}
+
+test "broadcastAxis" {
+    const IJ = KeyStruct(&.{ "i", "j" });
+    const IndexIJ = NamedIndex(IJ);
+
+    // Broadcast the "j" axis from size 1 to size 5
+    const idx: IndexIJ = .{
+        .shape = .{ .i = 4, .j = 1 },
+        .strides = .{ .i = 1, .j = 4 },
+        .offset = 0,
+    };
+    const broadcasted = idx.broadcastAxis("j", 5);
+
+    const expected: IndexIJ = .{
+        .shape = .{ .i = 4, .j = 5 },
+        .strides = .{ .i = 1, .j = 0 },
+        .offset = 0,
+    };
+    try std.testing.expectEqual(expected, broadcasted);
+
+    // Should panic if axis is not size 1
+    if (false) {
+        _ = idx.broadcastAxis("i", 5);
+    }
 }

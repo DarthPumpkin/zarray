@@ -176,6 +176,41 @@ fn NamedIndex(comptime Key: type) type {
             };
         }
 
+        /// Remove an axis that has size 1.
+        /// Panics if size != 1.
+        // zig fmt: off
+        pub fn squeezeAxis(self: *const @This(),
+            comptime axis: [:0]const u8
+        ) NamedIndex(RemovedStructField(Key, axis)) {
+        // zig fmt: on
+            if (@field(self.shape, axis) != 1)
+                @panic("squeezeAxis: axis size must be 1");
+            const NewKey = RemovedStructField(Key, axis);
+            const new_shape: NewKey = blk: {
+                var tmp: NewKey = undefined;
+                inline for (fields) |field| {
+                    if (comptime !mem.eql(u8, field.name, axis)) {
+                        @field(tmp, field.name) = @field(self.shape, field.name);
+                    }
+                }
+                break :blk tmp;
+            };
+            const new_strides: NewKey = blk: {
+                var tmp: NewKey = undefined;
+                inline for (fields) |field| {
+                    if (comptime !mem.eql(u8, field.name, axis)) {
+                        @field(tmp, field.name) = @field(self.strides, field.name);
+                    }
+                }
+                break :blk tmp;
+            };
+            return .{
+                .shape = new_shape,
+                .strides = new_strides,
+                .offset = self.offset,
+            };
+        }
+
         /// Return the number of elements in this index.
         pub fn count(self: *const @This()) usize {
             var prod: usize = 1;
@@ -591,4 +626,26 @@ test "RemovedStructField" {
     if (false) {
         RemovedStructField(IJK, "nonexisting");
     }
+}
+
+test "squeezeAxis" {
+    const IJK = KeyStruct(&.{ "i", "j", "k" });
+    const IndexIJK = NamedIndex(IJK);
+
+    // Squeeze the "j" axis (size 1)
+    const idx: IndexIJK = .{
+        .shape = .{ .i = 4, .j = 1, .k = 7 },
+        .strides = .{ .i = 7, .j = 49, .k = 1 },
+        .offset = 0,
+    };
+    const squeezed = idx.squeezeAxis("j");
+
+    // The resulting key type should have only "i" and "k"
+    const SqueezedKey = RemovedStructField(IJK, "j");
+    const expected: NamedIndex(SqueezedKey) = .{
+        .shape = .{ .i = 4, .k = 7 },
+        .strides = .{ .i = 7, .k = 1 },
+        .offset = 0,
+    };
+    try std.testing.expectEqual(expected, squeezed);
 }

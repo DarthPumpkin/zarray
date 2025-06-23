@@ -18,6 +18,7 @@ fn NamedIndex(comptime Key: type) type {
         const usize_null: ?usize = null;
 
         pub const Key_ = Key;
+        /// Same fields as `Key`, but they are optional.
         pub const KeyOptional = optional_type: {
             const optional_fields = fields: {
                 var optional_fields_: [fields.len]Type.StructField = undefined;
@@ -156,10 +157,7 @@ fn NamedIndex(comptime Key: type) type {
                 @panic("slice start must be less than end");
             var new_shape = self.shape;
             @field(new_shape, axis) = end - start;
-            var offset_lookup: Key = undefined;
-            inline for (fields) |field| {
-                @field(offset_lookup, field.name) = 0;
-            }
+            var offset_lookup = mem.zeroes(Key);
             @field(offset_lookup, axis) = start;
             const new_offset = self.linearUnchecked(offset_lookup);
             return .{
@@ -210,20 +208,16 @@ pub fn KeyIterator(comptime Key: type) type {
         dims_desc: [fnames.len]usize,
 
         pub fn init(shape: Key, strides: Key) @This() {
-            var start: [fnames.len]usize = undefined;
-            var shape_arr: [fnames.len]usize = undefined;
-            var strides_arr: [fnames.len]usize = @bitCast(strides);
-            inline for (fnames, 0..) |fname, fi| {
-                start[fi] = 0;
-                shape_arr[fi] = @field(shape, fname);
-            }
+            const start = [_]usize{0} ** fnames.len;
+            const shape_arr: [fnames.len]usize = @bitCast(shape);
+            const strides_arr: [fnames.len]usize = @bitCast(strides);
 
             const dims_desc = argsort: {
                 var argsort: [fnames.len]usize = undefined;
                 for (0..fnames.len) |i| {
                     argsort[i] = i;
                 }
-                const strides_slice: []usize = strides_arr[0..];
+                const strides_slice: []const usize = strides_arr[0..];
                 mem.sort(usize, argsort[0..], strides_slice, fnames_lt);
                 break :argsort argsort;
             };
@@ -256,9 +250,9 @@ pub fn KeyIterator(comptime Key: type) type {
             return result;
         }
 
-        fn fnames_lt(shape_arr: []usize, lhs: usize, rhs: usize) bool {
+        fn fnames_lt(strides_arr: []const usize, lhs: usize, rhs: usize) bool {
             // descending order
-            return shape_arr[lhs] > shape_arr[rhs];
+            return strides_arr[lhs] > strides_arr[rhs];
         }
     };
 }

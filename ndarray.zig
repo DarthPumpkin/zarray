@@ -3,6 +3,15 @@ const mem = std.mem;
 const meta = std.meta;
 const Type = std.builtin.Type;
 
+// Compile with "-framework Accelerate" on macOS
+// const acc = @cImport(@cInclude("Accelerate/Accelerate.h"));
+
+// Open questions:
+// - Should we support dimensions of size 0?
+// - Should we support rank-0 indices? If so, are they empty or scalars?
+// - how should we interface with blas?
+//   - wrap blas functions, or
+//   - export NamedArray to blas arguments
 fn NamedIndex(comptime Key: type) type {
     const key_info = @typeInfo(Key).@"struct";
     if (key_info.layout != .@"packed")
@@ -475,6 +484,12 @@ test "count" {
     };
     try std.testing.expectEqual(@as(usize, 0), idx2.count());
 }
+
+// test "cblas" {
+//     const order = acc.CBLAS_ORDER;
+//     acc.cblas_ddot(__N: c_int, __X: [*c]const f64, __incX: c_int, __Y: [*c]const f64, __incY: c_int)
+//     std.debug.print("{any}\n", .{order});
+// }
 
 test "rename" {
     const IJ = packed struct { i: usize, j: usize };

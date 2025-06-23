@@ -294,37 +294,23 @@ pub fn KeyStruct(comptime names: []const [:0]const u8) type {
 
 fn RenamedStructField(comptime OldKey: type, old_name: [:0]const u8, new_name: [:0]const u8) type {
     const old_struct = @typeInfo(OldKey).@"struct";
-    const new_fields = comptime fields: {
-        var new_fields: [old_struct.fields.len]Type.StructField = undefined;
+    const new_field_names = comptime fields: {
+        var new_field_names: [old_struct.fields.len][:0]const u8 = undefined;
         var matched = false;
         for (0..old_struct.fields.len) |fi| {
             const old_field = old_struct.fields[fi];
             if (mem.eql(u8, old_field.name, old_name)) {
-                const new_field: Type.StructField = .{
-                    .alignment = old_field.alignment,
-                    .default_value_ptr = old_field.default_value_ptr,
-                    .is_comptime = old_field.is_comptime,
-                    .type = old_field.type,
-                    .name = new_name,
-                };
-                new_fields[fi] = new_field;
+                new_field_names[fi] = new_name;
                 matched = true;
             } else {
-                new_fields[fi] = old_field;
+                new_field_names[fi] = old_field.name;
             }
         }
         if (!matched)
             @compileError("rename: field not found in struct: " ++ old_name);
-        break :fields new_fields;
+        break :fields new_field_names;
     };
-    const new_struct: Type.Struct = .{
-        .layout = old_struct.layout,
-        .backing_integer = old_struct.backing_integer,
-        .fields = &new_fields,
-        .decls = old_struct.decls,
-        .is_tuple = old_struct.is_tuple,
-    };
-    return @Type(Type{ .@"struct" = new_struct });
+    return KeyStruct(&new_field_names);
 }
 
 /// Return a copy of a given struct with a given field removed

@@ -8,6 +8,7 @@ const Type = std.builtin.Type;
 
 // TODO:
 // - .init with config struct: validate shapes and strides
+// - understand why KeyEnum is incompatible with manually created enums.
 
 // Open questions:
 // - Should we support dimensions of size 0?
@@ -943,3 +944,24 @@ test "broadcastAxis" {
         _ = idx.broadcastAxis(.i, 5);
     }
 }
+
+// test "KeyEnum" {
+//     const IJ1 = enum { i, j };
+//     const IJ2 = KeyEnum(&.{ "i", "j" });
+
+//     const info1 = @typeInfo(IJ1).@"enum";
+//     std.debug.print("{any}\n", .{info1.tag_type});
+//     std.debug.print("{any}\n", .{info1.is_exhaustive});
+//     std.debug.print("{any}\n", .{meta.fieldNames(IJ1)});
+//     inline for (info1.fields) |field| {
+//         std.debug.print("{any}\n", .{field});
+//     }
+
+//     const info2 = @typeInfo(IJ2).@"enum";
+//     std.debug.print("{any}\n", .{info2.tag_type});
+//     std.debug.print("{any}\n", .{info2.is_exhaustive});
+//     std.debug.print("{any}\n", .{meta.fieldNames(IJ2)});
+//     inline for (info2.fields) |field| {
+//         std.debug.print("{any}\n", .{field});
+//     }
+// }

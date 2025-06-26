@@ -6,6 +6,9 @@ const Type = std.builtin.Type;
 // Compile with "-framework Accelerate" on macOS
 // const acc = @cImport(@cInclude("Accelerate/Accelerate.h"));
 
+// TODO:
+// - .init with config struct: validate shapes and strides
+
 // Open questions:
 // - Should we support dimensions of size 0?
 // - Should we support rank-0 indices? If so, are they empty or scalars?
@@ -222,6 +225,43 @@ fn NamedIndex(comptime AxisEnum: type) type {
             return prod;
         }
 
+        /// Return the axes ordered descendingly by stride order.
+        /// For instance, row-major order returns {.row, .col}.
+        pub fn axisOrder(self: *const @This()) [field_names.len]Axis {
+            const strides_arr: [field_names.len]usize = @bitCast(self.strides);
+            const dims_desc = argsort: {
+                var argsort: [field_names.len]usize = undefined;
+                for (0..field_names.len) |i| {
+                    argsort[i] = i;
+                }
+                const strides_slice: []const usize = strides_arr[0..];
+                mem.sort(usize, argsort[0..], strides_slice, fnames_gt);
+                break :argsort argsort;
+            };
+            var axis_arr: [field_names.len]Axis = undefined;
+            inline for (0..field_names.len) |fi| {
+                axis_arr[fi] = @enumFromInt(dims_desc[fi]);
+            }
+            return axis_arr;
+        }
+
+        /// A NamedIndex is contiguous if there is a one-to-one mapping between a key in the index and
+        /// an element in the underlying buffer.
+        pub fn isContiguous(self: *const @This()) bool {
+            const axis_order = self.axisOrder();
+            const strides_arr: [field_names.len]usize = @bitCast(self.strides);
+            const shape_arr: [field_names.len]usize = @bitCast(self.shape);
+            var expected_stride: usize = 1;
+            inline for (0..field_names.len) |i| {
+                const axis = axis_order[field_names.len - 1 - i];
+                const stride_mismatch = strides_arr[@intFromEnum(axis)] != expected_stride;
+                if (stride_mismatch)
+                    return false;
+                expected_stride *= shape_arr[@intFromEnum(axis)];
+            }
+            return true;
+        }
+
         /// Rename an axis.
         // zig fmt: off
         pub fn rename(self: *const @This(),
@@ -317,7 +357,7 @@ pub fn KeyIterator(comptime Key: type) type {
                     argsort[i] = i;
                 }
                 const strides_slice: []const usize = strides_arr[0..];
-                mem.sort(usize, argsort[0..], strides_slice, fnames_lt);
+                mem.sort(usize, argsort[0..], strides_slice, fnames_gt);
                 break :argsort argsort;
             };
             return .{ .next_arr = start, .shape_arr = shape_arr, .dims_desc = dims_desc };
@@ -348,12 +388,12 @@ pub fn KeyIterator(comptime Key: type) type {
             const result: Key = @bitCast(result_arr);
             return result;
         }
-
-        fn fnames_lt(strides_arr: []const usize, lhs: usize, rhs: usize) bool {
-            // descending order
-            return strides_arr[lhs] > strides_arr[rhs];
-        }
     };
+}
+
+fn fnames_gt(strides_arr: []const usize, lhs: usize, rhs: usize) bool {
+    // descending order
+    return strides_arr[lhs] > strides_arr[rhs];
 }
 
 /// Reify a key struct with given field names.
@@ -518,6 +558,23 @@ test "linear invalid index" {
     try std.testing.expectEqual(expected, idx.linear(query));
 }
 
+test "linear size 1" {
+    const Structure2d = NamedIndex(Index2dEnum);
+    const idx: Structure2d = .{
+        .shape = .{ .row = 1, .col = 1 },
+        .strides = .{ .row = 18, .col = 2 },
+        .offset = 17,
+    };
+    const query: Structure2d.Axes = .{ .row = 0, .col = 0 };
+    const expected = 17;
+    try std.testing.expectEqual(expected, idx.linearUnchecked(query));
+    try std.testing.expectEqual(expected, idx.linear(query).?);
+
+    // Out of bounds
+    const query_oob: Structure2d.Axes = .{ .row = 1, .col = 0 };
+    try std.testing.expectEqual(null, idx.linear(query_oob));
+}
+
 test "strideAxis" {
     const Structure2d = NamedIndex(Index2dEnum);
     const idx: Structure2d = .{
@@ -655,6 +712,85 @@ test "iterKeys 3d, major in middle" {
     try std.testing.expectEqual(expected_indices.len, i);
 }
 
+test "axisOrder" {
+    const Structure2d = NamedIndex(Index2dEnum);
+
+    // Row-major order: row stride > col stride
+    const idx_row_major: Structure2d = .{
+        .shape = .{ .row = 3, .col = 4 },
+        .strides = .{ .row = 4, .col = 1 },
+        .offset = 0,
+    };
+    const order_row_major = idx_row_major.axisOrder();
+    try std.testing.expectEqual(.{ .row, .col }, order_row_major);
+
+    // Col-major order: col stride > row stride
+    const idx_col_major: Structure2d = .{
+        .shape = .{ .row = 3, .col = 4 },
+        .strides = .{ .row = 1, .col = 3 },
+        .offset = 0,
+    };
+    const order_col_major = idx_col_major.axisOrder();
+    try std.testing.expectEqual(.{ .col, .row }, order_col_major);
+
+    // Strides equal: order should be row, col (original enum order)
+    const idx_equal: Structure2d = .{
+        .shape = .{ .row = 2, .col = 2 },
+        .strides = .{ .row = 5, .col = 5 },
+        .offset = 0,
+    };
+    const order_equal = idx_equal.axisOrder();
+    try std.testing.expectEqual(.{ .row, .col }, order_equal);
+}
+
+test "isContiguous" {
+    const Structure2d = NamedIndex(Index2dEnum);
+
+    // Contiguous row-major
+    const idx_row_major: Structure2d = .{
+        .shape = .{ .row = 3, .col = 4 },
+        .strides = .{ .row = 4, .col = 1 },
+        .offset = 0,
+    };
+    try std.testing.expect(idx_row_major.isContiguous());
+
+    // Contiguous col-major
+    const idx_col_major: Structure2d = .{
+        .shape = .{ .row = 3, .col = 4 },
+        .strides = .{ .row = 1, .col = 3 },
+        .offset = 0,
+    };
+    try std.testing.expect(idx_col_major.isContiguous());
+
+    // Not contiguous: stride mismatch
+    const idx_noncontig: Structure2d = .{
+        .shape = .{ .row = 3, .col = 4 },
+        .strides = .{ .row = 5, .col = 1 },
+        .offset = 0,
+    };
+    try std.testing.expect(!idx_noncontig.isContiguous());
+
+    // Test: isContiguous with 3 dimensions
+    const Index3d = enum { x, y, z };
+    const Structure3d = NamedIndex(Index3d);
+
+    // Contiguous y-major: y, x, z
+    const idx_y_major: Structure3d = .{
+        .shape = .{ .x = 2, .y = 3, .z = 4 },
+        .strides = .{ .x = 4, .y = 8, .z = 1 },
+        .offset = 0,
+    };
+    try std.testing.expect(idx_y_major.isContiguous());
+
+    // Not contiguous: stride mismatch
+    const idx_noncontig_3d: Structure3d = .{
+        .shape = .{ .x = 2, .y = 3, .z = 4 },
+        .strides = .{ .x = 5, .y = 1, .z = 6 },
+        .offset = 0,
+    };
+    try std.testing.expect(!idx_noncontig_3d.isContiguous());
+}
+
 test "count" {
     const Structure2d = NamedIndex(Index2dEnum);
     const idx1: Structure2d = .{
@@ -753,7 +889,7 @@ test "squeezeAxis" {
 }
 
 test "addEmptyAxis" {
-    const IJEnum = enum { i, j };
+    const IJEnum = KeyEnum(&.{ "i", "j" });
     const IndexIJ = NamedIndex(IJEnum);
 
     // Add an empty axis "k"
@@ -768,7 +904,8 @@ test "addEmptyAxis" {
     // const ExpectedIndex = NamedIndex(IJKEnum);
 
     // Check that the shape and strides are as expected
-    const IJKEnum = AddedStructField(IJEnum, "k");
+    // const IJKEnum = AddedStructField(IJEnum, "k");
+    const IJKEnum = KeyEnum(&.{ "i", "j", "k" });
     const expected: NamedIndex(IJKEnum) = .{
         .shape = .{ .i = 4, .j = 7, .k = 1 },
         .strides = .{ .i = 7, .j = 1, .k = 0 },

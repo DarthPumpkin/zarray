@@ -576,6 +576,45 @@ test "linear size 1" {
     try std.testing.expectEqual(null, idx.linear(query_oob));
 }
 
+test "linear overlapping" {
+    // zero strides
+    const Structure2d = NamedIndex(Index2dEnum);
+
+    // Overlapping index: both axes have stride 0, shape > 1
+    const idx: Structure2d = .{
+        .shape = .{ .row = 3, .col = 2 },
+        .strides = .{ .row = 0, .col = 0 },
+        .offset = 42,
+    };
+
+    // All indices should map to the same linear offset
+    inline for (0..idx.shape.row) |r| {
+        inline for (0..idx.shape.col) |c| {
+            const key: Structure2d.Axes = .{ .row = r, .col = c };
+            try std.testing.expectEqual(42, idx.linearUnchecked(key));
+            try std.testing.expectEqual(42, idx.linear(key).?);
+        }
+    }
+
+    // Out of bounds should still return null
+    const oob: Structure2d.Axes = .{ .row = 3, .col = 0 };
+    try std.testing.expectEqual(null, idx.linear(oob));
+
+    // If only one axis has stride 0, only that axis is broadcasted
+    const idx_row_broadcast: Structure2d = .{
+        .shape = .{ .row = 3, .col = 4 },
+        .strides = .{ .row = 0, .col = 2 },
+        .offset = 10,
+    };
+
+    const key: Structure2d.Axes = .{ .row = 1, .col = 2 };
+    try std.testing.expectEqual(14, idx_row_broadcast.linearUnchecked(key));
+    try std.testing.expectEqual(14, idx_row_broadcast.linear(key).?);
+    // Out of bounds for broadcasted axis
+    const oob2: Structure2d.Axes = .{ .row = 3, .col = 0 };
+    try std.testing.expectEqual(null, idx_row_broadcast.linear(oob2));
+}
+
 test "strideAxis" {
     const Structure2d = NamedIndex(Index2dEnum);
     const idx: Structure2d = .{

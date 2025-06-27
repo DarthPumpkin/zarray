@@ -185,12 +185,12 @@ fn NamedIndex(comptime AxisEnum: type) type {
         // zig fmt: off
         pub fn squeezeAxis(self: *const @This(),
             comptime axis: Axis
-        ) NamedIndex(RemovedStructField(Axis, field_names[@intFromEnum(axis)])) {
+        ) NamedIndex(Removed(Axis, field_names[@intFromEnum(axis)])) {
         // zig fmt: on
             const axis_name = field_names[@intFromEnum(axis)];
             if (@field(self.shape, axis_name) != 1)
                 @panic("squeezeAxis: axis size must be 1");
-            const NewEnum = RemovedStructField(Axis, axis_name);
+            const NewEnum = Removed(Axis, axis_name);
             const NewKey = KeyStruct(meta.fieldNames(NewEnum));
             const new_shape: NewKey = blk: {
                 var tmp: NewKey = undefined;
@@ -268,10 +268,10 @@ fn NamedIndex(comptime AxisEnum: type) type {
         pub fn rename(self: *const @This(),
             comptime axis: Axis,
             comptime new_name: [:0]const u8
-        ) NamedIndex(RenamedStructField(Axis, field_names[@intFromEnum(axis)], new_name)) {
+        ) NamedIndex(Renamed(Axis, field_names[@intFromEnum(axis)], new_name)) {
         // zig fmt: on
             const old_name = field_names[@intFromEnum(axis)];
-            const NewEnum = RenamedStructField(Axis, old_name, new_name);
+            const NewEnum = Renamed(Axis, old_name, new_name);
             const NewKey = KeyStruct(meta.fieldNames(NewEnum));
             const new_shape: NewKey = @bitCast(self.shape);
             const new_strides: NewKey = @bitCast(self.strides);
@@ -286,9 +286,9 @@ fn NamedIndex(comptime AxisEnum: type) type {
         // zig fmt: off
         pub fn addEmptyAxis(self: *const @This(),
             comptime axis: [:0]const u8
-        ) NamedIndex(AddedStructField(Axis, axis)) {
+        ) NamedIndex(Added(Axis, axis)) {
         // zig fmt: on
-            const NewEnum = AddedStructField(Axis, axis);
+            const NewEnum = Added(Axis, axis);
             const NewKey = KeyStruct(meta.fieldNames(NewEnum));
             const new_shape: NewKey = blk: {
                 var tmp: NewKey = undefined;
@@ -451,8 +451,8 @@ pub fn KeyEnum(comptime names: []const [:0]const u8) type {
     return @Type(Type{ .@"enum" = enum_type });
 }
 
-// TODO: Take enum value instead of old name
-fn RenamedStructField(comptime OldKey: type, old_name: [:0]const u8, new_name: [:0]const u8) type {
+/// Return a copy of a given enum with a given field renamed.
+fn Renamed(comptime OldKey: type, old_name: [:0]const u8, new_name: [:0]const u8) type {
     const old_struct = @typeInfo(OldKey).@"enum";
     const new_field_names = comptime fields: {
         var new_field_names: [old_struct.fields.len][:0]const u8 = undefined;
@@ -467,15 +467,14 @@ fn RenamedStructField(comptime OldKey: type, old_name: [:0]const u8, new_name: [
             }
         }
         if (!matched)
-            @compileError("rename: field not found in struct: " ++ old_name);
+            @compileError("Field not found in enum: " ++ old_name);
         break :fields new_field_names;
     };
     return KeyEnum(&new_field_names);
 }
 
-// TODO: Take enum value instead of name
 /// Return a copy of a given struct with a given field removed
-fn RemovedStructField(comptime OldKey: type, comptime name: [:0]const u8) type {
+fn Removed(comptime OldKey: type, comptime name: [:0]const u8) type {
     const old_struct = @typeInfo(OldKey).@"enum";
     const old_rank = old_struct.fields.len;
     const new_rank = old_rank - 1;
@@ -488,7 +487,7 @@ fn RemovedStructField(comptime OldKey: type, comptime name: [:0]const u8) type {
             }
         }
         if (matches != new_rank)
-            @compileError("RemovedStructField: field not found in struct: " ++ name);
+            @compileError("Field not found in enum: " ++ name);
         var new_field_names: [matches][:0]const u8 = undefined;
         var idx: usize = 0;
         for (old_struct.fields) |field| {
@@ -502,14 +501,14 @@ fn RemovedStructField(comptime OldKey: type, comptime name: [:0]const u8) type {
     return KeyEnum(&new_field_names);
 }
 
-/// Return a copy of a given struct with a given field added
-fn AddedStructField(comptime OldKey: type, comptime name: [:0]const u8) type {
+/// Return a copy of a given enum with a given field added
+fn Added(comptime OldKey: type, comptime name: [:0]const u8) type {
     const old_struct = @typeInfo(OldKey).@"enum";
     const old_rank = old_struct.fields.len;
     // Check that the field does not already exist
     inline for (old_struct.fields) |field| {
         if (mem.eql(u8, field.name, name)) {
-            @compileError("AddedStructField: field already exists in struct: " ++ name);
+            @compileError("Field already exists in enum: " ++ name);
         }
     }
     const new_rank = old_rank + 1;
@@ -577,8 +576,6 @@ fn Xor(comptime Enum1: type, comptime Enum2: type) type {
 //     common: [][:0]const u8,
 //     rwl: [][:0]const u8,
 // };
-
-const Index2d = packed struct { row: usize, col: usize };
 
 const Index2dEnum = enum { row, col };
 
@@ -940,7 +937,7 @@ test "rename" {
 
 test "RemovedStructField" {
     const IJKEnum = enum { i, j, k };
-    const IK = RemovedStructField(IJKEnum, "j");
+    const IK = Removed(IJKEnum, "j");
 
     // Test field properties
     const ik_info = @typeInfo(IK).@"enum";
@@ -954,7 +951,7 @@ test "RemovedStructField" {
 
     // Toggle to verify that it throws a compileError
     if (false) {
-        RemovedStructField(IJKEnum, "nonexisting");
+        Removed(IJKEnum, "nonexisting");
     }
 }
 
@@ -971,7 +968,7 @@ test "squeezeAxis" {
     const squeezed = idx.squeezeAxis(.j);
 
     // The resulting key type should have only "i" and "k"
-    const SqueezedKey = RemovedStructField(IJKEnum, "j");
+    const SqueezedKey = Removed(IJKEnum, "j");
     const expected: NamedIndex(SqueezedKey) = .{
         .shape = .{ .i = 4, .k = 7 },
         .strides = .{ .i = 7, .k = 1 },

@@ -437,7 +437,10 @@ pub fn KeyEnum(comptime names: []const [:0]const u8) type {
         }
         break :fields fields_;
     };
-    const bits = std.math.log2_int_ceil(usize, rank);
+    const bits = switch (rank) {
+        0 => 0,
+        else => std.math.log2_int_ceil(usize, rank),
+    };
     const TagType = @Type(.{ .int = .{ .bits = bits, .signedness = .unsigned } });
     const enum_type: Type.Enum = .{
         .tag_type = TagType,
@@ -520,6 +523,60 @@ fn AddedStructField(comptime OldKey: type, comptime name: [:0]const u8) type {
     };
     return KeyEnum(&new_field_names);
 }
+
+/// Return a new enum that contains the fields that occur in one of two given enums, but not the
+/// other.
+///
+/// ## Example
+/// ```zig
+/// AC = Xor(enum {a, b}, enum {b, c});
+/// ```
+/// `AC` will be equivalent to `enum {a, c}`;
+fn Xor(comptime Enum1: type, comptime Enum2: type) type {
+    const info1 = @typeInfo(Enum1).@"enum";
+    const info2 = @typeInfo(Enum2).@"enum";
+    var common1 = mem.zeroes([info1.fields.len]bool);
+    var common2 = mem.zeroes([info2.fields.len]bool);
+    comptime var num_matches: usize = 0;
+
+    inline for (0..info1.fields.len) |fi| {
+        inline for (0..info2.fields.len) |fj| fj: {
+            const match = mem.eql(u8, info1.fields[fi].name, info2.fields[fj].name);
+            if (match) {
+                common1[fi] = true;
+                common2[fj] = true;
+                num_matches += 1;
+                break :fj;
+            }
+        }
+    }
+
+    const xor_len = info1.fields.len + info2.fields.len - 2 * num_matches;
+    comptime var xor_fnames: [xor_len][:0]const u8 = undefined;
+    var i: usize = 0;
+    inline for (info1.fields, 0..) |field, fi| {
+        if (!common1[fi]) {
+            xor_fnames[i] = field.name;
+            i += 1;
+        }
+    }
+    inline for (info2.fields, 0..) |field, fj| {
+        if (!common2[fj]) {
+            xor_fnames[i] = field.name;
+            i += 1;
+        }
+    }
+
+    std.debug.assert(i == xor_len);
+
+    return KeyEnum(&xor_fnames);
+}
+
+// const FieldIntersection = struct {
+//     lwr: [][:0]const u8,
+//     common: [][:0]const u8,
+//     rwl: [][:0]const u8,
+// };
 
 const Index2d = packed struct { row: usize, col: usize };
 
@@ -982,6 +1039,40 @@ test "broadcastAxis" {
     if (false) {
         _ = idx.broadcastAxis(.i, 5);
     }
+}
+
+test "Xor" {
+    const ABC = enum { a, b, c };
+    const CD = enum { c, d };
+    const ABD = enum { a, b, d };
+    const Actual = Xor(ABC, CD);
+
+    try std.testing.expectEqual(@typeInfo(ABD), @typeInfo(Actual));
+
+    const DF = enum { d, f };
+    const ABCDF = enum { a, b, c, d, f };
+
+    const info_actual = @typeInfo(Xor(ABC, DF)).@"enum";
+    std.debug.print("{} {} {} {}\n", .{
+        info_actual.is_exhaustive,
+        info_actual.tag_type,
+        info_actual.fields.len,
+        info_actual.decls.len,
+    });
+    const info_expected = @typeInfo(ABCDF).@"enum";
+    std.debug.print("{} {} {} {}\n", .{
+        info_expected.is_exhaustive,
+        info_expected.tag_type,
+        info_expected.fields.len,
+        info_expected.decls.len,
+    });
+    try std.testing.expect(meta.eql(info_actual, info_expected));
+
+    const BC = enum { b, c };
+    const A = enum { a };
+    try std.testing.expect(meta.eql(@typeInfo(Xor(ABC, BC)), @typeInfo(A)));
+
+    try std.testing.expect(meta.eql(@typeInfo(Xor(ABC, ABC)), @typeInfo(enum {})));
 }
 
 // test "KeyEnum" {

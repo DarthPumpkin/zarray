@@ -10,7 +10,7 @@ pub fn NamedArray(comptime Axis: type, comptime Scalar: type) type {
         idx: Index,
         buf: []Scalar,
 
-        pub fn empty(allocator: mem.Allocator, shape: Index.Axes) !@This() {
+        pub fn initAlloc(allocator: mem.Allocator, shape: Index.Axes) !@This() {
             const idx = Index.initContiguous(shape);
             return .{
                 .idx = idx,
@@ -18,31 +18,25 @@ pub fn NamedArray(comptime Axis: type, comptime Scalar: type) type {
             };
         }
 
-        pub fn zeros(allocator: mem.Allocator, shape: Index.Axes) !@This() {
-            var self = try @This().empty(allocator, shape);
-            for (0..self.idx.count()) |i| {
-                self.buf[i] = 0;
+        pub fn fill(self: *const @This(), val: Scalar) *const @This() {
+            var keys = self.idx.iterKeys();
+            while (keys.next()) |key| {
+                self.buf[self.idx.linearUnchecked(key)] = val;
             }
             return self;
         }
 
-        pub fn ones(allocator: mem.Allocator, shape: Index.Axes) !@This() {
-            var self = try @This().empty(allocator, shape);
-            for (0..self.idx.count()) |i| {
-                self.buf[i] = 1;
+        pub fn fillArange(self: *const @This()) *const @This() {
+            var keys = self.idx.iterKeys();
+            var i: Scalar = 0;
+            while (keys.next()) |key| {
+                self.buf[self.idx.linearUnchecked(key)] = i;
+                i += 1;
             }
             return self;
         }
 
-        pub fn arange(allocator: mem.Allocator, shape: Index.Axes) !@This() {
-            var self = try @This().empty(allocator, shape);
-            for (0..self.idx.count()) |i| {
-                self.buf[i] = i;
-            }
-            return self;
-        }
-
-        pub fn deinit(self: *@This(), allocator: mem.Allocator) void {
+        pub fn deinit(self: *const @This(), allocator: mem.Allocator) void {
             allocator.free(self.buf);
         }
     };
@@ -52,23 +46,20 @@ pub fn NamedArray(comptime Axis: type, comptime Scalar: type) type {
 pub fn add(
     comptime Axis: type,
     comptime Scalar: type,
-    idx1: NamedIndex(Axis),
-    buf1: []const Scalar,
-    idx2: NamedIndex(Axis),
-    buf2: []const Scalar,
-    idx_out: NamedIndex(Axis),
-    buf_out: []Scalar,
+    arr1: NamedArray(Axis, Scalar),
+    arr2: NamedArray(Axis, Scalar),
+    arr_out: NamedArray(Axis, Scalar),
 ) void {
-    if (idx1.shape != idx2.shape or idx1.shape != idx_out.shape)
+    if (arr1.idx.shape != arr2.idx.shape or arr1.idx.shape != arr_out.idx.shape)
         @panic("Incompatible shapes");
-    // TODO: Check that idx_out is non-overlapping, instead.
-    if (idx1.count() != buf_out.len)
+    // TODO: Check that arr_out.idx is non-overlapping, instead.
+    if (arr1.idx.count() != arr_out.buf.len)
         @panic("Mismatched buffer sizes");
-    var keys = idx1.iterKeys();
+    var keys = arr1.idx.iterKeys();
     while (keys.next()) |key| {
-        const l = &buf1[idx1.linearUnchecked(key)];
-        const r = &buf2[idx2.linearUnchecked(key)];
-        const out = &buf_out[idx_out.linearUnchecked(key)];
+        const l = &arr1.buf[arr1.idx.linearUnchecked(key)];
+        const r = &arr2.buf[arr2.idx.linearUnchecked(key)];
+        const out = &arr_out.buf[arr_out.idx.linearUnchecked(key)];
         out.* = l.* + r.*;
     }
 }
@@ -76,9 +67,17 @@ pub fn add(
 test "add inplace" {
     const Axis = enum { i };
     const idx = NamedIndex(Axis).initContiguous(.{ .i = 3 });
-    const buf1 = [_]i32{ 1, 2, 3 };
+    var buf1 = [_]i32{ 1, 2, 3 };
+    const arr1 = NamedArray(Axis, i32){
+        .idx = idx,
+        .buf = &buf1,
+    };
     var buf2 = [_]i32{ 2, 2, 2 };
-    add(Axis, i32, idx, &buf1, idx, &buf2, idx, &buf2);
+    const arr2 = NamedArray(Axis, i32){
+        .idx = idx,
+        .buf = &buf2,
+    };
+    add(Axis, i32, arr1, arr2, arr2);
 
     const expected = [_]i32{ 3, 4, 5 };
     try std.testing.expectEqualSlices(i32, &expected, &buf2);
@@ -93,10 +92,22 @@ test "add broadcasted" {
         .broadcastAxis(.j, 4);
     const idx_out = NamedIndex(IJ)
         .initContiguous(.{ .i = 3, .j = 4 });
-    const buf1 = [_]i32{ 1, 2, 3 };
-    const buf2 = [_]i32{ 1, 1, 1 };
+    var buf1 = [_]i32{ 1, 2, 3 };
+    var buf2 = [_]i32{ 1, 1, 1 };
     var buf_out: [12]i32 = undefined;
-    add(IJ, i32, idx_broad, &buf1, idx_broad, &buf2, idx_out, &buf_out);
+    const arr1 = NamedArray(IJ, i32){
+        .idx = idx_broad,
+        .buf = &buf1,
+    };
+    const arr2 = NamedArray(IJ, i32){
+        .idx = idx_broad,
+        .buf = &buf2,
+    };
+    const arr_out = NamedArray(IJ, i32){
+        .idx = idx_out,
+        .buf = &buf_out,
+    };
+    add(IJ, i32, arr1, arr2, arr_out);
 
     const expected = [_]i32{
         2, 2, 2, 2,
@@ -114,35 +125,38 @@ test "add row-major col-major" {
         .strides = .{ .i = 1, .j = 2 },
     };
 
-    const buf_row_major = [_]i32{
+    var buf_row_major = [_]i32{
         1, 2, 3,
         4, 5, 6,
     };
-
-    const buf_col_major = [_]i32{
+    var buf_col_major = [_]i32{
         10, 40,
         20, 50,
         30, 60,
     };
-
     var buf_out: [6]i32 = undefined;
-    // zig fmt: off
-    add(IJ, i32,
-        idx_row_major, &buf_row_major,
-        idx_col_major, &buf_col_major,
-        idx_row_major, &buf_out,);
-    // zig fmt: on
+
+    const arr_row_major = NamedArray(IJ, i32){ .idx = idx_row_major, .buf = &buf_row_major };
+    const arr_col_major = NamedArray(IJ, i32){ .idx = idx_col_major, .buf = &buf_col_major };
+    const arr_out = NamedArray(IJ, i32){ .idx = idx_row_major, .buf = &buf_out };
+
+    add(IJ, i32, arr_row_major, arr_col_major, arr_out);
 
     const expected = [_]i32{ 11, 22, 33, 44, 55, 66 };
     try std.testing.expectEqualSlices(i32, &expected, &buf_out);
 }
 
-test "zeros" {
+test "fill" {
     const Axis = enum { i };
     const allocator = std.testing.allocator;
-    var arr = try NamedArray(Axis, i32).zeros(allocator, .{ .i = 4 });
+    const arr = try NamedArray(Axis, i32).initAlloc(allocator, .{ .i = 4 });
+    _ = arr.fill(0);
     defer arr.deinit(allocator);
 
-    const expected = [_]i32{ 0, 0, 0, 0 };
-    try std.testing.expectEqualSlices(i32, &expected, arr.buf);
+    const expected_zeros = [_]i32{ 0, 0, 0, 0 };
+    try std.testing.expectEqualSlices(i32, &expected_zeros, arr.buf);
+
+    _ = arr.fillArange();
+    const expected_arange = [_]i32{ 0, 1, 2, 3 };
+    try std.testing.expectEqualSlices(i32, &expected_arange, arr.buf);
 }

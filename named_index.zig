@@ -16,7 +16,7 @@ const Type = std.builtin.Type;
 // - how should we interface with blas?
 //   - wrap blas functions, or
 //   - export NamedArray to blas arguments
-fn NamedIndex(comptime AxisEnum: type) type {
+pub fn NamedIndex(comptime AxisEnum: type) type {
     _ = @typeInfo(AxisEnum).@"enum";
     const field_names = meta.fieldNames(AxisEnum);
     return struct {

@@ -1042,6 +1042,7 @@ test "broadcastAxis" {
 }
 
 test "Xor" {
+    // Typical case: some overlapping, some not.
     const ABC = enum { a, b, c };
     const CD = enum { c, d };
     const ABD = enum { a, b, d };
@@ -1049,49 +1050,33 @@ test "Xor" {
 
     try std.testing.expectEqual(@typeInfo(ABD), @typeInfo(Actual));
 
+    // Subset case
     const DF = enum { d, f };
     const ABCDF = enum { a, b, c, d, f };
 
-    const info_actual = @typeInfo(Xor(ABC, DF)).@"enum";
-    std.debug.print("{} {} {} {}\n", .{
-        info_actual.is_exhaustive,
-        info_actual.tag_type,
-        info_actual.fields.len,
-        info_actual.decls.len,
-    });
-    const info_expected = @typeInfo(ABCDF).@"enum";
-    std.debug.print("{} {} {} {}\n", .{
-        info_expected.is_exhaustive,
-        info_expected.tag_type,
-        info_expected.fields.len,
-        info_expected.decls.len,
-    });
-    try std.testing.expect(meta.eql(info_actual, info_expected));
+    const info_actual = @typeInfo(Xor(ABC, DF));
+    const info_expected = @typeInfo(ABCDF);
+    try std.testing.expect(meta.eql(info_expected, info_actual));
 
+    // Disjoint case
     const BC = enum { b, c };
     const A = enum { a };
-    try std.testing.expect(meta.eql(@typeInfo(Xor(ABC, BC)), @typeInfo(A)));
+    try std.testing.expect(meta.eql(@typeInfo(A), @typeInfo(Xor(ABC, BC))));
 
-    try std.testing.expect(meta.eql(@typeInfo(Xor(ABC, ABC)), @typeInfo(enum {})));
+    try std.testing.expect(meta.eql(@typeInfo(enum {}), @typeInfo(Xor(ABC, ABC))));
+
+    // Empty case
+    const EmptyEnum1 = enum {};
+    const EmptyEnum2 = enum {};
+    try std.testing.expect(meta.eql(@typeInfo(enum {}), @typeInfo(Xor(EmptyEnum1, EmptyEnum2))));
 }
 
-// test "KeyEnum" {
-//     const IJ1 = enum { i, j };
-//     const IJ2 = KeyEnum(&.{ "i", "j" });
+test "KeyEnum" {
+    const IJ1 = enum { i, j };
+    const IJ2 = KeyEnum(&.{ "i", "j" });
 
-//     const info1 = @typeInfo(IJ1).@"enum";
-//     std.debug.print("{any}\n", .{info1.tag_type});
-//     std.debug.print("{any}\n", .{info1.is_exhaustive});
-//     std.debug.print("{any}\n", .{meta.fieldNames(IJ1)});
-//     inline for (info1.fields) |field| {
-//         std.debug.print("{any}\n", .{field});
-//     }
+    const info1 = @typeInfo(IJ1).@"enum";
+    const info2 = @typeInfo(IJ2).@"enum";
 
-//     const info2 = @typeInfo(IJ2).@"enum";
-//     std.debug.print("{any}\n", .{info2.tag_type});
-//     std.debug.print("{any}\n", .{info2.is_exhaustive});
-//     std.debug.print("{any}\n", .{meta.fieldNames(IJ2)});
-//     inline for (info2.fields) |field| {
-//         std.debug.print("{any}\n", .{field});
-//     }
-// }
+    try std.testing.expectEqual(info1, info2);
+}

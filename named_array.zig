@@ -39,6 +39,21 @@ pub fn NamedArray(comptime Axis: type, comptime Scalar: type) type {
         pub fn deinit(self: *const @This(), allocator: mem.Allocator) void {
             allocator.free(self.buf);
         }
+
+        pub fn asConst(self: *const @This()) NamedArrayConst(Axis, Scalar) {
+            return .{
+                .idx = self.idx,
+                .buf = self.buf,
+            };
+        }
+    };
+}
+
+pub fn NamedArrayConst(comptime Axis: type, comptime Scalar: type) type {
+    const Index = NamedIndex(Axis);
+    return struct {
+        idx: Index,
+        buf: []const Scalar,
     };
 }
 
@@ -46,8 +61,8 @@ pub fn NamedArray(comptime Axis: type, comptime Scalar: type) type {
 pub fn add(
     comptime Axis: type,
     comptime Scalar: type,
-    arr1: NamedArray(Axis, Scalar),
-    arr2: NamedArray(Axis, Scalar),
+    arr1: NamedArrayConst(Axis, Scalar),
+    arr2: NamedArrayConst(Axis, Scalar),
     arr_out: NamedArray(Axis, Scalar),
 ) void {
     if (arr1.idx.shape != arr2.idx.shape or arr1.idx.shape != arr_out.idx.shape)
@@ -67,17 +82,18 @@ pub fn add(
 test "add inplace" {
     const Axis = enum { i };
     const idx = NamedIndex(Axis).initContiguous(.{ .i = 3 });
-    var buf1 = [_]i32{ 1, 2, 3 };
-    const arr1 = NamedArray(Axis, i32){
+    const buf1 = [_]i32{ 1, 2, 3 };
+    const arr1 = NamedArrayConst(Axis, i32){
         .idx = idx,
         .buf = &buf1,
     };
     var buf2 = [_]i32{ 2, 2, 2 };
-    const arr2 = NamedArray(Axis, i32){
+    const arr_out = NamedArray(Axis, i32){
         .idx = idx,
         .buf = &buf2,
     };
-    add(Axis, i32, arr1, arr2, arr2);
+    const arr2 = arr_out.asConst();
+    add(Axis, i32, arr1, arr2, arr_out);
 
     const expected = [_]i32{ 3, 4, 5 };
     try std.testing.expectEqualSlices(i32, &expected, &buf2);
@@ -95,11 +111,11 @@ test "add broadcasted" {
     var buf1 = [_]i32{ 1, 2, 3 };
     var buf2 = [_]i32{ 1, 1, 1 };
     var buf_out: [12]i32 = undefined;
-    const arr1 = NamedArray(IJ, i32){
+    const arr1 = NamedArrayConst(IJ, i32){
         .idx = idx_broad,
         .buf = &buf1,
     };
-    const arr2 = NamedArray(IJ, i32){
+    const arr2 = NamedArrayConst(IJ, i32){
         .idx = idx_broad,
         .buf = &buf2,
     };
@@ -136,8 +152,8 @@ test "add row-major col-major" {
     };
     var buf_out: [6]i32 = undefined;
 
-    const arr_row_major = NamedArray(IJ, i32){ .idx = idx_row_major, .buf = &buf_row_major };
-    const arr_col_major = NamedArray(IJ, i32){ .idx = idx_col_major, .buf = &buf_col_major };
+    const arr_row_major = NamedArrayConst(IJ, i32){ .idx = idx_row_major, .buf = &buf_row_major };
+    const arr_col_major = NamedArrayConst(IJ, i32){ .idx = idx_col_major, .buf = &buf_col_major };
     const arr_out = NamedArray(IJ, i32){ .idx = idx_row_major, .buf = &buf_out };
 
     add(IJ, i32, arr_row_major, arr_col_major, arr_out);

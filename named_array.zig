@@ -46,6 +46,45 @@ pub fn NamedArray(comptime Axis: type, comptime Scalar: type) type {
                 .buf = self.buf,
             };
         }
+
+        /// If possible, return a 1D slice of the buffer containing the elements of this array.
+        /// If the array is non-contiguous, return null.
+        /// To get a contiguous copy, see `toContiguous`.
+        pub fn flat(self: *const @This()) ?[]Scalar {
+            if (self.idx.isContiguous())
+                return self.buf[self.idx.offset..][0..self.idx.count()];
+            return null;
+        }
+
+        /// Make a contiguous copy of the array.
+        /// The new array will have the same shape and default strides.
+        /// This allocates `self.idx.count()` scalars.
+        pub fn toContiguous(self: *const @This(), allocator: mem.Allocator) !@This() {
+            return self.asConst().toContiguous(allocator);
+        }
+
+        pub fn get(self: *const @This(), key: Index.Axes) ?Scalar {
+            return self.asConst().get(key);
+        }
+
+        pub fn getUnchecked(self: *const @This(), key: Index.Axes) Scalar {
+            return self.asConst().getUnchecked(key);
+        }
+
+        pub fn getPtr(self: *const @This(), key: Index.Axes) ?*Scalar {
+            if (self.idx.linear(key)) |key_| {
+                return &self.buf[key_];
+            }
+            return null;
+        }
+
+        pub fn getPtrUnchecked(self: *const @This(), key: Index.Axes) *Scalar {
+            return &self.buf[self.idx.linearUnchecked(key)];
+        }
+
+        pub fn setUnchecked(self: *const @This(), key: Index.Axes, scalar: Scalar) void {
+            self.buf[self.idx.linearUnchecked(key)] = scalar;
+        }
     };
 }
 
@@ -54,6 +93,55 @@ pub fn NamedArrayConst(comptime Axis: type, comptime Scalar: type) type {
     return struct {
         idx: Index,
         buf: []const Scalar,
+
+        /// If possible, return a 1D slice of the buffer containing the elements of this array.
+        /// If the array is non-contiguous, return null.
+        /// To get a contiguous copy, see `toContiguous`.
+        pub fn flat(self: *const @This()) ?[]const Scalar {
+            if (self.idx.isContiguous())
+                return self.buf[self.idx.offset..][0..self.idx.count()];
+            return null;
+        }
+
+        /// Make a contiguous copy of the array.
+        /// The new array will have the same shape and default strides.
+        /// This allocates `self.idx.count()` scalars.
+        pub fn toContiguous(self: *const @This(), allocator: mem.Allocator) !NamedArray(Axis, Scalar) {
+            var buf = try allocator.alloc(Scalar, self.idx.count());
+            errdefer comptime unreachable;
+            const new_idx = Index.initContiguous(self.idx.shape);
+            {
+                var i: usize = 0;
+                var keys = new_idx.iterKeys();
+                while (keys.next()) |key| {
+                    buf[i] = self.getUnchecked(key);
+                    i += 1;
+                }
+            }
+            return .{ .idx = new_idx, .buf = buf };
+        }
+
+        pub fn get(self: *const @This(), key: Index.Axes) ?Scalar {
+            if (self.idx.linear(key)) |key_| {
+                return self.buf[key_];
+            }
+            return null;
+        }
+
+        pub fn getUnchecked(self: *const @This(), key: Index.Axes) Scalar {
+            return self.buf[self.idx.linearUnchecked(key)];
+        }
+
+        pub fn getPtr(self: *const @This(), key: Index.Axes) ?*const Scalar {
+            if (self.idx.linear(key)) |key_| {
+                return &self.buf[key_];
+            }
+            return null;
+        }
+
+        pub fn getPtrUnchecked(self: *const @This(), key: Index.Axes) *const Scalar {
+            return &self.buf[self.idx.linearUnchecked(key)];
+        }
     };
 }
 
@@ -67,15 +155,12 @@ pub fn add(
 ) void {
     if (arr1.idx.shape != arr2.idx.shape or arr1.idx.shape != arr_out.idx.shape)
         @panic("Incompatible shapes");
-    // TODO: Check that arr_out.idx is non-overlapping, instead.
-    if (arr1.idx.count() != arr_out.buf.len)
-        @panic("Mismatched buffer sizes");
+    // TODO: Check that arr_out.idx is non-overlapping.
     var keys = arr1.idx.iterKeys();
     while (keys.next()) |key| {
-        const l = &arr1.buf[arr1.idx.linearUnchecked(key)];
-        const r = &arr2.buf[arr2.idx.linearUnchecked(key)];
-        const out = &arr_out.buf[arr_out.idx.linearUnchecked(key)];
-        out.* = l.* + r.*;
+        const l = arr1.getUnchecked(key);
+        const r = arr2.getUnchecked(key);
+        arr_out.setUnchecked(key, l + r);
     }
 }
 
@@ -175,4 +260,30 @@ test "fill" {
     _ = arr.fillArange();
     const expected_arange = [_]i32{ 0, 1, 2, 3 };
     try std.testing.expectEqualSlices(i32, &expected_arange, arr.buf);
+}
+
+test "flat, toContiguous" {
+    const IJ = enum { i, j };
+
+    const al = std.testing.allocator;
+    var arr = try NamedArray(IJ, i32).initAlloc(al, .{ .i = 5, .j = 9 });
+    defer arr.deinit(al);
+    _ = arr.fillArange();
+
+    arr.idx = arr.idx
+        .sliceAxis(.i, 0, 4)
+        .stride(.{ .j = 3 });
+
+    const arr_cont = try arr.toContiguous(al);
+    defer arr_cont.deinit(al);
+    const flat = arr_cont.flat().?;
+
+    const expected = [_]i32{
+        0,  3,  6,
+        9,  12, 15,
+        18, 21, 24,
+        27, 30, 33,
+    };
+
+    try std.testing.expectEqualSlices(i32, &expected, flat);
 }

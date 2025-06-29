@@ -51,20 +51,18 @@ pub fn NamedArray(comptime Axis: type, comptime Scalar: type) type {
         /// If the array is non-contiguous, return null.
         /// To get a contiguous copy, see `toContiguous`.
         pub fn flat(self: *const @This()) ?[]Scalar {
-            if (self.idx.isContiguous())
-                return self.buf[self.idx.offset..][0..self.idx.count()];
-            return null;
+            return flatGeneric(self);
         }
 
         /// Make a contiguous copy of the array.
         /// The new array will have the same shape and default strides.
         /// This allocates `self.idx.count()` scalars.
         pub fn toContiguous(self: *const @This(), allocator: mem.Allocator) !@This() {
-            return self.asConst().toContiguous(allocator);
+            return toContiguousGeneric(Axis, Scalar, self, allocator);
         }
 
         pub fn get(self: *const @This(), key: Index.Axes) ?Scalar {
-            return self.asConst().get(key);
+            return getGeneric(self, key);
         }
 
         pub fn getUnchecked(self: *const @This(), key: Index.Axes) Scalar {
@@ -72,10 +70,7 @@ pub fn NamedArray(comptime Axis: type, comptime Scalar: type) type {
         }
 
         pub fn getPtr(self: *const @This(), key: Index.Axes) ?*Scalar {
-            if (self.idx.linear(key)) |key_| {
-                return &self.buf[key_];
-            }
-            return null;
+            return getPtrGeneric(self, key);
         }
 
         pub fn getPtrUnchecked(self: *const @This(), key: Index.Axes) *Scalar {
@@ -98,34 +93,18 @@ pub fn NamedArrayConst(comptime Axis: type, comptime Scalar: type) type {
         /// If the array is non-contiguous, return null.
         /// To get a contiguous copy, see `toContiguous`.
         pub fn flat(self: *const @This()) ?[]const Scalar {
-            if (self.idx.isContiguous())
-                return self.buf[self.idx.offset..][0..self.idx.count()];
-            return null;
+            return flatGeneric(self);
         }
 
         /// Make a contiguous copy of the array.
         /// The new array will have the same shape and default strides.
         /// This allocates `self.idx.count()` scalars.
         pub fn toContiguous(self: *const @This(), allocator: mem.Allocator) !NamedArray(Axis, Scalar) {
-            var buf = try allocator.alloc(Scalar, self.idx.count());
-            errdefer comptime unreachable;
-            const new_idx = Index.initContiguous(self.idx.shape);
-            {
-                var i: usize = 0;
-                var keys = new_idx.iterKeys();
-                while (keys.next()) |key| {
-                    buf[i] = self.getUnchecked(key);
-                    i += 1;
-                }
-            }
-            return .{ .idx = new_idx, .buf = buf };
+            return toContiguousGeneric(Axis, Scalar, self, allocator);
         }
 
         pub fn get(self: *const @This(), key: Index.Axes) ?Scalar {
-            if (self.idx.linear(key)) |key_| {
-                return self.buf[key_];
-            }
-            return null;
+            return getGeneric(self, key);
         }
 
         pub fn getUnchecked(self: *const @This(), key: Index.Axes) Scalar {
@@ -133,16 +112,51 @@ pub fn NamedArrayConst(comptime Axis: type, comptime Scalar: type) type {
         }
 
         pub fn getPtr(self: *const @This(), key: Index.Axes) ?*const Scalar {
-            if (self.idx.linear(key)) |key_| {
-                return &self.buf[key_];
-            }
-            return null;
+            return getPtrGeneric(self, key);
         }
 
         pub fn getPtrUnchecked(self: *const @This(), key: Index.Axes) *const Scalar {
             return &self.buf[self.idx.linearUnchecked(key)];
         }
     };
+}
+
+// Works for both NamedArray and NamedArrayConst
+fn flatGeneric(self: anytype) ?@TypeOf(self.buf) {
+    if (self.idx.isContiguous())
+        return self.buf[self.idx.offset..][0..self.idx.count()];
+    return null;
+}
+
+// Works for both NamedArray and NamedArrayConst
+fn toContiguousGeneric(comptime Axis: type, comptime Scalar: type, self: anytype, allocator: mem.Allocator) !NamedArray(Axis, Scalar) {
+    const Index = @TypeOf(self.idx);
+    var buf = try allocator.alloc(Scalar, self.idx.count());
+    errdefer comptime unreachable;
+    const new_idx = Index.initContiguous(self.idx.shape);
+    {
+        var i: usize = 0;
+        var keys = new_idx.iterKeys();
+        while (keys.next()) |key| {
+            buf[i] = self.getUnchecked(key);
+            i += 1;
+        }
+    }
+    return .{ .idx = new_idx, .buf = buf };
+}
+
+fn getGeneric(self: anytype, key: @TypeOf(self.idx).Axes) ?@TypeOf(self.buf[0]) {
+    if (self.idx.linear(key)) |key_| {
+        return self.buf[key_];
+    }
+    return null;
+}
+
+fn getPtrGeneric(self: anytype, key: @TypeOf(self.idx).Axes) ?@TypeOf(&self.buf[0]) {
+    if (self.idx.linear(key)) |key_| {
+        return &self.buf[key_];
+    }
+    return null;
 }
 
 /// If `idx_out` has overlapping linear indices, the output is undefined.
@@ -270,20 +284,70 @@ test "flat, toContiguous" {
     defer arr.deinit(al);
     _ = arr.fillArange();
 
+    // Non-contiguous array cannot be flattened
     arr.idx = arr.idx
         .sliceAxis(.i, 0, 4)
         .stride(.{ .j = 3 });
+    try std.testing.expectEqual(arr.flat(), null);
 
+    // After making it contiguous, .flat() works.
     const arr_cont = try arr.toContiguous(al);
     defer arr_cont.deinit(al);
     const flat = arr_cont.flat().?;
-
     const expected = [_]i32{
         0,  3,  6,
         9,  12, 15,
         18, 21, 24,
         27, 30, 33,
     };
-
     try std.testing.expectEqualSlices(i32, &expected, flat);
+
+    // Test also for Const
+    const arr_cont_const = arr_cont.asConst();
+    const flat_const = arr_cont_const.flat().?;
+    try std.testing.expectEqualSlices(i32, &expected, flat_const);
+}
+
+test "get*" {
+    // Test all the get* methods, both for NamedArray and NamedArrayConst
+    const IJ = enum { i, j };
+    const idx = NamedIndex(IJ).initContiguous(.{ .i = 2, .j = 3 });
+    var buf = [_]i32{ 10, 11, 12, 13, 14, 15 };
+    const arr = NamedArray(IJ, i32){
+        .idx = idx,
+        .buf = &buf,
+    };
+    const arr_const = arr.asConst();
+
+    // Test get (in bounds)
+    try std.testing.expectEqual(arr.get(.{ .i = 1, .j = 2 }), 15);
+    try std.testing.expectEqual(arr_const.get(.{ .i = 1, .j = 2 }), 15);
+
+    // Test get (out of bounds)
+    try std.testing.expectEqual(arr.get(.{ .i = 2, .j = 0 }), null);
+    try std.testing.expectEqual(arr_const.get(.{ .i = 2, .j = 0 }), null);
+
+    // Test getUnchecked
+    try std.testing.expectEqual(arr.getUnchecked(.{ .i = 0, .j = 1 }), 11);
+    try std.testing.expectEqual(arr_const.getUnchecked(.{ .i = 0, .j = 1 }), 11);
+
+    // Test getPtr (in bounds)
+    const ptr = arr.getPtr(.{ .i = 1, .j = 0 }).?;
+    try std.testing.expectEqual(ptr.*, 13);
+    const ptr_const = arr_const.getPtr(.{ .i = 1, .j = 0 }).?;
+    try std.testing.expectEqual(ptr_const.*, 13);
+
+    // Test getPtr (out of bounds)
+    try std.testing.expectEqual(arr.getPtr(.{ .i = 5, .j = 0 }), null);
+    try std.testing.expectEqual(arr_const.getPtr(.{ .i = 5, .j = 0 }), null);
+
+    // Test getPtrUnchecked
+    const ptr_unchecked = arr.getPtrUnchecked(.{ .i = 0, .j = 2 });
+    try std.testing.expectEqual(ptr_unchecked.*, 12);
+    const ptr_const_unchecked = arr_const.getPtrUnchecked(.{ .i = 0, .j = 2 });
+    try std.testing.expectEqual(ptr_const_unchecked.*, 12);
+
+    // Test setUnchecked
+    arr.setUnchecked(.{ .i = 1, .j = 1 }, 99);
+    try std.testing.expectEqual(arr.getUnchecked(.{ .i = 1, .j = 1 }), 99);
 }

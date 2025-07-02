@@ -1,6 +1,7 @@
 const std = @import("std");
 const mem = std.mem;
 const meta = std.meta;
+const assert = std.debug.assert;
 const Type = std.builtin.Type;
 
 // Compile with "-framework Accelerate" on macOS
@@ -89,20 +90,27 @@ pub fn NamedIndex(comptime AxisEnum: type) type {
 
         /// Return the offset into the linear buffer for the given structured index.
         /// If the index is out of bounds, return null.
-        pub fn linear(self: *const @This(), index: Axes) ?usize {
-            inline for (field_names) |field_name| {
-                if (@field(self.shape, field_name) <= @field(index, field_name))
-                    return null;
-            }
-            return linearUnchecked(self, index);
+        pub fn linearChecked(self: *const @This(), index: Axes) ?usize {
+            if (!self.withinBounds(index))
+                return null;
+            return linear(self, index);
         }
 
-        pub fn linearUnchecked(self: *const @This(), index: Axes) usize {
+        pub fn linear(self: *const @This(), index: Axes) usize {
+            assert(self.withinBounds(index));
             var sum = self.offset;
             inline for (field_names) |field_name| {
                 sum += @field(self.strides, field_name) * @field(index, field_name);
             }
             return sum;
+        }
+
+        pub fn withinBounds(self: *const @This(), index: Axes) bool {
+            inline for (field_names) |field_name| {
+                if (@field(self.shape, field_name) <= @field(index, field_name))
+                    return false;
+            }
+            return true;
         }
 
         /// Stride a single axis by a given step size.
@@ -172,7 +180,7 @@ pub fn NamedIndex(comptime AxisEnum: type) type {
             @field(new_shape, axis_name) = end - start;
             var offset_lookup = mem.zeroes(Axes);
             @field(offset_lookup, axis_name) = start;
-            const new_offset = self.linearUnchecked(offset_lookup);
+            const new_offset = self.linear(offset_lookup);
             return .{
                 .shape = new_shape,
                 .strides = self.strides,
@@ -566,7 +574,7 @@ fn Xor(comptime Enum1: type, comptime Enum2: type) type {
         }
     }
 
-    std.debug.assert(i == xor_len);
+    assert(i == xor_len);
 
     return KeyEnum(&xor_fnames);
 }
@@ -598,7 +606,7 @@ test "linear index" {
     };
     const query: Structure2d.Axes = .{ .row = 2, .col = 3 };
     const expected = 20;
-    try std.testing.expectEqual(expected, idx.linearUnchecked(query));
+    try std.testing.expectEqual(expected, idx.linear(query));
 }
 
 test "linear invalid index" {
@@ -610,7 +618,7 @@ test "linear invalid index" {
     };
     const query: Structure2d.Axes = .{ .row = 4, .col = 3 };
     const expected = null;
-    try std.testing.expectEqual(expected, idx.linear(query));
+    try std.testing.expectEqual(expected, idx.linearChecked(query));
 }
 
 test "linear size 1" {
@@ -622,12 +630,12 @@ test "linear size 1" {
     };
     const query: Structure2d.Axes = .{ .row = 0, .col = 0 };
     const expected = 17;
-    try std.testing.expectEqual(expected, idx.linearUnchecked(query));
-    try std.testing.expectEqual(expected, idx.linear(query).?);
+    try std.testing.expectEqual(expected, idx.linear(query));
+    try std.testing.expectEqual(expected, idx.linearChecked(query).?);
 
     // Out of bounds
     const query_oob: Structure2d.Axes = .{ .row = 1, .col = 0 };
-    try std.testing.expectEqual(null, idx.linear(query_oob));
+    try std.testing.expectEqual(null, idx.linearChecked(query_oob));
 }
 
 test "linear overlapping" {
@@ -645,14 +653,14 @@ test "linear overlapping" {
     inline for (0..idx.shape.row) |r| {
         inline for (0..idx.shape.col) |c| {
             const key: Structure2d.Axes = .{ .row = r, .col = c };
-            try std.testing.expectEqual(42, idx.linearUnchecked(key));
-            try std.testing.expectEqual(42, idx.linear(key).?);
+            try std.testing.expectEqual(42, idx.linear(key));
+            try std.testing.expectEqual(42, idx.linearChecked(key).?);
         }
     }
 
     // Out of bounds should still return null
     const oob: Structure2d.Axes = .{ .row = 3, .col = 0 };
-    try std.testing.expectEqual(null, idx.linear(oob));
+    try std.testing.expectEqual(null, idx.linearChecked(oob));
 
     // If only one axis has stride 0, only that axis is broadcasted
     const idx_row_broadcast: Structure2d = .{
@@ -662,11 +670,11 @@ test "linear overlapping" {
     };
 
     const key: Structure2d.Axes = .{ .row = 1, .col = 2 };
-    try std.testing.expectEqual(14, idx_row_broadcast.linearUnchecked(key));
-    try std.testing.expectEqual(14, idx_row_broadcast.linear(key).?);
+    try std.testing.expectEqual(14, idx_row_broadcast.linear(key));
+    try std.testing.expectEqual(14, idx_row_broadcast.linearChecked(key).?);
     // Out of bounds for broadcasted axis
     const oob2: Structure2d.Axes = .{ .row = 3, .col = 0 };
-    try std.testing.expectEqual(null, idx_row_broadcast.linear(oob2));
+    try std.testing.expectEqual(null, idx_row_broadcast.linearChecked(oob2));
 }
 
 test "strideAxis" {

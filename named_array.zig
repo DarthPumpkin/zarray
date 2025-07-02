@@ -21,7 +21,7 @@ pub fn NamedArray(comptime Axis: type, comptime Scalar: type) type {
         pub fn fill(self: *const @This(), val: Scalar) *const @This() {
             var keys = self.idx.iterKeys();
             while (keys.next()) |key| {
-                self.buf[self.idx.linearUnchecked(key)] = val;
+                self.buf[self.idx.linear(key)] = val;
             }
             return self;
         }
@@ -30,7 +30,7 @@ pub fn NamedArray(comptime Axis: type, comptime Scalar: type) type {
             var keys = self.idx.iterKeys();
             var i: Scalar = 0;
             while (keys.next()) |key| {
-                self.buf[self.idx.linearUnchecked(key)] = i;
+                self.buf[self.idx.linear(key)] = i;
                 i += 1;
             }
             return self;
@@ -61,24 +61,24 @@ pub fn NamedArray(comptime Axis: type, comptime Scalar: type) type {
             return toContiguousGeneric(Axis, Scalar, self, allocator);
         }
 
-        pub fn get(self: *const @This(), key: Index.Axes) ?Scalar {
-            return getGeneric(self, key);
+        pub fn getValChecked(self: *const @This(), key: Index.Axes) ?Scalar {
+            return getValCheckedGeneric(self, key);
         }
 
-        pub fn getUnchecked(self: *const @This(), key: Index.Axes) Scalar {
-            return self.asConst().getUnchecked(key);
+        pub fn getVal(self: *const @This(), key: Index.Axes) Scalar {
+            return self.asConst().getVal(key);
         }
 
-        pub fn getPtr(self: *const @This(), key: Index.Axes) ?*Scalar {
-            return getPtrGeneric(self, key);
+        pub fn getPtrChecked(self: *const @This(), key: Index.Axes) ?*Scalar {
+            return getPtrCheckedGeneric(self, key);
         }
 
-        pub fn getPtrUnchecked(self: *const @This(), key: Index.Axes) *Scalar {
-            return &self.buf[self.idx.linearUnchecked(key)];
+        pub fn getPtr(self: *const @This(), key: Index.Axes) *Scalar {
+            return &self.buf[self.idx.linear(key)];
         }
 
-        pub fn setUnchecked(self: *const @This(), key: Index.Axes, scalar: Scalar) void {
-            self.buf[self.idx.linearUnchecked(key)] = scalar;
+        pub fn setVal(self: *const @This(), key: Index.Axes, scalar: Scalar) void {
+            self.buf[self.idx.linear(key)] = scalar;
         }
     };
 }
@@ -103,20 +103,20 @@ pub fn NamedArrayConst(comptime Axis: type, comptime Scalar: type) type {
             return toContiguousGeneric(Axis, Scalar, self, allocator);
         }
 
-        pub fn get(self: *const @This(), key: Index.Axes) ?Scalar {
-            return getGeneric(self, key);
+        pub fn getValChecked(self: *const @This(), key: Index.Axes) ?Scalar {
+            return getValCheckedGeneric(self, key);
         }
 
-        pub fn getUnchecked(self: *const @This(), key: Index.Axes) Scalar {
-            return self.buf[self.idx.linearUnchecked(key)];
+        pub fn getVal(self: *const @This(), key: Index.Axes) Scalar {
+            return self.buf[self.idx.linear(key)];
         }
 
-        pub fn getPtr(self: *const @This(), key: Index.Axes) ?*const Scalar {
-            return getPtrGeneric(self, key);
+        pub fn getPtrChecked(self: *const @This(), key: Index.Axes) ?*const Scalar {
+            return getPtrCheckedGeneric(self, key);
         }
 
-        pub fn getPtrUnchecked(self: *const @This(), key: Index.Axes) *const Scalar {
-            return &self.buf[self.idx.linearUnchecked(key)];
+        pub fn getPtr(self: *const @This(), key: Index.Axes) *const Scalar {
+            return &self.buf[self.idx.linear(key)];
         }
     };
 }
@@ -138,22 +138,22 @@ fn toContiguousGeneric(comptime Axis: type, comptime Scalar: type, self: anytype
         var i: usize = 0;
         var keys = new_idx.iterKeys();
         while (keys.next()) |key| {
-            buf[i] = self.getUnchecked(key);
+            buf[i] = self.getVal(key);
             i += 1;
         }
     }
     return .{ .idx = new_idx, .buf = buf };
 }
 
-fn getGeneric(self: anytype, key: @TypeOf(self.idx).Axes) ?@TypeOf(self.buf[0]) {
-    if (self.idx.linear(key)) |key_| {
+fn getValCheckedGeneric(self: anytype, key: @TypeOf(self.idx).Axes) ?@TypeOf(self.buf[0]) {
+    if (self.idx.linearChecked(key)) |key_| {
         return self.buf[key_];
     }
     return null;
 }
 
-fn getPtrGeneric(self: anytype, key: @TypeOf(self.idx).Axes) ?@TypeOf(&self.buf[0]) {
-    if (self.idx.linear(key)) |key_| {
+fn getPtrCheckedGeneric(self: anytype, key: @TypeOf(self.idx).Axes) ?@TypeOf(&self.buf[0]) {
+    if (self.idx.linearChecked(key)) |key_| {
         return &self.buf[key_];
     }
     return null;
@@ -172,9 +172,9 @@ pub fn add(
     // TODO: Check that arr_out.idx is non-overlapping.
     var keys = arr1.idx.iterKeys();
     while (keys.next()) |key| {
-        const l = arr1.getUnchecked(key);
-        const r = arr2.getUnchecked(key);
-        arr_out.setUnchecked(key, l + r);
+        const l = arr1.getVal(key);
+        const r = arr2.getVal(key);
+        arr_out.setVal(key, l + r);
     }
 }
 
@@ -320,34 +320,54 @@ test "get*" {
     const arr_const = arr.asConst();
 
     // Test get (in bounds)
-    try std.testing.expectEqual(arr.get(.{ .i = 1, .j = 2 }), 15);
-    try std.testing.expectEqual(arr_const.get(.{ .i = 1, .j = 2 }), 15);
+    try std.testing.expectEqual(arr.getValChecked(.{ .i = 1, .j = 2 }), 15);
+    try std.testing.expectEqual(arr_const.getValChecked(.{ .i = 1, .j = 2 }), 15);
 
     // Test get (out of bounds)
-    try std.testing.expectEqual(arr.get(.{ .i = 2, .j = 0 }), null);
-    try std.testing.expectEqual(arr_const.get(.{ .i = 2, .j = 0 }), null);
+    try std.testing.expectEqual(arr.getValChecked(.{ .i = 2, .j = 0 }), null);
+    try std.testing.expectEqual(arr_const.getValChecked(.{ .i = 2, .j = 0 }), null);
 
     // Test getUnchecked
-    try std.testing.expectEqual(arr.getUnchecked(.{ .i = 0, .j = 1 }), 11);
-    try std.testing.expectEqual(arr_const.getUnchecked(.{ .i = 0, .j = 1 }), 11);
+    try std.testing.expectEqual(arr.getVal(.{ .i = 0, .j = 1 }), 11);
+    try std.testing.expectEqual(arr_const.getVal(.{ .i = 0, .j = 1 }), 11);
 
     // Test getPtr (in bounds)
-    const ptr = arr.getPtr(.{ .i = 1, .j = 0 }).?;
+    const ptr = arr.getPtrChecked(.{ .i = 1, .j = 0 }).?;
     try std.testing.expectEqual(ptr.*, 13);
-    const ptr_const = arr_const.getPtr(.{ .i = 1, .j = 0 }).?;
+    const ptr_const = arr_const.getPtrChecked(.{ .i = 1, .j = 0 }).?;
     try std.testing.expectEqual(ptr_const.*, 13);
 
     // Test getPtr (out of bounds)
-    try std.testing.expectEqual(arr.getPtr(.{ .i = 5, .j = 0 }), null);
-    try std.testing.expectEqual(arr_const.getPtr(.{ .i = 5, .j = 0 }), null);
+    try std.testing.expectEqual(arr.getPtrChecked(.{ .i = 5, .j = 0 }), null);
+    try std.testing.expectEqual(arr_const.getPtrChecked(.{ .i = 5, .j = 0 }), null);
 
     // Test getPtrUnchecked
-    const ptr_unchecked = arr.getPtrUnchecked(.{ .i = 0, .j = 2 });
+    const ptr_unchecked = arr.getPtr(.{ .i = 0, .j = 2 });
     try std.testing.expectEqual(ptr_unchecked.*, 12);
-    const ptr_const_unchecked = arr_const.getPtrUnchecked(.{ .i = 0, .j = 2 });
+    const ptr_const_unchecked = arr_const.getPtr(.{ .i = 0, .j = 2 });
     try std.testing.expectEqual(ptr_const_unchecked.*, 12);
 
     // Test setUnchecked
-    arr.setUnchecked(.{ .i = 1, .j = 1 }, 99);
-    try std.testing.expectEqual(arr.getUnchecked(.{ .i = 1, .j = 1 }), 99);
+    arr.setVal(.{ .i = 1, .j = 1 }, 99);
+    try std.testing.expectEqual(arr.getVal(.{ .i = 1, .j = 1 }), 99);
 }
+
+// test "einstein" {
+//     const IJ = enum { i, j };
+//     const JK = enum { j, k };
+
+//     const al = std.testing.allocator;
+
+//     const arr_ij = try NamedArray(IJ, f64).initAlloc(al, .{ .i = 4, .j = 3 });
+//     defer arr_ij.deinit(al);
+//     arr_ij.fillArange();
+
+//     const arr_jk = try NamedArray(JK, f64).initAlloc(al, .{ .j = 3, .k = 2 });
+//     defer arr_jk.deinit(al);
+//     arr_jk.fill(1);
+
+//     const arr_ik = einstein(al, arr_ij.asConst(), arr_jk.asConst());
+//     defer arr_ik.deinit(al);
+
+//     std.testing.expectEqual(arr_ik.shape, .{ .i = 4, .k = 2 });
+// }

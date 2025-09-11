@@ -374,6 +374,8 @@ pub fn KeyIterator(comptime Key: type) type {
         }
 
         pub fn next(self: *@This()) ?Key {
+            if (self.dims_desc.len == 0)
+                return null;
             if (self.next_arr[self.dims_desc[0]] >= self.shape_arr[self.dims_desc[0]])
                 return null;
             const result_arr = self.next_arr;
@@ -540,7 +542,7 @@ fn Added(comptime OldKey: type, comptime name: [:0]const u8) type {
 /// AC = Xor(enum {a, b}, enum {b, c});
 /// ```
 /// `AC` will be equivalent to `enum {a, c}`;
-fn Xor(comptime Enum1: type, comptime Enum2: type) type {
+pub fn Xor(comptime Enum1: type, comptime Enum2: type) type {
     const info1 = @typeInfo(Enum1).@"enum";
     const info2 = @typeInfo(Enum2).@"enum";
     var common1 = mem.zeroes([info1.fields.len]bool);

@@ -226,6 +226,110 @@ pub fn NamedIndex(comptime AxisEnum: type) type {
             };
         }
 
+        /// Returns a new NamedIndex with only the axes present in the given subset enum.
+        /// All axes not present in the new enum must have size 1, and are squeezed out.
+        /// Panics if any removed axis does not have size 1.
+        pub fn keepOnly(self: *const @This(), comptime NewEnum: type) NamedIndex(NewEnum) {
+            const old_field_names = field_names;
+            const new_field_names = comptime meta.fieldNames(NewEnum);
+
+            // Check that NewEnum is a subset of AxisEnum
+            inline for (new_field_names) |new_name| {
+                var found = false;
+                inline for (old_field_names) |old_name| {
+                    if (mem.eql(u8, new_name, old_name)) {
+                        found = true;
+                        break;
+                    }
+                }
+                if (!found)
+                    @panic("keepOnly: NewEnum contains axis not present in original enum");
+            }
+
+            // For each axis in old_field_names not in new_field_names, check size == 1
+            inline for (old_field_names) |old_name| {
+                var keep = false;
+                inline for (new_field_names) |new_name| {
+                    if (mem.eql(u8, old_name, new_name)) {
+                        keep = true;
+                        break;
+                    }
+                }
+                if (!keep) {
+                    if (@field(self.shape, old_name) != 1)
+                        @panic("keepOnly: cannot squeeze axis '" ++ old_name ++ "' with size != 1");
+                }
+            }
+
+            // Build new shape and strides
+            const NewKey = KeyStruct(new_field_names);
+            var new_shape: NewKey = undefined;
+            var new_strides: NewKey = undefined;
+            inline for (new_field_names) |new_name| {
+                @field(new_shape, new_name) = @field(self.shape, new_name);
+                @field(new_strides, new_name) = @field(self.strides, new_name);
+            }
+
+            return .{
+                .shape = new_shape,
+                .strides = new_strides,
+                .offset = self.offset,
+            };
+        }
+
+        /// Returns a new NamedIndex that conforms to a new axes enum by squeezing or unsqueezing
+        /// axes.
+        /// - Axes present in both: keep shape and stride.
+        /// - Axes only in new enum: add with shape 1 and stride 0.
+        /// - Axes only in old enum: require shape == 1 and squeeze out.
+        /// Panics if any removed axis does not have size 1.
+        pub fn conformAxes(self: *const @This(), comptime NewEnum: type) NamedIndex(NewEnum) {
+            const old_field_names = field_names;
+            const new_field_names = comptime meta.fieldNames(NewEnum);
+
+            // For each axis in old_field_names not in new_field_names, check size == 1
+            inline for (old_field_names) |old_name| {
+                var keep = false;
+                inline for (new_field_names) |new_name| {
+                    if (comptime mem.eql(u8, old_name, new_name)) {
+                        keep = true;
+                        break;
+                    }
+                }
+                if (!keep) {
+                    if (@field(self.shape, old_name) != 1)
+                        @panic("projectAxes: cannot squeeze axis '" ++ old_name ++ "' with size != 1");
+                }
+            }
+
+            // Build new shape and strides
+            const NewKey = KeyStruct(new_field_names);
+            var new_shape: NewKey = undefined;
+            var new_strides: NewKey = undefined;
+            inline for (new_field_names) |new_name| {
+                var found = false;
+                inline for (old_field_names) |old_name| {
+                    if (comptime mem.eql(u8, new_name, old_name)) {
+                        @field(new_shape, new_name) = @field(self.shape, new_name);
+                        @field(new_strides, new_name) = @field(self.strides, new_name);
+                        found = true;
+                        break;
+                    }
+                }
+                if (!found) {
+                    // New axis: add with shape 1 and stride 0
+                    @field(new_shape, new_name) = 1;
+                    @field(new_strides, new_name) = 0;
+                }
+            }
+
+            return .{
+                .shape = new_shape,
+                .strides = new_strides,
+                .offset = self.offset,
+            };
+        }
+
         /// Return the number of elements in this index.
         pub fn count(self: *const @This()) usize {
             var prod: usize = 1;
@@ -991,6 +1095,84 @@ test "squeezeAxis" {
     if (false) {
         _ = idx.squeezeAxis(.i);
     }
+}
+
+test "keepOnly" {
+    const IJKEnum = enum { i, j, k };
+    const IJEnum = enum { i, j };
+    const IndexIJK = NamedIndex(IJKEnum);
+
+    // keepOnly: keep only "i" and "j" axes
+    const idx: IndexIJK = .{
+        .shape = .{ .i = 4, .j = 1, .k = 1 },
+        .strides = .{ .i = 1, .j = 4, .k = 4 },
+        .offset = 0,
+    };
+    const idx_kept = idx.keepOnly(IJEnum);
+
+    // The resulting key type should have only "i" and "j"
+    const expected: NamedIndex(IJEnum) = .{
+        .shape = .{ .i = 4, .j = 1 },
+        .strides = .{ .i = 1, .j = 4 },
+        .offset = 0,
+    };
+    try std.testing.expectEqual(expected, idx_kept);
+
+    // Should panic if any removed axis does not have size 1
+    const idx_bad: IndexIJK = .{
+        .shape = .{ .i = 4, .j = 1, .k = 2 },
+        .strides = .{ .i = 2, .j = 2, .k = 1 },
+        .offset = 0,
+    };
+    if (false) {
+        _ = idx_bad.keepOnly(IJEnum);
+    }
+
+    // Should panic if NewEnum contains axis not present in original enum
+    const ILEnum = enum { i, l };
+    if (false) {
+        _ = idx.keepOnly(ILEnum);
+    }
+}
+
+test "projectAxes" {
+    const IJKEnum = enum { i, j, k };
+    const IKLEnum = enum { i, k, l };
+    const IndexIJK = NamedIndex(IJKEnum);
+
+    // Project to {i, k, l}: keep i and k, add l (size 1, stride 0), squeeze out j (must be size 1)
+    const idx: IndexIJK = .{
+        .shape = .{ .i = 4, .j = 1, .k = 7 },
+        .strides = .{ .i = 7, .j = 28, .k = 1 },
+        .offset = 0,
+    };
+    const idx_proj = idx.projectAxes(IKLEnum);
+    const expected: NamedIndex(IKLEnum) = .{
+        .shape = .{ .i = 4, .k = 7, .l = 1 },
+        .strides = .{ .i = 7, .k = 1, .l = 0 },
+        .offset = 0,
+    };
+    try std.testing.expectEqual(expected, idx_proj);
+
+    // Should panic if removed axis does not have size 1
+    const idx_bad: IndexIJK = .{
+        .shape = .{ .i = 4, .j = 2, .k = 7 },
+        .strides = .{ .i = 7, .j = 28, .k = 1 },
+        .offset = 0,
+    };
+    if (false) {
+        _ = idx_bad.projectAxes(IKLEnum);
+    }
+
+    // Should allow projecting to a superset (adding multiple axes)
+    const IJKLMEnum = enum { i, j, k, l, m };
+    const idx_proj2 = idx.projectAxes(IJKLMEnum);
+    const expected2: NamedIndex(IJKLMEnum) = .{
+        .shape = .{ .i = 4, .j = 1, .k = 7, .l = 1, .m = 1 },
+        .strides = .{ .i = 7, .j = 28, .k = 1, .l = 0, .m = 0 },
+        .offset = 0,
+    };
+    try std.testing.expectEqual(expected2, idx_proj2);
 }
 
 test "addEmptyAxis" {

@@ -198,6 +198,35 @@ pub fn dot(
     return sum;
 }
 
+/// Einstein sum of two arrays.
+/// Contracts axes that are present in both arrys, while preserving those that are present in only
+/// one array.
+/// Two axes are considered equal if their enum fields have the same name.
+///
+/// For example, given arrays `A` with axes (i, j) and `B` with axes (j, k), the contracted axis is `j`,
+/// and the output axes are (i, k). The result is equivalent to matrix multiplication.
+///
+/// The output axis type must be an enum whose field names are the names of the preserved axes,
+/// i.e., symmetric difference (XOR) of the input axis names.
+///
+/// **Note**: Currently, there must be at least one preserved axis. There is a separate `dot` function
+/// for when all axes should be contracted.
+///
+/// The output array will have shape determined by the preserved axes, and each element will be
+/// the sum over all possible values of the contracted axes of the product of the corresponding elements
+/// from the input arrays.
+/// The contracted axes must have the same size in both arrays.
+///
+/// Example:
+/// ```zig
+///     const IJ = enum { i, j };
+///     const JK = enum { j, k };
+///     const IK = enum { i, k };
+///     einsum(IJ, JK, IK, ..., arrA, arrB, allocator)
+///```
+/// computes matrix multiplication.
+/// This function generalizes matrix multiplication, outer product and higher-order tensor products.
+///
 pub fn einsum(
     comptime AxisA: type,
     comptime AxisB: type,
@@ -207,10 +236,15 @@ pub fn einsum(
     arrA: NamedArrayConst(AxisA, ScalarA),
     arrB: NamedArrayConst(AxisB, ScalarB),
     allocator: mem.Allocator,
-) !NamedArray(AxisOut, @TypeOf(arrA.buf[0] * arrB.buf[0])) {
+) !NamedArray(AxisOut, Promote(ScalarA, ScalarB)) {
     const namesA = comptime meta.fieldNames(AxisA);
     const namesB = comptime meta.fieldNames(AxisB);
     const output_names = comptime meta.fieldNames(AxisOut);
+
+    // At least one axis must be preserved
+    if (comptime output_names.len == 0) {
+        @compileError("einsum with zero output axes (rank-0) is not yet supported. Use dot instead.");
+    }
 
     // Validate axis names
     const xor = named_index.Xor(AxisA, AxisB);
@@ -236,20 +270,23 @@ pub fn einsum(
     };
 
     // Output scalar type
-    const OutputScalar = @TypeOf(arrA.buf[0] * arrB.buf[0]);
+    const OutputScalar = Promote(ScalarA, ScalarB);
     const OutputIndexType = NamedIndex(AxisOut);
 
     // Build output shape
-    var output_shape: OutputIndexType.Axes = undefined;
-    inline for (output_names) |name| {
-        if (comptime hasField(namesA, name)) {
-            @field(output_shape, name) = @field(arrA.idx.shape, name);
-        } else if (comptime hasField(namesB, name)) {
-            @field(output_shape, name) = @field(arrB.idx.shape, name);
-        } else {
-            @compileError(name ++ " " ++ arrA.idx.shape ++ " " ++ arrB.idx.shape);
+    const output_shape: OutputIndexType.Axes = blk: {
+        var shape: OutputIndexType.Axes = undefined;
+        inline for (output_names) |name| {
+            if (comptime hasField(namesA, name)) {
+                @field(shape, name) = @field(arrA.idx.shape, name);
+            } else if (comptime hasField(namesB, name)) {
+                @field(shape, name) = @field(arrB.idx.shape, name);
+            } else {
+                @compileError(name ++ " " ++ arrA.idx.shape ++ " " ++ arrB.idx.shape);
+            }
         }
-    }
+        break :blk shape;
+    };
 
     // Build output index and buffer
     const output_idx = NamedIndex(AxisOut).initContiguous(output_shape);
@@ -320,6 +357,10 @@ fn hasField(names: []const []const u8, name: []const u8) bool {
         }
     }
     return false;
+}
+
+fn Promote(comptime T: type, comptime U: type) type {
+    return @TypeOf(@as(T, 0) + @as(U, 0));
 }
 
 test "add inplace" {

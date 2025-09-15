@@ -625,22 +625,91 @@ test "einsum outer product 1d x 1d -> 2d" {
     try std.testing.expectEqualSlices(i32, &expected, arr_ij.buf);
 }
 
-// test "einstein" {
+test "stride" {
+    const IJ = enum { i, j };
+    const idx = NamedIndex(IJ).initContiguous(.{ .i = 2, .j = 3 });
+    var buf = [_]i32{ 1, 2, 3, 4, 5, 6 };
+    var arr = NamedArray(IJ, i32){
+        .idx = idx,
+        .buf = &buf,
+    };
+    arr.idx = arr.idx.strideAxis(.j, 2);
+
+    const actual = [_]i32{
+        arr.getVal(.{ .i = 0, .j = 0 }),
+        arr.getVal(.{ .i = 0, .j = 1 }),
+        arr.getVal(.{ .i = 1, .j = 0 }),
+        arr.getVal(.{ .i = 1, .j = 1 }),
+    };
+    const expected = [_]i32{ 1, 3, 4, 6 };
+    try std.testing.expectEqualSlices(i32, &actual, &expected);
+
+    // Also test that .flat() returns null for non-contiguous
+    try std.testing.expectEqual(arr.flat(), null);
+
+    // After making it contiguous, .flat() works.
+    const allocator = std.testing.allocator;
+    const arr_cont = try arr.toContiguous(allocator);
+    defer arr_cont.deinit(allocator);
+    const flat = arr_cont.flat().?;
+    try std.testing.expectEqualSlices(i32, &actual, flat);
+}
+
+test "slice" {
+    const IJ = enum { i, j };
+    var arr = NamedArrayConst(IJ, i32){
+        .idx = .initContiguous(.{ .i = 2, .j = 3 }),
+        .buf = &[_]i32{ 1, 2, 3, 4, 5, 6 },
+    };
+    arr.idx = arr.idx.sliceAxis(.j, 1, 2);
+
+    try std.testing.expectEqual(2, arr.getVal(.{ .i = 0, .j = 0 }));
+    try std.testing.expectEqual(5, arr.getVal(.{ .i = 1, .j = 0 }));
+    try std.testing.expectEqual(null, arr.getValChecked(.{ .i = 1, .j = 1 }));
+}
+
+test "keepOnly" {
+    const IJK = enum { i, j, k };
+    const IJ = enum { i, j };
+
+    const arr = NamedArrayConst(IJK, i32){
+        .idx = .initContiguous(.{ .i = 4, .j = 1, .k = 1 }),
+        .buf = &[_]i32{ 1, 2, 3, 4 },
+    };
+
+    const squeezed = NamedArrayConst(IJ, i32){
+        .idx = arr.idx.keepOnly(IJ),
+        .buf = arr.buf,
+    };
+
+    try std.testing.expectEqual(1, squeezed.getVal(.{ .i = 0, .j = 0 }));
+    try std.testing.expectEqual(4, squeezed.getVal(.{ .i = 3, .j = 0 }));
+    try std.testing.expectEqual(null, squeezed.getValChecked(.{ .i = 0, .j = 1 }));
+
+    //Should panic if any removed axis does not have size 1
+    if (false) {
+        const idx_bad: NamedIndex(IJK) = .initContiguous(.{ .i = 4, .j = 1, .k = 2 });
+        _ = idx_bad.keepOnly(IJ);
+    }
+}
+
+// Rank-0 arrays currently not supported
+// test "einsum dot product 2d x 2d -> 0d" {
 //     const IJ = enum { i, j };
-//     const JK = enum { j, k };
+//     const arr1 = NamedArrayConst(IJ, i32){
+//         .idx = NamedIndex(IJ).initContiguous(.{ .i = 2, .j = 3 }),
+//         .buf = &[_]i32{ 1, 2, 3, 4, 5, 6 },
+//     };
+//     const arr2 = NamedArrayConst(IJ, i32){
+//         .idx = NamedIndex(IJ).initContiguous(.{ .i = 2, .j = 3 }),
+//         .buf = &[_]i32{ 7, 8, 9, 10, 11, 12 },
+//     };
+//     const allocator = std.testing.allocator;
+//     const arr0d = try einsum(IJ, IJ, enum {}, i32, i32, arr1, arr2, allocator);
+//     defer arr0d.deinit(allocator);
 
-//     const al = std.testing.allocator;
-
-//     const arr_ij = try NamedArray(IJ, f64).initAlloc(al, .{ .i = 4, .j = 3 });
-//     defer arr_ij.deinit(al);
-//     arr_ij.fillArange();
-
-//     const arr_jk = try NamedArray(JK, f64).initAlloc(al, .{ .j = 3, .k = 2 });
-//     defer arr_jk.deinit(al);
-//     arr_jk.fill(1);
-
-//     const arr_ik = einstein(al, arr_ij.asConst(), arr_jk.asConst());
-//     defer arr_ik.deinit(al);
-
-//     std.testing.expectEqual(arr_ik.shape, .{ .i = 4, .k = 2 });
+//     // The einsum should compute sum(arr1[i,j] * arr2[i,j]) over all i,j
+//     // (1*7 + 2*8 + 3*9 + 4*10 + 5*11 + 6*12) = 7 + 16 + 27 + 40 + 55 + 72 = 217
+//     try std.testing.expectEqual(1, arr0d.buf.len);
+//     try std.testing.expectEqual(217, arr0d.buf[0]);
 // }

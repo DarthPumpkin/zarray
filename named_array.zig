@@ -4,6 +4,7 @@ const meta = std.meta;
 
 const named_index = @import("named_index.zig");
 const NamedIndex = named_index.NamedIndex;
+const AxisRenamePair = named_index.AxisRenamePair;
 
 pub fn NamedArray(comptime Axis: type, comptime Scalar: type) type {
     const Index = NamedIndex(Axis);
@@ -76,6 +77,23 @@ pub fn NamedArray(comptime Axis: type, comptime Scalar: type) type {
         pub fn scalarAt(self: *const @This(), key: Index.Axes) Scalar {
             return self.asConst().scalarAt(key);
         }
+
+        /// Return a new NamedArray with axes conformed to NewEnum.
+        pub fn conformAxes(self: *const @This(), comptime NewEnum: type) NamedArray(NewEnum, Scalar) {
+            return .{
+                .idx = self.idx.conformAxes(NewEnum),
+                .buf = self.buf,
+            };
+        }
+
+        /// Strictly rename axes according to the provided mapping.
+        /// If any axis in NewEnum cannot be mapped, this will fail to compile.
+        pub fn renameAxes(self: *const @This(), comptime NewEnum: type, comptime rename_pairs: []const AxisRenamePair) NamedArray(NewEnum, Scalar) {
+            return .{
+                .idx = self.idx.rename(NewEnum, rename_pairs),
+                .buf = self.buf,
+            };
+        }
     };
 }
 
@@ -113,6 +131,23 @@ pub fn NamedArrayConst(comptime Axis: type, comptime Scalar: type) type {
 
         pub fn scalarAt(self: *const @This(), key: Index.Axes) Scalar {
             return self.buf[self.idx.linear(key)];
+        }
+
+        /// Return a new NamedArrayConst with axes conformed to NewEnum.
+        pub fn conformAxes(self: *const @This(), comptime NewEnum: type) NamedArrayConst(NewEnum, Scalar) {
+            return .{
+                .idx = self.idx.conformAxes(NewEnum),
+                .buf = self.buf,
+            };
+        }
+
+        /// Strictly rename axes according to the provided mapping.
+        /// If any axis in NewEnum cannot be mapped, this will fail to compile.
+        pub fn renameAxes(self: *const @This(), comptime NewEnum: type, comptime rename_pairs: []const AxisRenamePair) NamedArrayConst(NewEnum, Scalar) {
+            return .{
+                .idx = self.idx.rename(NewEnum, rename_pairs),
+                .buf = self.buf,
+            };
         }
     };
 }
@@ -649,6 +684,119 @@ test "stride" {
     const flat = arr_cont.flat().?;
     try std.testing.expectEqualSlices(i32, &actual, flat);
 }
+test "NamedArray renameAxes strict" {
+    const IJ = enum { i, j };
+    const XY = enum { x, y };
+
+    var buf = [_]i32{ 1, 2, 3, 4, 5, 6 };
+    const arr = NamedArray(IJ, i32){
+        .idx = NamedIndex(IJ).initContiguous(.{ .i = 2, .j = 3 }),
+        .buf = &buf,
+    };
+    // Rename i->x, j->y
+    const arr_xy = arr.renameAxes(XY, &.{
+        .{ .old = "i", .new = "x" },
+        .{ .old = "j", .new = "y" },
+    });
+    try std.testing.expectEqual(arr.buf, arr_xy.buf);
+    try std.testing.expectEqual(arr.idx.shape.i, arr_xy.idx.shape.x);
+    try std.testing.expectEqual(arr.idx.shape.j, arr_xy.idx.shape.y);
+    try std.testing.expectEqual(arr.idx.strides.i, arr_xy.idx.strides.x);
+    try std.testing.expectEqual(arr.idx.strides.j, arr_xy.idx.strides.y);
+
+    // Direct match (no rename needed)
+    const arr_direct = arr.renameAxes(IJ, &.{});
+    try std.testing.expectEqual(arr.idx, arr_direct.idx);
+
+    // Common axes omitted from rename list (only rename one axis)
+    const IX = enum { i, x };
+    const arr_ix = arr.renameAxes(IX, &.{AxisRenamePair{ .old = "j", .new = "x" }});
+    try std.testing.expectEqual(arr.idx.shape.i, arr_ix.idx.shape.i);
+    try std.testing.expectEqual(arr.idx.shape.j, arr_ix.idx.shape.x);
+    try std.testing.expectEqual(arr.idx.strides.i, arr_ix.idx.strides.i);
+    try std.testing.expectEqual(arr.idx.strides.j, arr_ix.idx.strides.x);
+
+    // Should fail to compile if mapping is missing
+    if (false) {
+        const AB = enum { a, b };
+        _ = arr.renameAxes(AB, &.{});
+    }
+
+    // Should fail to compile if enums have different numbers of axes
+    if (false) {
+        const IJK = enum { i, j, k };
+        _ = arr.renameAxes(IJK, &.{ AxisRenamePair{ .old = "i", .new = "i" }, AxisRenamePair{ .old = "j", .new = "j" }, AxisRenamePair{ .old = "k", .new = "k" } });
+    }
+    if (false) {
+        const I = enum { i };
+        _ = arr.renameAxes(I, &.{AxisRenamePair{ .old = "i", .new = "i" }});
+    }
+}
+
+test "NamedArrayConst renameAxes strict" {
+    const IJ = enum { i, j };
+    const XY = enum { x, y };
+
+    const buf = [_]i32{ 1, 2, 3, 4, 5, 6 };
+    const arr = NamedArrayConst(IJ, i32){
+        .idx = NamedIndex(IJ).initContiguous(.{ .i = 2, .j = 3 }),
+        .buf = &buf,
+    };
+    // Rename i->x, j->y
+    const arr_xy = arr.renameAxes(XY, &.{
+        .{ .old = "i", .new = "x" },
+        .{ .old = "j", .new = "y" },
+    });
+    try std.testing.expectEqual(arr.buf, arr_xy.buf);
+    try std.testing.expectEqual(arr.idx.shape.i, arr_xy.idx.shape.x);
+    try std.testing.expectEqual(arr.idx.shape.j, arr_xy.idx.shape.y);
+    try std.testing.expectEqual(arr.idx.strides.i, arr_xy.idx.strides.x);
+    try std.testing.expectEqual(arr.idx.strides.j, arr_xy.idx.strides.y);
+
+    // Direct match (no rename needed)
+    const arr_direct = arr.renameAxes(IJ, &.{});
+    try std.testing.expectEqual(arr.idx, arr_direct.idx);
+
+    // Common axes omitted from rename list (only rename one axis)
+    const IX = enum { i, x };
+    const arr_ix = arr.renameAxes(IX, &.{AxisRenamePair{ .old = "j", .new = "x" }});
+    try std.testing.expectEqual(arr.idx.shape.i, arr_ix.idx.shape.i);
+    try std.testing.expectEqual(arr.idx.shape.j, arr_ix.idx.shape.x);
+    try std.testing.expectEqual(arr.idx.strides.i, arr_ix.idx.strides.i);
+    try std.testing.expectEqual(arr.idx.strides.j, arr_ix.idx.strides.x);
+
+    // Should fail to compile if mapping is missing
+    if (false) {
+        const AB = enum { a, b };
+        _ = arr.renameAxes(AB, &.{});
+    }
+
+    // Should fail to compile if enums have different numbers of axes
+    if (false) {
+        const IJK = enum { i, j, k };
+        _ = arr.renameAxes(IJK, &.{ AxisRenamePair{ .old = "i", .new = "i" }, AxisRenamePair{ .old = "j", .new = "j" }, AxisRenamePair{ .old = "k", .new = "k" } });
+    }
+    if (false) {
+        const I = enum { i };
+        _ = arr.renameAxes(I, &.{AxisRenamePair{ .old = "i", .new = "i" }});
+    }
+}
+test "renameAxes fails if old axis is mapped twice" {
+    const IJ = enum { i, j };
+    const XY = enum { x, y };
+    var buf = [_]i32{ 1, 2, 3, 4, 5, 6 };
+    const arr = NamedArray(IJ, i32){
+        .idx = NamedIndex(IJ).initContiguous(.{ .i = 2, .j = 3 }),
+        .buf = &buf,
+    };
+    if (false) {
+        // "i" is mapped to both "x" and "y"
+        _ = arr.renameAxes(XY, &.{
+            AxisRenamePair{ .old = "i", .new = "x" },
+            AxisRenamePair{ .old = "i", .new = "y" },
+        });
+    }
+}
 
 test "slice" {
     const IJ = enum { i, j };
@@ -685,6 +833,52 @@ test "keepOnly" {
     if (false) {
         const idx_bad: NamedIndex(IJK) = .initContiguous(.{ .i = 4, .j = 1, .k = 2 });
         _ = idx_bad.keepOnly(IJ);
+    }
+}
+
+test "NamedArray conformAxes" {
+    const IJK = enum { i, j, k };
+    const IKL = enum { i, k, l };
+
+    var buf = [_]i32{ 1, 2, 3, 4 };
+    const arr = NamedArray(IJK, i32){
+        .idx = NamedIndex(IJK).initContiguous(.{ .i = 4, .j = 1, .k = 1 }),
+        .buf = &buf,
+    };
+    const arr_proj = arr.conformAxes(IKL);
+    try std.testing.expectEqual(arr.buf, arr_proj.buf);
+    try std.testing.expectEqual(arr.idx.conformAxes(IKL), arr_proj.idx);
+
+    // Should panic if removed axis does not have size 1
+    if (false) {
+        const arr_bad = NamedArray(IJK, i32){
+            .idx = NamedIndex(IJK).initContiguous(.{ .i = 4, .j = 2, .k = 1 }),
+            .buf = &buf,
+        };
+        _ = arr_bad.conformAxes(IKL);
+    }
+}
+
+test "NamedArrayConst conformAxes" {
+    const IJK = enum { i, j, k };
+    const IKL = enum { i, k, l };
+
+    const buf = [_]i32{ 1, 2, 3, 4 };
+    const arr = NamedArrayConst(IJK, i32){
+        .idx = NamedIndex(IJK).initContiguous(.{ .i = 4, .j = 1, .k = 1 }),
+        .buf = &buf,
+    };
+    const arr_proj = arr.conformAxes(IKL);
+    try std.testing.expectEqual(arr.buf, arr_proj.buf);
+    try std.testing.expectEqual(arr.idx.conformAxes(IKL), arr_proj.idx);
+
+    // Should panic if removed axis does not have size 1
+    if (false) {
+        const arr_bad = NamedArrayConst(IJK, i32){
+            .idx = NamedIndex(IJK).initContiguous(.{ .i = 4, .j = 2, .k = 1 }),
+            .buf = &buf,
+        };
+        _ = arr_bad.conformAxes(IKL);
     }
 }
 

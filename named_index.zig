@@ -376,25 +376,6 @@ pub fn NamedIndex(comptime AxisEnum: type) type {
             return true;
         }
 
-        /// Rename an axis.
-        // zig fmt: off
-        pub fn rename(self: *const @This(),
-            comptime axis: Axis,
-            comptime new_name: [:0]const u8
-        ) NamedIndex(Renamed(Axis, field_names[@intFromEnum(axis)], new_name)) {
-        // zig fmt: on
-            const old_name = field_names[@intFromEnum(axis)];
-            const NewEnum = Renamed(Axis, old_name, new_name);
-            const NewKey = KeyStruct(meta.fieldNames(NewEnum));
-            const new_shape: NewKey = @bitCast(self.shape);
-            const new_strides: NewKey = @bitCast(self.strides);
-            return .{
-                .shape = new_shape,
-                .strides = new_strides,
-                .offset = self.offset,
-            };
-        }
-
         /// Adds an axis of size 1 to the index.
         // zig fmt: off
         pub fn addEmptyAxis(self: *const @This(),
@@ -427,6 +408,85 @@ pub fn NamedIndex(comptime AxisEnum: type) type {
             };
         }
 
+        /// Helper for strict axis renaming.
+        /// If any axis in NewEnum cannot be mapped, this will fail to compile.
+        pub fn rename(self: *const @This(), comptime NewEnum: type, comptime rename_pairs: []const AxisRenamePair) NamedIndex(NewEnum) {
+            const OldEnum = Axis;
+            const old_names = @typeInfo(OldEnum).@"enum".fields;
+            const new_names = @typeInfo(NewEnum).@"enum".fields;
+
+            // Compile-time checks
+            comptime {
+                // number of axes must match
+                if (old_names.len != new_names.len) {
+                    @compileError("renameAxes: Number of axes in source and target enums must match.");
+                }
+                // Check for duplicate old axis names in rename_pairs
+                for (old_names) |old_field| {
+                    var count_: usize = 0;
+                    for (rename_pairs) |pair| {
+                        if (std.mem.eql(u8, pair.old, old_field.name)) {
+                            count_ += 1;
+                        }
+                    }
+                    if (count_ > 1) {
+                        @compileError("renameAxes: Old axis '" ++ old_field.name ++ "' is mapped to multiple new axes.");
+                    }
+                }
+            }
+
+            // Build mapping from new_name to old_name
+            const map: [new_names.len][:0]const u8 = comptime map: {
+                var map: [new_names.len][:0]const u8 = undefined;
+                for (new_names, 0..) |new_field, ni| {
+                    var found = false;
+                    // Check if new_name matches any old_name directly
+                    for (old_names) |old_field| {
+                        if (std.mem.eql(u8, old_field.name, new_field.name)) {
+                            map[ni] = old_field.name;
+                            found = true;
+                            break;
+                        }
+                    }
+                    // If not, check rename_pairs
+                    if (!found) {
+                        for (rename_pairs) |pair| {
+                            if (std.mem.eql(u8, pair.new, new_field.name)) {
+                                // Find old_name in old_names
+                                for (old_names) |old_field| {
+                                    if (std.mem.eql(u8, old_field.name, pair.old)) {
+                                        map[ni] = old_field.name;
+                                        found = true;
+                                        break;
+                                    }
+                                }
+                                if (found) break;
+                            }
+                        }
+                    }
+                    if (!found) {
+                        @compileError("renameAxes: Could not map new axis '" ++ new_field.name ++ "' to any old axis.");
+                    }
+                }
+                break :map map;
+            };
+
+            // Build new shape and strides
+            const NewKey = NamedIndex(NewEnum).Axes;
+            var new_shape: NewKey = undefined;
+            var new_strides: NewKey = undefined;
+            inline for (new_names, 0..) |new_field, ni| {
+                const old_name = map[ni];
+                @field(new_shape, new_field.name) = @field(self.shape, old_name);
+                @field(new_strides, new_field.name) = @field(self.strides, old_name);
+            }
+            return NamedIndex(NewEnum){
+                .shape = new_shape,
+                .strides = new_strides,
+                .offset = self.offset,
+            };
+        }
+
         /// Broadcasts an existing axis of size 1 to a new size by setting its stride to 0.
         /// Panics if size is not currently 1.
         ///
@@ -445,8 +505,30 @@ pub fn NamedIndex(comptime AxisEnum: type) type {
                 .offset = self.offset,
             };
         }
+
+        /// DeprecatedRename an axis.
+        // zig fmt: off
+        pub fn rename_old(self: *const @This(),
+            comptime axis: Axis,
+            comptime new_name: [:0]const u8
+        ) NamedIndex(Renamed(Axis, field_names[@intFromEnum(axis)], new_name)) {
+        // zig fmt: on
+            const old_name = field_names[@intFromEnum(axis)];
+            const NewEnum = Renamed(Axis, old_name, new_name);
+            const NewKey = KeyStruct(meta.fieldNames(NewEnum));
+            const new_shape: NewKey = @bitCast(self.shape);
+            const new_strides: NewKey = @bitCast(self.strides);
+            return .{
+                .shape = new_shape,
+                .strides = new_strides,
+                .offset = self.offset,
+            };
+        }
     };
 }
+
+/// Struct for axis renaming pairs
+pub const AxisRenamePair = struct { old: []const u8, new: []const u8 };
 
 /// Iterates over all valid indices for a `NamedIndex` with given shape.
 /// Iteration order is according to stride order.
@@ -1031,7 +1113,7 @@ test "rename" {
         .i = 5,
         .j = 3,
     });
-    const idx_from = idx.rename(.i, "from");
+    const idx_from = idx.rename_old(.i, "from");
 
     // Check that the renamed indices have the expected field names and values
     try std.testing.expectEqual(idx.shape.i, idx_from.shape.from);
@@ -1046,7 +1128,7 @@ test "rename" {
 
     // Toggle this manually to verify that it throws a compileError.
     if (false) {
-        _ = idx.rename("nonexisting", "foo");
+        _ = idx.rename_old("nonexisting", "foo");
     }
 }
 

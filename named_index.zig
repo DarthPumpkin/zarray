@@ -1135,7 +1135,7 @@ test "keepOnly" {
     }
 }
 
-test "projectAxes" {
+test "conformAxes" {
     const IJKEnum = enum { i, j, k };
     const IKLEnum = enum { i, k, l };
     const IndexIJK = NamedIndex(IJKEnum);
@@ -1146,7 +1146,7 @@ test "projectAxes" {
         .strides = .{ .i = 7, .j = 28, .k = 1 },
         .offset = 0,
     };
-    const idx_proj = idx.projectAxes(IKLEnum);
+    const idx_proj = idx.conformAxes(IKLEnum);
     const expected: NamedIndex(IKLEnum) = .{
         .shape = .{ .i = 4, .k = 7, .l = 1 },
         .strides = .{ .i = 7, .k = 1, .l = 0 },
@@ -1161,12 +1161,12 @@ test "projectAxes" {
         .offset = 0,
     };
     if (false) {
-        _ = idx_bad.projectAxes(IKLEnum);
+        _ = idx_bad.conformAxes(IKLEnum);
     }
 
     // Should allow projecting to a superset (adding multiple axes)
     const IJKLMEnum = enum { i, j, k, l, m };
-    const idx_proj2 = idx.projectAxes(IJKLMEnum);
+    const idx_proj2 = idx.conformAxes(IJKLMEnum);
     const expected2: NamedIndex(IJKLMEnum) = .{
         .shape = .{ .i = 4, .j = 1, .k = 7, .l = 1, .m = 1 },
         .strides = .{ .i = 7, .j = 28, .k = 1, .l = 0, .m = 0 },

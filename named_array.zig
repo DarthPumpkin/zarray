@@ -62,24 +62,19 @@ pub fn NamedArray(comptime Axis: type, comptime Scalar: type) type {
             return toContiguousGeneric(Axis, Scalar, self, allocator);
         }
 
-        pub fn getValChecked(self: *const @This(), key: Index.Axes) ?Scalar {
-            return getValCheckedGeneric(self, key);
-        }
-
-        pub fn getVal(self: *const @This(), key: Index.Axes) Scalar {
-            return self.asConst().getVal(key);
-        }
-
-        pub fn getPtrChecked(self: *const @This(), key: Index.Axes) ?*Scalar {
+        pub fn atChecked(self: *const @This(), key: Index.Axes) ?*Scalar {
             return getPtrCheckedGeneric(self, key);
         }
 
-        pub fn getPtr(self: *const @This(), key: Index.Axes) *Scalar {
+        pub fn at(self: *const @This(), key: Index.Axes) *Scalar {
             return &self.buf[self.idx.linear(key)];
         }
+        pub fn scalarAtChecked(self: *const @This(), key: Index.Axes) ?Scalar {
+            return getValCheckedGeneric(self, key);
+        }
 
-        pub fn setVal(self: *const @This(), key: Index.Axes, scalar: Scalar) void {
-            self.buf[self.idx.linear(key)] = scalar;
+        pub fn scalarAt(self: *const @This(), key: Index.Axes) Scalar {
+            return self.asConst().scalarAt(key);
         }
     };
 }
@@ -104,20 +99,20 @@ pub fn NamedArrayConst(comptime Axis: type, comptime Scalar: type) type {
             return toContiguousGeneric(Axis, Scalar, self, allocator);
         }
 
-        pub fn getValChecked(self: *const @This(), key: Index.Axes) ?Scalar {
-            return getValCheckedGeneric(self, key);
-        }
-
-        pub fn getVal(self: *const @This(), key: Index.Axes) Scalar {
-            return self.buf[self.idx.linear(key)];
-        }
-
-        pub fn getPtrChecked(self: *const @This(), key: Index.Axes) ?*const Scalar {
+        pub fn atChecked(self: *const @This(), key: Index.Axes) ?*const Scalar {
             return getPtrCheckedGeneric(self, key);
         }
 
-        pub fn getPtr(self: *const @This(), key: Index.Axes) *const Scalar {
+        pub fn at(self: *const @This(), key: Index.Axes) *const Scalar {
             return &self.buf[self.idx.linear(key)];
+        }
+
+        pub fn scalarAtChecked(self: *const @This(), key: Index.Axes) ?Scalar {
+            return getValCheckedGeneric(self, key);
+        }
+
+        pub fn scalarAt(self: *const @This(), key: Index.Axes) Scalar {
+            return self.buf[self.idx.linear(key)];
         }
     };
 }
@@ -139,7 +134,7 @@ fn toContiguousGeneric(comptime Axis: type, comptime Scalar: type, self: anytype
         var i: usize = 0;
         var keys = new_idx.iterKeys();
         while (keys.next()) |key| {
-            buf[i] = self.getVal(key);
+            buf[i] = self.scalarAt(key);
             i += 1;
         }
     }
@@ -173,9 +168,9 @@ pub fn add(
     // TODO: Check that arr_out.idx is non-overlapping.
     var keys = arr1.idx.iterKeys();
     while (keys.next()) |key| {
-        const l = arr1.getVal(key);
-        const r = arr2.getVal(key);
-        arr_out.setVal(key, l + r);
+        const l = arr1.scalarAt(key);
+        const r = arr2.scalarAt(key);
+        arr_out.at(key).* = l + r;
     }
 }
 
@@ -193,7 +188,7 @@ pub fn dot(
     var sum: ResultType = 0;
     var keys = arr1.idx.iterKeys();
     while (keys.next()) |key| {
-        sum += arr1.getVal(key) * arr2.getVal(key);
+        sum += arr1.scalarAt(key) * arr2.scalarAt(key);
     }
     return sum;
 }
@@ -308,7 +303,7 @@ pub fn einsum(
             inline for (namesB) |name| {
                 @field(keyB, name) = @field(out_key, name);
             }
-            sum = arrA.getVal(keyA) * arrB.getVal(keyB);
+            sum = arrA.scalarAt(keyA) * arrB.scalarAt(keyB);
         } else {
             // For each contracted key
             const ContractedKey = named_index.KeyStruct(contracted_names);
@@ -336,7 +331,7 @@ pub fn einsum(
                         @field(keyB, name) = @field(ckey, name);
                     }
                 }
-                sum += arrA.getVal(keyA) * arrB.getVal(keyB);
+                sum += arrA.scalarAt(keyA) * arrB.scalarAt(keyB);
             }
         }
         output_buf[out_i] = sum;
@@ -505,36 +500,36 @@ test "get*" {
     const arr_const = arr.asConst();
 
     // Test get (in bounds)
-    try std.testing.expectEqual(arr.getValChecked(.{ .i = 1, .j = 2 }), 15);
-    try std.testing.expectEqual(arr_const.getValChecked(.{ .i = 1, .j = 2 }), 15);
+    try std.testing.expectEqual(arr.scalarAtChecked(.{ .i = 1, .j = 2 }).?, 15);
+    try std.testing.expectEqual(arr_const.scalarAtChecked(.{ .i = 1, .j = 2 }).?, 15);
 
     // Test get (out of bounds)
-    try std.testing.expectEqual(arr.getValChecked(.{ .i = 2, .j = 0 }), null);
-    try std.testing.expectEqual(arr_const.getValChecked(.{ .i = 2, .j = 0 }), null);
+    try std.testing.expectEqual(arr.atChecked(.{ .i = 2, .j = 0 }), null);
+    try std.testing.expectEqual(arr_const.atChecked(.{ .i = 2, .j = 0 }), null);
 
     // Test getUnchecked
-    try std.testing.expectEqual(arr.getVal(.{ .i = 0, .j = 1 }), 11);
-    try std.testing.expectEqual(arr_const.getVal(.{ .i = 0, .j = 1 }), 11);
+    try std.testing.expectEqual(arr.at(.{ .i = 0, .j = 1 }).*, 11);
+    try std.testing.expectEqual(arr_const.at(.{ .i = 0, .j = 1 }).*, 11);
 
     // Test getPtr (in bounds)
-    const ptr = arr.getPtrChecked(.{ .i = 1, .j = 0 }).?;
+    const ptr = arr.atChecked(.{ .i = 1, .j = 0 }).?;
     try std.testing.expectEqual(ptr.*, 13);
-    const ptr_const = arr_const.getPtrChecked(.{ .i = 1, .j = 0 }).?;
+    const ptr_const = arr_const.atChecked(.{ .i = 1, .j = 0 }).?;
     try std.testing.expectEqual(ptr_const.*, 13);
 
     // Test getPtr (out of bounds)
-    try std.testing.expectEqual(arr.getPtrChecked(.{ .i = 5, .j = 0 }), null);
-    try std.testing.expectEqual(arr_const.getPtrChecked(.{ .i = 5, .j = 0 }), null);
+    try std.testing.expectEqual(arr.atChecked(.{ .i = 5, .j = 0 }), null);
+    try std.testing.expectEqual(arr_const.atChecked(.{ .i = 5, .j = 0 }), null);
 
     // Test getPtrUnchecked
-    const ptr_unchecked = arr.getPtr(.{ .i = 0, .j = 2 });
+    const ptr_unchecked = arr.at(.{ .i = 0, .j = 2 });
     try std.testing.expectEqual(ptr_unchecked.*, 12);
-    const ptr_const_unchecked = arr_const.getPtr(.{ .i = 0, .j = 2 });
+    const ptr_const_unchecked = arr_const.at(.{ .i = 0, .j = 2 });
     try std.testing.expectEqual(ptr_const_unchecked.*, 12);
 
     // Test setUnchecked
-    arr.setVal(.{ .i = 1, .j = 1 }, 99);
-    try std.testing.expectEqual(arr.getVal(.{ .i = 1, .j = 1 }), 99);
+    arr.at(.{ .i = 1, .j = 1 }).* = 99;
+    try std.testing.expectEqual(arr.scalarAt(.{ .i = 1, .j = 1 }), 99);
 }
 
 test "dot 1d mixed types" {
@@ -636,10 +631,10 @@ test "stride" {
     arr.idx = arr.idx.strideAxis(.j, 2);
 
     const actual = [_]i32{
-        arr.getVal(.{ .i = 0, .j = 0 }),
-        arr.getVal(.{ .i = 0, .j = 1 }),
-        arr.getVal(.{ .i = 1, .j = 0 }),
-        arr.getVal(.{ .i = 1, .j = 1 }),
+        arr.scalarAt(.{ .i = 0, .j = 0 }),
+        arr.scalarAt(.{ .i = 0, .j = 1 }),
+        arr.scalarAt(.{ .i = 1, .j = 0 }),
+        arr.scalarAt(.{ .i = 1, .j = 1 }),
     };
     const expected = [_]i32{ 1, 3, 4, 6 };
     try std.testing.expectEqualSlices(i32, &actual, &expected);
@@ -663,9 +658,9 @@ test "slice" {
     };
     arr.idx = arr.idx.sliceAxis(.j, 1, 2);
 
-    try std.testing.expectEqual(2, arr.getVal(.{ .i = 0, .j = 0 }));
-    try std.testing.expectEqual(5, arr.getVal(.{ .i = 1, .j = 0 }));
-    try std.testing.expectEqual(null, arr.getValChecked(.{ .i = 1, .j = 1 }));
+    try std.testing.expectEqual(2, arr.scalarAt(.{ .i = 0, .j = 0 }));
+    try std.testing.expectEqual(5, arr.scalarAt(.{ .i = 1, .j = 0 }));
+    try std.testing.expectEqual(null, arr.scalarAtChecked(.{ .i = 1, .j = 1 }));
 }
 
 test "keepOnly" {
@@ -682,9 +677,9 @@ test "keepOnly" {
         .buf = arr.buf,
     };
 
-    try std.testing.expectEqual(1, squeezed.getVal(.{ .i = 0, .j = 0 }));
-    try std.testing.expectEqual(4, squeezed.getVal(.{ .i = 3, .j = 0 }));
-    try std.testing.expectEqual(null, squeezed.getValChecked(.{ .i = 0, .j = 1 }));
+    try std.testing.expectEqual(1, squeezed.scalarAt(.{ .i = 0, .j = 0 }));
+    try std.testing.expectEqual(4, squeezed.scalarAt(.{ .i = 3, .j = 0 }));
+    try std.testing.expectEqual(null, squeezed.scalarAtChecked(.{ .i = 0, .j = 1 }));
 
     //Should panic if any removed axis does not have size 1
     if (false) {

@@ -546,9 +546,7 @@ pub fn resolveDimensions(shapes: anytype) NamedIndexError!KeyStruct(unionOfAxisN
         if (@field(resolved_optional, axis_name)) |size| {
             @field(resolved_shape, axis_name) = size;
         } else {
-            // This case should not be hit if an axis is present in at least one shape.
-            // If an axis is defined but never appears in any input shape, default to 1.
-            @field(resolved_shape, axis_name) = 1;
+            @panic("Missing axis name: " ++ axis_name);
         }
     }
 
@@ -797,21 +795,21 @@ pub fn Xor(comptime Enum1: type, comptime Enum2: type) type {
 }
 
 fn unionOfAxisNames(comptime ShapeTupleType: type) []const [:0]const u8 {
-    const tuple_info = @typeInfo(ShapeTupleType).@"struct";
-    const max_axes = comptime blk: {
+    comptime {
+        const tuple_info = @typeInfo(ShapeTupleType).@"struct";
         var sum: usize = 0;
         for (tuple_info.fields) |tuple_field| {
             const info = @typeInfo(tuple_field.type);
             if (info != .@"struct") @compileError("Shape must be a struct");
+            for (info.@"struct".fields) |axis_field| {
+                if (axis_field.type != usize and axis_field.type != comptime_int) {
+                    @compileError("Expected all axes to be usize, found " ++ @typeName(axis_field.type));
+                }
+            }
             sum += info.@"struct".fields.len;
         }
-        break :blk sum;
-    };
-
-    comptime var all_names: [max_axes][:0]const u8 = undefined;
-    comptime var count: usize = 0;
-
-    comptime {
+        var all_names: [sum][:0]const u8 = undefined;
+        var count: usize = 0;
         for (tuple_info.fields) |tuple_field| {
             const info = @typeInfo(tuple_field.type);
             for (info.@"struct".fields) |field| {
@@ -828,14 +826,8 @@ fn unionOfAxisNames(comptime ShapeTupleType: type) []const [:0]const u8 {
                 }
             }
         }
+        return all_names[0..count];
     }
-
-    const sized_names: [count][:0]const u8 = blk: {
-        comptime var sized_names: [count][:0]const u8 = undefined;
-        comptime mem.copyForwards([:0]const u8, &sized_names, all_names[0..count]);
-        break :blk sized_names;
-    };
-    return &sized_names;
 }
 
 // const FieldIntersection = struct {
@@ -1455,4 +1447,13 @@ test "resolveDimensions" {
     // Test with empty tuple
     const resolved_empty = try resolveDimensions(.{});
     try std.testing.expectEqual(@typeInfo(@TypeOf(resolved_empty)).@"struct".fields.len, 0);
+
+    // Shapes with optionals (should fail)
+    if (false) {
+        const Shape4 = struct { a: usize, c: ?usize };
+        _ = try resolveDimensions(.{
+            Shape1{ .a = 10, .b = 20 },
+            Shape4{ .a = 10, .c = 30 },
+        });
+    }
 }

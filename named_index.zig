@@ -4,19 +4,6 @@ const meta = std.meta;
 const assert = std.debug.assert;
 const Type = std.builtin.Type;
 
-// Compile with "-framework Accelerate" on macOS
-// const acc = @cImport(@cInclude("Accelerate/Accelerate.h"));
-
-// TODO:
-// - .init with config struct: validate shapes and strides
-// - understand why KeyEnum is incompatible with manually created enums.
-
-// Open questions:
-// - Should we support dimensions of size 0?
-// - Should we support rank-0 indices? If so, are they empty or scalars?
-// - how should we interface with blas?
-//   - wrap blas functions, or
-//   - export NamedArray to blas arguments
 pub fn NamedIndex(comptime AxisEnum: type) type {
     _ = @typeInfo(AxisEnum).@"enum";
     const field_names = meta.fieldNames(AxisEnum);

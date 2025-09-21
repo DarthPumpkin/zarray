@@ -24,14 +24,13 @@ pub fn NamedIndex(comptime AxisEnum: type) type {
         pub const AxesOptional = optional_type: {
             const optional_fields = fields: {
                 var optional_fields_: [field_names.len]Type.StructField = undefined;
-                const optional_usize = @Type(.{ .optional = .{ .child = usize } });
                 for (field_names, 0..) |field_name, fi| {
                     optional_fields_[fi] = .{
                         .name = field_name,
-                        .type = optional_usize,
+                        .type = ?usize,
                         .default_value_ptr = &usize_null,
                         .is_comptime = false,
-                        .alignment = @alignOf(optional_usize),
+                        .alignment = @alignOf(?usize),
                     };
                 }
                 break :fields optional_fields_;

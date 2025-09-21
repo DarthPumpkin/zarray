@@ -4,6 +4,10 @@ const meta = std.meta;
 const assert = std.debug.assert;
 const Type = std.builtin.Type;
 
+pub const NamedIndexError = error{
+    ShapeMismatch,
+};
+
 pub fn NamedIndex(comptime AxisEnum: type) type {
     _ = @typeInfo(AxisEnum).@"enum";
     const field_names = meta.fieldNames(AxisEnum);
@@ -514,6 +518,44 @@ pub fn NamedIndex(comptime AxisEnum: type) type {
     };
 }
 
+/// Takes a variable number of shapes (as a tuple), possibly of different axes types, and records
+/// each axis' size.
+/// If any axis has multiple sizes, it returns an error.
+pub fn resolveDimensions(shapes: anytype) NamedIndexError!KeyStruct(unionOfAxisNames(@TypeOf(shapes))) {
+    const all_axis_names = comptime unionOfAxisNames(@TypeOf(shapes));
+    const ResolvedShape = KeyStruct(all_axis_names);
+    const ResolvedShapeOptional = NamedIndex(KeyEnum(all_axis_names)).AxesOptional;
+
+    var resolved_optional: ResolvedShapeOptional = .{};
+
+    inline for (shapes) |shape| {
+        const shape_info = @typeInfo(@TypeOf(shape)).@"struct";
+        inline for (shape_info.fields) |field| {
+            const current_size = @field(shape, field.name);
+            if (@field(resolved_optional, field.name)) |existing_size| {
+                if (existing_size != current_size) {
+                    return NamedIndexError.ShapeMismatch;
+                }
+            } else {
+                @field(resolved_optional, field.name) = current_size;
+            }
+        }
+    }
+
+    var resolved_shape: ResolvedShape = undefined;
+    inline for (all_axis_names) |axis_name| {
+        if (@field(resolved_optional, axis_name)) |size| {
+            @field(resolved_shape, axis_name) = size;
+        } else {
+            // This case should not be hit if an axis is present in at least one shape.
+            // If an axis is defined but never appears in any input shape, default to 1.
+            @field(resolved_shape, axis_name) = 1;
+        }
+    }
+
+    return resolved_shape;
+}
+
 /// Struct for axis renaming pairs
 pub const AxisRenamePair = struct { old: []const u8, new: []const u8 };
 
@@ -753,6 +795,48 @@ pub fn Xor(comptime Enum1: type, comptime Enum2: type) type {
     assert(i == xor_len);
 
     return KeyEnum(&xor_fnames);
+}
+
+fn unionOfAxisNames(comptime ShapeTupleType: type) []const [:0]const u8 {
+    const tuple_info = @typeInfo(ShapeTupleType).@"struct";
+    const max_axes = comptime blk: {
+        var sum: usize = 0;
+        for (tuple_info.fields) |tuple_field| {
+            const info = @typeInfo(tuple_field.type);
+            if (info != .@"struct") @compileError("Shape must be a struct");
+            sum += info.@"struct".fields.len;
+        }
+        break :blk sum;
+    };
+
+    comptime var all_names: [max_axes][:0]const u8 = undefined;
+    comptime var count: usize = 0;
+
+    comptime {
+        for (tuple_info.fields) |tuple_field| {
+            const info = @typeInfo(tuple_field.type);
+            for (info.@"struct".fields) |field| {
+                var found = false;
+                for (all_names[0..count]) |existing_name| {
+                    if (mem.eql(u8, existing_name, field.name)) {
+                        found = true;
+                        break;
+                    }
+                }
+                if (!found) {
+                    all_names[count] = field.name;
+                    count += 1;
+                }
+            }
+        }
+    }
+
+    const sized_names: [count][:0]const u8 = blk: {
+        comptime var sized_names: [count][:0]const u8 = undefined;
+        comptime mem.copyForwards([:0]const u8, &sized_names, all_names[0..count]);
+        break :blk sized_names;
+    };
+    return &sized_names;
 }
 
 // const FieldIntersection = struct {
@@ -1338,4 +1422,38 @@ test "KeyEnum" {
     const info2 = @typeInfo(IJ2).@"enum";
 
     try std.testing.expectEqual(info1, info2);
+}
+
+test "resolveDimensions" {
+    const Shape1 = struct { a: usize, b: usize };
+    const Shape2 = struct { b: usize, c: usize };
+    const Shape3 = struct { d: usize };
+
+    // Consistent sizes
+    const s1: Shape1 = .{ .a = 10, .b = 20 };
+    var s2: Shape2 = .{ .b = 20, .c = 30 };
+    const s3: Shape3 = .{ .d = 40 };
+
+    const resolved = try resolveDimensions(.{ s1, s2, s3 });
+    try std.testing.expectEqual(@typeInfo(@TypeOf(resolved)).@"struct".fields.len, 4);
+    try std.testing.expectEqual(10, resolved.a);
+    try std.testing.expectEqual(20, resolved.b);
+    try std.testing.expectEqual(30, resolved.c);
+    try std.testing.expectEqual(40, resolved.d);
+
+    // Inconsistent size for 'b'
+    s2.b = 99;
+    const err = resolveDimensions(.{ s1, s2 });
+    try std.testing.expectError(NamedIndexError.ShapeMismatch, err);
+
+    // Test with one shape
+    const resolved_one = try resolveDimensions(.{
+        .{ .a = 5, .b = 6 },
+    });
+    try std.testing.expectEqual(5, resolved_one.a);
+    try std.testing.expectEqual(6, resolved_one.b);
+
+    // Test with empty tuple
+    const resolved_empty = try resolveDimensions(.{});
+    try std.testing.expectEqual(@typeInfo(@TypeOf(resolved_empty)).@"struct".fields.len, 0);
 }

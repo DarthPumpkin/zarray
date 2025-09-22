@@ -6,6 +6,7 @@ const Type = std.builtin.Type;
 
 pub const NamedIndexError = error{
     ShapeMismatch,
+    StrideMisalignment,
 };
 
 pub fn NamedIndex(comptime AxisEnum: type) type {
@@ -17,34 +18,10 @@ pub fn NamedIndex(comptime AxisEnum: type) type {
         offset: usize = 0,
 
         pub const Axis = AxisEnum;
-        pub const Axes = KeyStruct(field_names);
+        pub const Axes = AxesStruct(field_names);
+        pub const AxesOptional = AxesOptionalStruct(field_names);
 
-        const usize_null: ?usize = null;
         /// Same fields as `Key`, but they are optional.
-        pub const AxesOptional = optional_type: {
-            const optional_fields = fields: {
-                var optional_fields_: [field_names.len]Type.StructField = undefined;
-                for (field_names, 0..) |field_name, fi| {
-                    optional_fields_[fi] = .{
-                        .name = field_name,
-                        .type = ?usize,
-                        .default_value_ptr = &usize_null,
-                        .is_comptime = false,
-                        .alignment = @alignOf(?usize),
-                    };
-                }
-                break :fields optional_fields_;
-            };
-            const type_info: Type = .{ .@"struct" = .{
-                .layout = .auto,
-                .fields = &optional_fields,
-                .decls = &[_]Type.Declaration{},
-                .is_tuple = false,
-            } };
-            const type_ = @Type(type_info);
-            break :optional_type type_;
-        };
-
         /// Create contiguous index in "row-major" order, where the last field is treated as the
         /// 'row' dimension.
         pub fn initContiguous(shape: Axes) @This() {
@@ -190,7 +167,7 @@ pub fn NamedIndex(comptime AxisEnum: type) type {
             if (@field(self.shape, axis_name) != 1)
                 @panic("squeezeAxis: axis size must be 1");
             const NewEnum = Removed(Axis, axis_name);
-            const NewKey = KeyStruct(meta.fieldNames(NewEnum));
+            const NewKey = AxesStruct(meta.fieldNames(NewEnum));
             const new_shape: NewKey = blk: {
                 var tmp: NewKey = undefined;
                 inline for (field_names) |field_name| {
@@ -252,7 +229,7 @@ pub fn NamedIndex(comptime AxisEnum: type) type {
             }
 
             // Build new shape and strides
-            const NewKey = KeyStruct(new_field_names);
+            const NewKey = AxesStruct(new_field_names);
             var new_shape: NewKey = undefined;
             var new_strides: NewKey = undefined;
             inline for (new_field_names) |new_name| {
@@ -293,7 +270,7 @@ pub fn NamedIndex(comptime AxisEnum: type) type {
             }
 
             // Build new shape and strides
-            const NewKey = KeyStruct(new_field_names);
+            const NewKey = AxesStruct(new_field_names);
             var new_shape: NewKey = undefined;
             var new_strides: NewKey = undefined;
             inline for (new_field_names) |new_name| {
@@ -373,7 +350,7 @@ pub fn NamedIndex(comptime AxisEnum: type) type {
         ) NamedIndex(Added(Axis, axis)) {
         // zig fmt: on
             const NewEnum = Added(Axis, axis);
-            const NewKey = KeyStruct(meta.fieldNames(NewEnum));
+            const NewKey = AxesStruct(meta.fieldNames(NewEnum));
             const new_shape: NewKey = blk: {
                 var tmp: NewKey = undefined;
                 inline for (field_names) |field_name| {
@@ -496,6 +473,109 @@ pub fn NamedIndex(comptime AxisEnum: type) type {
             };
         }
 
+        /// Split a single axis into multiple axes.
+        /// - `TargetEnum` is the axes enum type of the new index.
+        /// - `target_shape` is an AxesOptional for the target axes, specifying the shape of each split axis.
+        /// Returns a new NamedIndex with the split axes.
+        pub fn splitAxis(
+            self: *const @This(),
+            comptime TargetEnum: type,
+            splitShapes: AxesOptionalStruct(meta.fieldNames(TargetEnum)),
+        ) NamedIndex(TargetEnum) {
+            const SourceEnum = Axis;
+            const source_field_names = comptime meta.fieldNames(SourceEnum);
+            const target_field_names = comptime meta.fieldNames(TargetEnum);
+
+            // Find which axis in source is being split (present in source but not in target)
+            var split_axis_name: ?[]const u8 = null;
+            var split_axis_shape: usize = 0;
+            var split_axis_stride: usize = 0;
+            inline for (source_field_names) |src_name| {
+                var found = false;
+                inline for (target_field_names) |tgt_name| {
+                    if (mem.eql(u8, src_name, tgt_name)) {
+                        found = true;
+                        break;
+                    }
+                }
+                if (!found) {
+                    split_axis_name = src_name;
+                    split_axis_shape = @field(self.shape, src_name);
+                    split_axis_stride = @field(self.strides, src_name);
+                    break;
+                }
+            }
+            if (split_axis_name == null)
+                @panic("splitAxis: No axis to split found");
+
+            // Find which axes in target are new (present in target but not in source)
+            var new_axes: [target_field_names.len]struct { name: []const u8, shape: usize } = undefined;
+            comptime var new_axes_count: usize = 0;
+            inline for (target_field_names) |tgt_name| {
+                comptime var found = false;
+                inline for (source_field_names) |src_name| {
+                    if (comptime mem.eql(u8, tgt_name, src_name)) {
+                        found = true;
+                        break;
+                    }
+                }
+                if (comptime !found) {
+                    // Must be provided in target_shape
+                    const shape_opt = @field(splitShapes, tgt_name);
+                    if (shape_opt == null)
+                        @panic("splitAxis: target_shape missing shape for axis '" ++ tgt_name ++ "'");
+                    new_axes[new_axes_count] = .{ .name = tgt_name, .shape = shape_opt.? };
+                    new_axes_count += 1;
+                }
+            }
+
+            // Product of new axes shapes must equal split axis shape
+            var prod: usize = 1;
+            inline for (0..new_axes_count) |i| {
+                prod *= new_axes[i].shape;
+            }
+            if (prod != split_axis_shape)
+                @panic("splitAxis: product of split axes shapes does not match source axis shape");
+
+            // Build new shape and strides
+            const NewKey = AxesStruct(target_field_names);
+            var new_shape: NewKey = undefined;
+            var new_strides: NewKey = undefined;
+
+            // For axes present in both, copy shape and stride
+            var stride_: usize = split_axis_stride;
+            inline for (0..target_field_names.len) |tgt_idx| {
+                const tgt_idx_rev = target_field_names.len - 1 - tgt_idx;
+                const tgt_name = target_field_names[tgt_idx_rev];
+                var found = false;
+                inline for (source_field_names) |src_name| {
+                    if (mem.eql(u8, tgt_name, src_name)) {
+                        @field(new_shape, tgt_name) = @field(self.shape, src_name);
+                        @field(new_strides, tgt_name) = @field(self.strides, src_name);
+                        found = true;
+                        break;
+                    }
+                }
+                if (!found) {
+                    // For split axes, assign shape and contiguous strides
+                    // Compute stride for each split axis
+                    inline for (0..new_axes_count) |i| {
+                        if (mem.eql(u8, tgt_name, new_axes[i].name)) {
+                            @field(new_shape, tgt_name) = new_axes[i].shape;
+                            @field(new_strides, tgt_name) = stride_;
+                            stride_ *= new_axes[i].shape;
+                        }
+                    }
+                }
+            }
+
+            return .{
+                .shape = new_shape,
+                .strides = new_strides,
+                .offset = self.offset,
+            };
+        }
+
         /// DeprecatedRename an axis.
         // zig fmt: off
         pub fn rename_old(self: *const @This(),
@@ -505,7 +585,7 @@ pub fn NamedIndex(comptime AxisEnum: type) type {
         // zig fmt: on
             const old_name = field_names[@intFromEnum(axis)];
             const NewEnum = Renamed(Axis, old_name, new_name);
-            const NewKey = KeyStruct(meta.fieldNames(NewEnum));
+            const NewKey = AxesStruct(meta.fieldNames(NewEnum));
             const new_shape: NewKey = @bitCast(self.shape);
             const new_strides: NewKey = @bitCast(self.strides);
             return .{
@@ -520,9 +600,9 @@ pub fn NamedIndex(comptime AxisEnum: type) type {
 /// Takes a variable number of shapes (as a tuple), possibly of different axes types, and records
 /// each axis' size.
 /// If any axis has multiple sizes, it returns an error.
-pub fn resolveDimensions(shapes: anytype) NamedIndexError!KeyStruct(unionOfAxisNames(@TypeOf(shapes))) {
+pub fn resolveDimensions(shapes: anytype) NamedIndexError!AxesStruct(unionOfAxisNames(@TypeOf(shapes))) {
     const all_axis_names = comptime unionOfAxisNames(@TypeOf(shapes));
-    const ResolvedShape = KeyStruct(all_axis_names);
+    const ResolvedShape = AxesStruct(all_axis_names);
     const ResolvedShapeOptional = NamedIndex(KeyEnum(all_axis_names)).AxesOptional;
 
     var resolved_optional: ResolvedShapeOptional = .{};
@@ -621,7 +701,7 @@ fn fnames_gt(strides_arr: []const usize, lhs: usize, rhs: usize) bool {
 }
 
 /// Reify a key struct with given field names.
-pub fn KeyStruct(comptime names: []const [:0]const u8) type {
+pub fn AxesStruct(comptime names: []const [:0]const u8) type {
     const rank = names.len;
     const fields = fields: {
         var fields_: [rank]Type.StructField = undefined;
@@ -644,6 +724,31 @@ pub fn KeyStruct(comptime names: []const [:0]const u8) type {
         .is_tuple = false,
     };
     return @Type(Type{ .@"struct" = new_struct });
+}
+
+pub fn AxesOptionalStruct(comptime names: []const [:0]const u8) type {
+    const usize_null: ?usize = null;
+    const optional_fields = fields: {
+        var optional_fields_: [names.len]Type.StructField = undefined;
+        for (names, 0..) |field_name, fi| {
+            optional_fields_[fi] = .{
+                .name = field_name,
+                .type = ?usize,
+                .default_value_ptr = &usize_null,
+                .is_comptime = false,
+                .alignment = @alignOf(?usize),
+            };
+        }
+        break :fields optional_fields_;
+    };
+    const type_info: Type = .{ .@"struct" = .{
+        .layout = .auto,
+        .fields = &optional_fields,
+        .decls = &[_]Type.Declaration{},
+        .is_tuple = false,
+    } };
+    const type_ = @Type(type_info);
+    return type_;
 }
 
 /// Reify an enum with given field names.
@@ -1457,3 +1562,117 @@ test "resolveDimensions" {
         });
     }
 }
+
+// test "mergeAxes" {
+//     const SourceAxes = enum { i, j, k };
+//     const TargetAxes = enum { i, jk };
+
+//     const source_idx: NamedIndex(SourceAxes) = .initContiguous(.{ .i = 2, .j = 3, .k = 5 });
+//     const expected_reshaped: NamedIndex(TargetAxes) = .initContiguous(.{ .i = 2, .jk = 15 });
+
+//     const actual_reshaped = try source_idx.mergeAxes(TargetAxes);
+
+//     try std.testing.expectEqual(expected_reshaped, actual_reshaped);
+
+//     // Error if axes cannot be merged due to stride misalignment
+//     const error_source: NamedIndex(SourceAxes) = .{
+//         .shape = .{ .i = 2, .j = 3, .k = 5 },
+//         .strides = .{ .i = 18, .j = 6, .k = 1 },
+//     };
+
+//     const error_actual = error_source.mergeAxes(TargetAxes);
+
+//     try std.testing.expectError(.StrideMisalignment, error_actual);
+// }
+
+test "splitAxis" {
+    const SourceAxes = enum { i, jk };
+    const TargetAxes = enum { i, j, k };
+
+    const source_idx: NamedIndex(SourceAxes) = .initContiguous(.{ .i = 2, .jk = 15 });
+    const expected_split: NamedIndex(TargetAxes) = .initContiguous(.{ .i = 2, .j = 3, .k = 5 });
+
+    // Cannot error: splitting always possible
+    const actual_split = source_idx.splitAxis(TargetAxes, .{ .j = 3, .k = 5 });
+
+    try std.testing.expectEqual(expected_split, actual_split);
+}
+
+test "splitAxis non-contiguous" {
+    const SourceAxes = enum { i, jk };
+    const TargetAxes = enum { i, j, k };
+
+    // Create a non-contiguous source index: jk axis is not contiguous
+    const source_idx: NamedIndex(SourceAxes) = .{
+        .shape = .{ .i = 2, .jk = 15 },
+        .strides = .{ .i = 106, .jk = 7 }, // jk stride is not 1, so not contiguous
+        .offset = 5,
+    };
+
+    // Split jk into j=3, k=5
+    const actual_split = source_idx.splitAxis(TargetAxes, .{ .j = 3, .k = 5 });
+
+    const expected_split: NamedIndex(TargetAxes) = .{
+        .shape = .{ .i = 2, .j = 3, .k = 5 },
+        .strides = .{ .i = 106, .j = 35, .k = 7 },
+        .offset = 5,
+    };
+
+    try std.testing.expectEqual(expected_split, actual_split);
+}
+
+test "splitAxis into three" {
+    const SourceAxes = enum { i, jkl, m };
+    const TargetAxes = enum { i, j, k, l, m };
+
+    const source_idx = NamedIndex(SourceAxes).initContiguous(.{ .i = 2, .jkl = 105, .m = 11 });
+    const expected_split = NamedIndex(TargetAxes).initContiguous(.{ .i = 2, .j = 3, .k = 5, .l = 7, .m = 11 });
+    const actual_split = source_idx.splitAxis(TargetAxes, .{ .j = 3, .k = 5, .l = 7 });
+
+    try std.testing.expectEqual(expected_split, actual_split);
+}
+
+// test "reindex: merge axes" {
+//     const SourceAxes = enum { i, j, k };
+//     const TargetAxes = enum { i, jk };
+
+//     const source_idx: NamedIndex(SourceAxes) = .initContiguous(.{ .i = 2, .j = 3, .k = 5 });
+//     const expected_reshaped: NamedIndex(TargetAxes) = .initContiguous(.{ .i = 2, .jk = 15 });
+
+//     // Error if axes cannot be merged due to stride misalignment
+//     const actual_reshaped = try source_idx.reindex(TargetAxes, .{
+//         // .{ .{ .j, .k }, .jk },
+//         "j k -> jk",
+//     });
+
+//     try std.testing.assertEqual(expected_reshaped, actual_reshaped);
+// }
+
+// test "reindex: split axes" {
+//     const SourceAxes = enum { i, jk };
+//     const TargetAxes = enum { i, j, k };
+
+//     const source_idx: NamedIndex(SourceAxes) = .initContiguous(.{ .i = 2, .jk = 15 });
+//     const expected_split: NamedIndex(TargetAxes) = .initContiguous(.{ .i = 2, .j = 3, .k = 5 });
+
+//     // Error if axes cannot be split due to stride misalignment
+//     const actual_split = try source_idx.reindex(TargetAxes, .{
+//         "jk -> j k",
+//     });
+
+//     try std.testing.assertEqual(expected_split, actual_split);
+// }
+
+// test "reindex: add axis" {
+//     const SourceAxes = enum { i };
+//     const TargetAxes = enum { i, j };
+
+//     const source_idx: NamedIndex(SourceAxes) = .initContiguous(.{ .i = 2 });
+//     const expected_added: NamedIndex(TargetAxes) = .initContiguous(.{ .i = 2, .j = 1 });
+
+//     const actual_added = try source_idx.reindex(TargetAxes, .{
+//         "-> j",
+//     });
+
+//     try std.testing.expectEqual(expected_added, actual_added);
+// }

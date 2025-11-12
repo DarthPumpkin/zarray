@@ -94,6 +94,17 @@ pub fn NamedArray(comptime Axis: type, comptime Scalar: type) type {
                 .buf = self.buf,
             };
         }
+
+        /// Merge several axes of this array into a single axis described by `NewEnum`.
+        /// This is a zero-copy view transformation; it fails if the axes to be merged
+        /// are not laid out contiguously according to stride relationships.
+        pub fn mergeAxes(self: *const @This(), comptime NewEnum: type) !NamedArray(NewEnum, Scalar) {
+            const new_idx = try self.idx.mergeAxes(NewEnum);
+            return .{
+                .idx = new_idx,
+                .buf = self.buf,
+            };
+        }
     };
 }
 
@@ -146,6 +157,17 @@ pub fn NamedArrayConst(comptime Axis: type, comptime Scalar: type) type {
         pub fn renameAxes(self: *const @This(), comptime NewEnum: type, comptime rename_pairs: []const AxisRenamePair) NamedArrayConst(NewEnum, Scalar) {
             return .{
                 .idx = self.idx.rename(NewEnum, rename_pairs),
+                .buf = self.buf,
+            };
+        }
+
+        /// Merge several axes of this const array into a single axis described by `NewEnum`.
+        /// This is a zero-copy view transformation; it fails if the axes to be merged
+        /// are not laid out contiguously according to stride relationships.
+        pub fn mergeAxes(self: *const @This(), comptime NewEnum: type) !NamedArrayConst(NewEnum, Scalar) {
+            const new_idx = try self.idx.mergeAxes(NewEnum);
+            return .{
+                .idx = new_idx,
                 .buf = self.buf,
             };
         }
@@ -514,6 +536,67 @@ test "NamedArrayConst conformAxes" {
         };
         _ = arr_bad.conformAxes(IKL);
     }
+}
+
+test "mergeAxes" {
+    const IJK = enum { i, j, k };
+    const IL = enum { i, l };
+
+    const buf_1_through_24 = [_]i32{
+        1,  2,  3,  4,
+        5,  6,  7,  8,
+        9,  10, 11, 12,
+
+        13, 14, 15, 16,
+        17, 18, 19, 20,
+        21, 22, 23, 24,
+    };
+
+    const arr_ijk = NamedArrayConst(IJK, i32){
+        .idx = .initContiguous(.{
+            .i = 2,
+            .j = 3,
+            .k = 4,
+        }),
+        .buf = &buf_1_through_24,
+    };
+    const arr_il = try arr_ijk.mergeAxes(IL);
+
+    try std.testing.expectEqual(NamedIndex(IL).Axes{ .i = 2, .l = 12 }, arr_il.idx.shape);
+    try std.testing.expectEqual(2, arr_il.scalarAt(.{ .i = 0, .l = 1 }));
+    try std.testing.expectEqual(15, arr_il.scalarAt(.{ .i = 1, .l = 2 }));
+
+    // Failing case: last dim has stride 3, but shape 4 -> cannot merge without copying
+    const arr_ijk_strided = NamedArrayConst(IJK, i32){
+        .idx = .{
+            .strides = .{ .i = 12, .j = 4, .k = 3 },
+            .shape = .{ .i = 2, .j = 3, .k = 2 },
+        },
+        .buf = &buf_1_through_24,
+    };
+
+    try std.testing.expectError(named_index.NamedIndexError.StrideMisalignment, arr_ijk_strided.mergeAxes(IL));
+
+    // Failing case: axes not consecutive (j i k -> i l)
+    const arr_ijk_noncon = NamedArrayConst(IJK, i32){
+        .idx = .{
+            .strides = .{ .i = 4, .j = 8, .k = 1 },
+            .shape = .{ .i = 2, .j = 3, .k = 4 },
+        },
+        .buf = &buf_1_through_24,
+    };
+
+    try std.testing.expectError(named_index.NamedIndexError.StrideMisalignment, arr_ijk_noncon.mergeAxes(IL));
+
+    // Edge case: shape (1, 1, 1)
+    const buf_single = [_]i32{42};
+    const arr_ones = NamedArrayConst(IJK, i32){
+        .idx = .initContiguous(.{ .i = 1, .j = 1, .k = 1 }),
+        .buf = &buf_single,
+    };
+    const arr_ones_merged = try arr_ones.mergeAxes(IL);
+    try std.testing.expectEqual(NamedIndex(IL).Axes{ .i = 1, .l = 1 }, arr_ones_merged.idx.shape);
+    try std.testing.expectEqual(42, arr_ones_merged.scalarAt(.{ .i = 0, .l = 0 }));
 }
 
 // Rank-0 arrays currently not supported

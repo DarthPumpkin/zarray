@@ -576,6 +576,103 @@ pub fn NamedIndex(comptime AxisEnum: type) type {
             };
         }
 
+        /// Merge several source axes (present in the source enum, absent in the target enum) into
+        /// one new axis (present only in the target enum). Zero‑copy: only shape/strides change.
+        ///
+        /// Requirements:
+        /// - TargetEnum must introduce exactly one new axis.
+        /// - At least two source axes must be merged (otherwise meaningless).
+        /// - The merged axes must form a contiguous stride block:
+        ///     After sorting merged axes by descending stride:
+        ///         stride[i] == stride[i+1] * shape[i+1]
+        ///   for every consecutive pair.
+        pub fn mergeAxes(self: *const @This(), comptime TargetEnum: type) NamedIndexError!NamedIndex(TargetEnum) {
+            const source_field_names = field_names;
+            const target_field_names = comptime meta.fieldNames(TargetEnum);
+            // Identify the single new axis in TargetEnum.
+            comptime var new_axis_count: usize = 0;
+            comptime var new_axis_name: [:0]const u8 = "";
+            inline for (target_field_names) |tgt_name| {
+                comptime var found = false;
+                inline for (source_field_names) |src_name| {
+                    if (comptime mem.eql(u8, src_name, tgt_name)) {
+                        found = true;
+                        break;
+                    }
+                }
+                if (comptime !found) {
+                    new_axis_count += 1;
+                    new_axis_name = tgt_name;
+                }
+            }
+            if (new_axis_count != 1)
+                return NamedIndexError.StrideMisalignment;
+            // Collect indices (into source arrays) of axes to merge.
+            var merged_indices: [source_field_names.len]usize = undefined;
+            var merged_count: usize = 0;
+            inline for (source_field_names, 0..) |src_name, si| {
+                comptime var found = false;
+                inline for (target_field_names) |tgt_name| {
+                    if (comptime mem.eql(u8, src_name, tgt_name)) {
+                        found = true;
+                        break;
+                    }
+                }
+                if (comptime !found) {
+                    merged_indices[merged_count] = si;
+                    merged_count += 1;
+                }
+            }
+            if (merged_count < 2)
+                return NamedIndexError.StrideMisalignment;
+            // Extract runtime stride/shape arrays for source axes.
+            const strides_source: [source_field_names.len]usize = @bitCast(self.strides);
+            const shapes_source: [source_field_names.len]usize = @bitCast(self.shape);
+            // Sort merged_indices by descending stride (insertion sort).
+            var i: usize = 1;
+            while (i < merged_count) : (i += 1) {
+                var j: usize = i;
+                while (j > 0 and strides_source[merged_indices[j - 1]] < strides_source[merged_indices[j]]) : (j -= 1) {
+                    const tmp = merged_indices[j - 1];
+                    merged_indices[j - 1] = merged_indices[j];
+                    merged_indices[j] = tmp;
+                }
+            }
+            // Verify contiguity relationship.
+            var mi: usize = 0;
+            while (mi + 1 < merged_count) : (mi += 1) {
+                const lhs = strides_source[merged_indices[mi]];
+                const rhs = strides_source[merged_indices[mi + 1]] * shapes_source[merged_indices[mi + 1]];
+                if (lhs != rhs)
+                    return NamedIndexError.StrideMisalignment;
+            }
+            // Compute merged shape product & merged stride (fastest varying axis = last element).
+            var merged_shape_product: usize = 1;
+            var k: usize = 0;
+            while (k < merged_count) : (k += 1) {
+                merged_shape_product *= shapes_source[merged_indices[k]];
+            }
+            const merged_stride = strides_source[merged_indices[merged_count - 1]];
+            // Build new index (TargetEnum).
+            const NewKey = AxesStruct(target_field_names);
+            var new_shape: NewKey = undefined;
+            var new_strides: NewKey = undefined;
+            inline for (target_field_names) |tgt_name| {
+                if (comptime mem.eql(u8, tgt_name, new_axis_name)) {
+                    @field(new_shape, tgt_name) = merged_shape_product;
+                    @field(new_strides, tgt_name) = merged_stride;
+                } else {
+                    @field(new_shape, tgt_name) = @field(self.shape, tgt_name);
+                    @field(new_strides, tgt_name) = @field(self.strides, tgt_name);
+                }
+            }
+            return NamedIndex(TargetEnum){
+                .shape = new_shape,
+                .strides = new_strides,
+                .offset = self.offset,
+            };
+        }
+
         /// DeprecatedRename an axis.
         // zig fmt: off
         pub fn rename_old(self: *const @This(),

@@ -173,7 +173,7 @@ pub fn einsum(
             sum = arrA.scalarAt(keyA) * arrB.scalarAt(keyB);
         } else {
             // For each contracted key
-            const ContractedKey = named_index.KeyStruct(contracted_names);
+            const ContractedKey = named_index.AxesStruct(contracted_names);
             var contracted_shape: ContractedKey = undefined;
             inline for (contracted_names) |name| {
                 @field(contracted_shape, name) = @field(arrA.idx.shape, name);
@@ -233,10 +233,10 @@ test "add inplace" {
 
 test "add broadcasted" {
     const I = enum { i };
-    const IJ = named_index.KeyEnum(&.{ "i", "j" });
+    const IJ = enum { i, j };
     const idx_broad = NamedIndex(I)
         .initContiguous(.{ .i = 3 })
-        .addEmptyAxis("j")
+        .conformAxes(IJ)
         .broadcastAxis(.j, 4);
     const idx_out = NamedIndex(IJ)
         .initContiguous(.{ .i = 3, .j = 4 });

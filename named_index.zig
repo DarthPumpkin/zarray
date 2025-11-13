@@ -9,146 +9,230 @@ pub const NamedIndexError = error{
     StrideMisalignment,
 };
 
+// Generic struct factory for axis collections of arbitrary scalar type.
+pub fn AxesStructOf(comptime names: []const [:0]const u8, comptime T: type) type {
+    const rank = names.len;
+    const fields = comptime blk: {
+        var fields_: [rank]Type.StructField = undefined;
+        for (0..rank) |i| {
+            fields_[i] = .{
+                .name = names[i],
+                .type = T,
+                .default_value_ptr = null,
+                .is_comptime = false,
+                .alignment = 0,
+            };
+        }
+        break :blk fields_;
+    };
+    const s: Type.Struct = .{
+        .layout = .@"packed",
+        .backing_integer = null,
+        .fields = &fields,
+        .decls = &.{},
+        .is_tuple = false,
+    };
+    return @Type(Type{ .@"struct" = s });
+}
+
+// Optional variant
+pub fn AxesOptionalStructOf(comptime names: []const [:0]const u8, comptime T: type) type {
+    const optT = ?T;
+    const default_val: optT = null;
+    const rank = names.len;
+    const fields = comptime blk: {
+        var fields_: [rank]Type.StructField = undefined;
+        for (0..rank) |i| {
+            fields_[i] = .{
+                .name = names[i],
+                .type = optT,
+                .default_value_ptr = &default_val,
+                .is_comptime = false,
+                .alignment = @alignOf(optT),
+            };
+        }
+        break :blk fields_;
+    };
+    const s: Type.Struct = .{
+        .layout = .auto,
+        .fields = &fields,
+        .decls = &.{},
+        .is_tuple = false,
+    };
+    return @Type(Type{ .@"struct" = s });
+}
+
+pub fn AxesStruct(comptime names: []const [:0]const u8) type {
+    return AxesStructOf(names, usize);
+}
+pub fn AxesOptionalStruct(comptime names: []const [:0]const u8) type {
+    return AxesOptionalStructOf(names, usize);
+}
+
 pub fn NamedIndex(comptime AxisEnum: type) type {
     _ = @typeInfo(AxisEnum).@"enum";
     const field_names = meta.fieldNames(AxisEnum);
     return struct {
+        // Shapes remain unsigned
         shape: Axes,
-        strides: Axes,
+        // Strides now signed to allow negative traversal
+        strides: Strides,
         offset: usize = 0,
 
         pub const Axis = AxisEnum;
         pub const Axes = AxesStruct(field_names);
-        pub const AxesOptional = AxesOptionalStruct(field_names);
+        pub const Strides = AxesStructOf(field_names, isize);
+        pub const AxesOptional = AxesOptionalStruct(field_names); // shape-related optionals (?usize)
+        pub const StepsOptional = AxesOptionalStructOf(field_names, isize); // stride step optionals (?isize)
 
-        /// Same fields as `Key`, but they are optional.
-        /// Create contiguous index in "row-major" order, where the last field is treated as the
-        /// 'row' dimension.
+        /// Create contiguous index (row-major: last axis fastest).
         pub fn initContiguous(shape: Axes) @This() {
             const rank = field_names.len;
             const field_names_rev = comptime rev: {
-                var field_names_rev_: [rank][:0]const u8 = undefined;
-                mem.copyForwards([:0]const u8, &field_names_rev_, field_names);
-                mem.reverse([:0]const u8, &field_names_rev_);
-                break :rev field_names_rev_;
+                var tmp: [rank][:0]const u8 = undefined;
+                mem.copyForwards([:0]const u8, &tmp, field_names);
+                mem.reverse([:0]const u8, &tmp);
+                break :rev tmp;
             };
 
-            var strides: Axes = undefined;
-            var next_stride: usize = 1;
-            inline for (field_names_rev) |field_name| {
-                @field(strides, field_name) = next_stride;
-                next_stride *= @field(shape, field_name);
+            var strides: Strides = undefined;
+            var next_stride: isize = 1;
+            inline for (field_names_rev) |fname| {
+                @field(strides, fname) = next_stride;
+                next_stride *= @intCast(@field(shape, fname));
             }
-            return .{
-                .shape = shape,
-                .strides = strides,
-                .offset = 0,
-            };
-            // Alternative implementation via indexing
-            // inline for (0..rank) |fi| {
-            //     const field_name = field_names[rank - 1 - fi];
-            //     @field(strides, field_name) = next_stride;
-            //     next_stride *= @field(shape, field_name);
-            // }
+            return .{ .shape = shape, .strides = strides, .offset = 0 };
         }
 
-        pub fn iterKeys(self: *const @This()) KeyIterator(Axes) {
-            return KeyIterator(Axes).init(self.shape, self.strides);
+        pub fn iterKeys(self: *const @This()) KeyIterator(Axes, Strides) {
+            return KeyIterator(Axes, Strides).init(self.shape, self.strides);
         }
 
-        /// Return the offset into the linear buffer for the given structured index.
-        /// If the index is out of bounds, return null.
         pub fn linearChecked(self: *const @This(), index: Axes) ?usize {
-            if (!self.withinBounds(index))
-                return null;
-            return linear(self, index);
+            if (!self.withinBounds(index)) return null;
+            return self.linear(index);
         }
 
         pub fn linear(self: *const @This(), index: Axes) usize {
             assert(self.withinBounds(index));
-            var sum = self.offset;
-            inline for (field_names) |field_name| {
-                sum += @field(self.strides, field_name) * @field(index, field_name);
+            var sum: isize = @intCast(self.offset);
+            inline for (field_names) |fname| {
+                const stride_: isize = @field(self.strides, fname);
+                const idx: isize = @intCast(@field(index, fname));
+                sum += stride_ * idx;
             }
-            return sum;
+            if (sum < 0) @panic("linear: negative buffer address (offset/stride mismatch)");
+            return @intCast(sum);
         }
 
         pub fn withinBounds(self: *const @This(), index: Axes) bool {
-            inline for (field_names) |field_name| {
-                if (@field(self.shape, field_name) <= @field(index, field_name))
-                    return false;
+            inline for (field_names) |fname| {
+                if (@field(self.shape, fname) <= @field(index, fname)) return false;
             }
             return true;
         }
 
-        /// Stride a single axis by a given step size.
-        /// Equivalent to `::step` syntax in python.
-        /// Panics if `step` is zero.
-        pub fn strideAxis(self: *const @This(), comptime axis: Axis, step: usize) @This() {
-            var new_strides = self.strides;
+        /// Stride a single axis (allow negative step for reversal).
+        pub fn strideAxis(self: *const @This(), comptime axis: Axis, step: isize) @This() {
+            if (step == 0) @panic("strideAxis: step must be non-zero");
             var new_shape = self.shape;
-            const axis_name = field_names[@intFromEnum(axis)];
-            const new_dim = &@field(new_shape, axis_name);
-            const new_stride = &@field(new_strides, axis_name);
+            var new_strides = self.strides;
+            var new_offset: isize = @intCast(self.offset);
 
-            strideInplace(step, new_dim, new_stride);
+            const axis_name = field_names[@intFromEnum(axis)];
+            const dim_ptr = &@field(new_shape, axis_name);
+            const stride_ptr = &@field(new_strides, axis_name);
+
+            const orig_dim = dim_ptr.*;
+            const orig_stride = stride_ptr.*;
+
+            const abs_step: usize = @intCast(@abs(step));
+            // Dimension after striding (ceil division)
+            dim_ptr.* = if (orig_dim == 0) 0 else (orig_dim + abs_step - 1) / abs_step;
+
+            // New stride
+            stride_ptr.* = orig_stride * step;
+
+            // Offset adjustment for negative traversal
+            if (step < 0 and orig_dim > 0) {
+                const last_index = orig_dim - 1 - ((orig_dim - 1) % abs_step);
+                new_offset += @as(isize, @intCast(last_index)) * orig_stride;
+            }
+
+            if (new_offset < 0) @panic("strideAxis: negative offset after reversal");
+
             return .{
                 .shape = new_shape,
                 .strides = new_strides,
-                .offset = self.offset,
+                .offset = @intCast(new_offset),
             };
         }
 
-        /// Stride multiple axes by given step sizes.
-        /// axes whose value is null in `steps` are skipped.
-        pub fn stride(self: *const @This(), steps: AxesOptional) @This() {
-            var new_strides = self.strides;
+        /// Stride multiple axes (steps may be positive or negative).
+        pub fn stride(self: *const @This(), steps: StepsOptional) @This() {
             var new_shape = self.shape;
-            inline for (field_names) |field_name| {
-                if (@field(steps, field_name)) |step| {
-                    const new_dim = &@field(new_shape, field_name);
-                    const new_stride = &@field(new_strides, field_name);
-                    strideInplace(step, new_dim, new_stride);
+            var new_strides = self.strides;
+            var new_offset: isize = @intCast(self.offset);
+
+            inline for (field_names) |fname| {
+                if (@field(steps, fname)) |step| {
+                    if (step == 0) @panic("stride: step must be non-zero");
+                    const dim_ptr = &@field(new_shape, fname);
+                    const stride_ptr = &@field(new_strides, fname);
+
+                    const orig_dim = dim_ptr.*;
+                    const orig_stride = stride_ptr.*;
+
+                    const abs_step: usize = @intCast(@abs(step));
+                    dim_ptr.* = if (orig_dim == 0) 0 else (orig_dim + abs_step - 1) / abs_step;
+                    stride_ptr.* = orig_stride * step;
+
+                    if (step < 0 and orig_dim > 0) {
+                        const last_index = orig_dim - 1 - ((orig_dim - 1) % abs_step);
+                        new_offset += @as(isize, @intCast(last_index)) * orig_stride;
+                    }
                 }
             }
+            if (new_offset < 0) @panic("stride: negative offset after reversal");
             return .{
                 .shape = new_shape,
                 .strides = new_strides,
-                .offset = self.offset,
+                .offset = @intCast(new_offset),
             };
         }
 
-        fn strideInplace(step: usize, out_dim: *usize, out_stride: *usize) void {
-            if (step == 0)
-                @panic("step must be positive");
-            out_stride.* *= step;
+        /// (Internal) Old helper kept for compatibility; now returns offset delta.
+        fn strideInplace(step: isize, out_dim: *usize, out_stride: *isize) isize {
+            if (step == 0) @panic("step must be non-zero");
             const orig_dim = out_dim.*;
-            out_dim.* /= step;
-            if (orig_dim % step > 0) {
-                out_dim.* += 1;
+            const orig_stride = out_stride.*;
+
+            const abs_step: usize = @intCast(@abs(step));
+            out_dim.* = if (orig_dim == 0) 0 else (orig_dim + abs_step - 1) / abs_step;
+            out_stride.* = orig_stride * step;
+
+            if (step < 0 and orig_dim > 0) {
+                const last_index = orig_dim - 1 - ((orig_dim - 1) % abs_step);
+                return @as(isize, @intCast(last_index)) * orig_stride;
             }
+            return 0;
         }
 
-        /// Slice a given axis.
-        /// Equivalent to `start:end` syntax in python.
-        /// Panics if `start` or `end` are out of bounds.
-        // zig fmt: off
-        pub fn sliceAxis(self: *const @This(),
-            comptime axis: Axis,
-            start: usize,
-            end: usize) @This() {
-        // zig fmt: on
+        /// Slice axis (start:end). Does not itself reverse; combine with strideAxis(step = -1).
+        pub fn sliceAxis(self: *const @This(), comptime axis: Axis, start: usize, end: usize) @This() {
             const axis_name = field_names[@intFromEnum(axis)];
             const old_size = @field(self.shape, axis_name);
-            if (end > old_size)
-                @panic("slice end out of bounds");
-            if (start >= end)
-                @panic("slice start must be less than end");
+            if (end > old_size) @panic("sliceAxis: end out of bounds");
+            if (start >= end) @panic("sliceAxis: start must be < end");
+
             var new_shape = self.shape;
             @field(new_shape, axis_name) = end - start;
+
             var offset_lookup = mem.zeroes(Axes);
             @field(offset_lookup, axis_name) = start;
+            // linear uses signed strides correctly
             const new_offset = self.linear(offset_lookup);
+
             return .{
                 .shape = new_shape,
                 .strides = self.strides,
@@ -156,34 +240,25 @@ pub fn NamedIndex(comptime AxisEnum: type) type {
             };
         }
 
-        /// Remove an axis that has size 1.
-        /// Panics if size != 1.
-        // zig fmt: off
-        pub fn squeezeAxis(self: *const @This(),
-            comptime axis: Axis
-        ) NamedIndex(Removed(Axis, field_names[@intFromEnum(axis)])) {
-        // zig fmt: on
+        pub fn squeezeAxis(self: *const @This(), comptime axis: Axis) NamedIndex(Removed(Axis, field_names[@intFromEnum(axis)])) {
             const axis_name = field_names[@intFromEnum(axis)];
-            if (@field(self.shape, axis_name) != 1)
-                @panic("squeezeAxis: axis size must be 1");
+            if (@field(self.shape, axis_name) != 1) @panic("squeezeAxis: axis size must be 1");
             const NewEnum = Removed(Axis, axis_name);
             const NewKey = AxesStruct(meta.fieldNames(NewEnum));
+            const NewStrides = AxesStructOf(meta.fieldNames(NewEnum), isize);
+
             const new_shape: NewKey = blk: {
                 var tmp: NewKey = undefined;
-                inline for (field_names) |field_name| {
-                    if (comptime !mem.eql(u8, field_name, axis_name)) {
-                        @field(tmp, field_name) = @field(self.shape, field_name);
-                    }
-                }
+                inline for (field_names) |fname| if (comptime !mem.eql(u8, fname, axis_name)) {
+                    @field(tmp, fname) = @field(self.shape, fname);
+                };
                 break :blk tmp;
             };
-            const new_strides: NewKey = blk: {
-                var tmp: NewKey = undefined;
-                inline for (field_names) |field_name| {
-                    if (comptime !mem.eql(u8, field_name, axis_name)) {
-                        @field(tmp, field_name) = @field(self.strides, field_name);
-                    }
-                }
+            const new_strides: NewStrides = blk: {
+                var tmp: NewStrides = undefined;
+                inline for (field_names) |fname| if (comptime !mem.eql(u8, fname, axis_name)) {
+                    @field(tmp, fname) = @field(self.strides, fname);
+                };
                 break :blk tmp;
             };
             return .{
@@ -193,14 +268,10 @@ pub fn NamedIndex(comptime AxisEnum: type) type {
             };
         }
 
-        /// Returns a new NamedIndex with only the axes present in the given subset enum.
-        /// All axes not present in the new enum must have size 1, and are squeezed out.
-        /// Panics if any removed axis does not have size 1.
         pub fn keepOnly(self: *const @This(), comptime NewEnum: type) NamedIndex(NewEnum) {
             const old_field_names = field_names;
             const new_field_names = comptime meta.fieldNames(NewEnum);
 
-            // Check that NewEnum is a subset of AxisEnum
             inline for (new_field_names) |new_name| {
                 var found = false;
                 inline for (old_field_names) |old_name| {
@@ -209,11 +280,9 @@ pub fn NamedIndex(comptime AxisEnum: type) type {
                         break;
                     }
                 }
-                if (!found)
-                    @panic("keepOnly: NewEnum contains axis not present in original enum");
+                if (!found) @panic("keepOnly: axis not present in original: " ++ new_name);
             }
 
-            // For each axis in old_field_names not in new_field_names, check size == 1
             inline for (old_field_names) |old_name| {
                 var keep = false;
                 inline for (new_field_names) |new_name| {
@@ -222,21 +291,18 @@ pub fn NamedIndex(comptime AxisEnum: type) type {
                         break;
                     }
                 }
-                if (!keep) {
-                    if (@field(self.shape, old_name) != 1)
-                        @panic("keepOnly: cannot squeeze axis '" ++ old_name ++ "' with size != 1");
-                }
+                if (!keep and @field(self.shape, old_name) != 1)
+                    @panic("keepOnly: cannot squeeze axis '" ++ old_name ++ "' size != 1");
             }
 
-            // Build new shape and strides
-            const NewKey = AxesStruct(new_field_names);
-            var new_shape: NewKey = undefined;
-            var new_strides: NewKey = undefined;
-            inline for (new_field_names) |new_name| {
-                @field(new_shape, new_name) = @field(self.shape, new_name);
-                @field(new_strides, new_name) = @field(self.strides, new_name);
+            const NewShape = AxesStruct(new_field_names);
+            const NewStrides = AxesStructOf(new_field_names, isize);
+            var new_shape: NewShape = undefined;
+            var new_strides: NewStrides = undefined;
+            inline for (new_field_names) |nm| {
+                @field(new_shape, nm) = @field(self.shape, nm);
+                @field(new_strides, nm) = @field(self.strides, nm);
             }
-
             return .{
                 .shape = new_shape,
                 .strides = new_strides,
@@ -244,17 +310,10 @@ pub fn NamedIndex(comptime AxisEnum: type) type {
             };
         }
 
-        /// Returns a new NamedIndex that conforms to a new axes enum by squeezing or unsqueezing
-        /// axes.
-        /// - Axes present in both: keep shape and stride.
-        /// - Axes only in new enum: add with shape 1 and stride 0.
-        /// - Axes only in old enum: require shape == 1 and squeeze out.
-        /// Panics if any removed axis does not have size 1.
         pub fn conformAxes(self: *const @This(), comptime NewEnum: type) NamedIndex(NewEnum) {
             const old_field_names = field_names;
             const new_field_names = comptime meta.fieldNames(NewEnum);
 
-            // For each axis in old_field_names not in new_field_names, check size == 1
             inline for (old_field_names) |old_name| {
                 var keep = false;
                 inline for (new_field_names) |new_name| {
@@ -263,16 +322,15 @@ pub fn NamedIndex(comptime AxisEnum: type) type {
                         break;
                     }
                 }
-                if (!keep) {
-                    if (@field(self.shape, old_name) != 1)
-                        @panic("projectAxes: cannot squeeze axis '" ++ old_name ++ "' with size != 1");
-                }
+                if (!keep and @field(self.shape, old_name) != 1)
+                    @panic("conformAxes: cannot squeeze axis '" ++ old_name ++ "' size != 1");
             }
 
-            // Build new shape and strides
-            const NewKey = AxesStruct(new_field_names);
-            var new_shape: NewKey = undefined;
-            var new_strides: NewKey = undefined;
+            const NewShape = AxesStruct(new_field_names);
+            const NewStrides = AxesStructOf(new_field_names, isize);
+            var new_shape: NewShape = undefined;
+            var new_strides: NewStrides = undefined;
+
             inline for (new_field_names) |new_name| {
                 var found = false;
                 inline for (old_field_names) |old_name| {
@@ -284,7 +342,6 @@ pub fn NamedIndex(comptime AxisEnum: type) type {
                     }
                 }
                 if (!found) {
-                    // New axis: add with shape 1 and stride 0
                     @field(new_shape, new_name) = 1;
                     @field(new_strides, new_name) = 0;
                 }
@@ -297,132 +354,94 @@ pub fn NamedIndex(comptime AxisEnum: type) type {
             };
         }
 
-        /// Return the number of elements in this index.
         pub fn count(self: *const @This()) usize {
             var prod: usize = 1;
-            inline for (field_names) |field_name| {
-                prod *= @field(self.shape, field_name);
-            }
+            inline for (field_names) |fname| prod *= @field(self.shape, fname);
             return prod;
         }
 
-        /// Return the axes ordered descendingly by stride order.
-        /// For instance, row-major order returns {.row, .col}.
         pub fn axisOrder(self: *const @This()) [field_names.len]Axis {
-            const strides_arr: [field_names.len]usize = @bitCast(self.strides);
-            const dims_desc = argsort: {
-                var argsort: [field_names.len]usize = undefined;
-                for (0..field_names.len) |i| {
-                    argsort[i] = i;
-                }
-                const strides_slice: []const usize = strides_arr[0..];
-                mem.sort(usize, argsort[0..], strides_slice, fnames_gt);
-                break :argsort argsort;
-            };
-            var axis_arr: [field_names.len]Axis = undefined;
-            inline for (0..field_names.len) |fi| {
-                axis_arr[fi] = @enumFromInt(dims_desc[fi]);
-            }
-            return axis_arr;
+            const strides_arr: [field_names.len]isize = @bitCast(self.strides);
+            // argsort by descending absolute stride
+            var idxs: [field_names.len]usize = undefined;
+            inline for (0..field_names.len) |i| idxs[i] = i;
+            const strides_slice: []const isize = strides_arr[0..];
+            mem.sort(usize, idxs[0..], strides_slice, fnames_gt_signed);
+            var axes: [field_names.len]Axis = undefined;
+            inline for (0..field_names.len) |i| axes[i] = @enumFromInt(idxs[i]);
+            return axes;
         }
 
-        /// A NamedIndex is contiguous if there is a one-to-one mapping between a key in the index and
-        /// an element in the underlying buffer.
         pub fn isContiguous(self: *const @This()) bool {
-            const axis_order = self.axisOrder();
-            const strides_arr: [field_names.len]usize = @bitCast(self.strides);
+            const order = self.axisOrder();
+            const strides_arr: [field_names.len]isize = @bitCast(self.strides);
             const shape_arr: [field_names.len]usize = @bitCast(self.shape);
-            var expected_stride: usize = 1;
+            var expected: usize = 1;
             inline for (0..field_names.len) |i| {
-                const axis = axis_order[field_names.len - 1 - i];
-                const stride_mismatch = strides_arr[@intFromEnum(axis)] != expected_stride;
-                if (stride_mismatch)
-                    return false;
-                expected_stride *= shape_arr[@intFromEnum(axis)];
+                const axis = order[field_names.len - 1 - i];
+                const stride_ = strides_arr[@intFromEnum(axis)];
+                if (@abs(stride_) != expected) return false;
+                expected *= shape_arr[@intFromEnum(axis)];
             }
             return true;
         }
 
-        /// Adds an axis of size 1 to the index.
-        // zig fmt: off
-        pub fn addEmptyAxis(self: *const @This(),
-            comptime axis: [:0]const u8
-        ) NamedIndex(Added(Axis, axis)) {
-        // zig fmt: on
+        pub fn addEmptyAxis(self: *const @This(), comptime axis: [:0]const u8) NamedIndex(Added(Axis, axis)) {
             const NewEnum = Added(Axis, axis);
-            const NewKey = AxesStruct(meta.fieldNames(NewEnum));
-            const new_shape: NewKey = blk: {
-                var tmp: NewKey = undefined;
-                inline for (field_names) |field_name| {
-                    @field(tmp, field_name) = @field(self.shape, field_name);
-                }
+            const NewShape = AxesStruct(meta.fieldNames(NewEnum));
+            const NewStrides = AxesStructOf(meta.fieldNames(NewEnum), isize);
+
+            const new_shape: NewShape = blk: {
+                var tmp: NewShape = undefined;
+                inline for (field_names) |fname| @field(tmp, fname) = @field(self.shape, fname);
                 @field(tmp, axis) = 1;
                 break :blk tmp;
             };
-            const new_strides: NewKey = blk: {
-                var tmp: NewKey = undefined;
-                inline for (field_names) |field_name| {
-                    @field(tmp, field_name) = @field(self.strides, field_name);
-                }
-                // The stride for the new axis is arbitrary, but 0 is standard for broadcasting semantics.
+            const new_strides: NewStrides = blk: {
+                var tmp: NewStrides = undefined;
+                inline for (field_names) |fname| @field(tmp, fname) = @field(self.strides, fname);
                 @field(tmp, axis) = 0;
                 break :blk tmp;
             };
-            return .{
-                .shape = new_shape,
-                .strides = new_strides,
-                .offset = self.offset,
-            };
+            return .{ .shape = new_shape, .strides = new_strides, .offset = self.offset };
         }
 
-        /// Helper for strict axis renaming.
-        /// If any axis in NewEnum cannot be mapped, this will fail to compile.
         pub fn rename(self: *const @This(), comptime NewEnum: type, comptime rename_pairs: []const AxisRenamePair) NamedIndex(NewEnum) {
             const OldEnum = Axis;
             const old_names = @typeInfo(OldEnum).@"enum".fields;
             const new_names = @typeInfo(NewEnum).@"enum".fields;
 
-            // Compile-time checks
             comptime {
-                // number of axes must match
-                if (old_names.len != new_names.len) {
-                    @compileError("renameAxes: Number of axes in source and target enums must match.");
-                }
-                // Check for duplicate old axis names in rename_pairs
+                if (old_names.len != new_names.len)
+                    @compileError("rename: axis count mismatch");
+                // duplicate source axis detection
                 for (old_names) |old_field| {
                     var count_: usize = 0;
                     for (rename_pairs) |pair| {
-                        if (std.mem.eql(u8, pair.old, old_field.name)) {
-                            count_ += 1;
-                        }
+                        if (std.mem.eql(u8, pair.old, old_field.name)) count_ += 1;
                     }
-                    if (count_ > 1) {
-                        @compileError("renameAxes: Old axis '" ++ old_field.name ++ "' is mapped to multiple new axes.");
-                    }
+                    if (count_ > 1)
+                        @compileError("rename: axis '" ++ old_field.name ++ "' mapped multiple times");
                 }
             }
 
-            // Build mapping from new_name to old_name
-            const map: [new_names.len][:0]const u8 = comptime map: {
-                var map: [new_names.len][:0]const u8 = undefined;
+            const map: [new_names.len][:0]const u8 = comptime blk: {
+                var m: [new_names.len][:0]const u8 = undefined;
                 for (new_names, 0..) |new_field, ni| {
                     var found = false;
-                    // Check if new_name matches any old_name directly
                     for (old_names) |old_field| {
                         if (std.mem.eql(u8, old_field.name, new_field.name)) {
-                            map[ni] = old_field.name;
+                            m[ni] = old_field.name;
                             found = true;
                             break;
                         }
                     }
-                    // If not, check rename_pairs
                     if (!found) {
                         for (rename_pairs) |pair| {
                             if (std.mem.eql(u8, pair.new, new_field.name)) {
-                                // Find old_name in old_names
                                 for (old_names) |old_field| {
                                     if (std.mem.eql(u8, old_field.name, pair.old)) {
-                                        map[ni] = old_field.name;
+                                        m[ni] = old_field.name;
                                         found = true;
                                         break;
                                     }
@@ -431,65 +450,43 @@ pub fn NamedIndex(comptime AxisEnum: type) type {
                             }
                         }
                     }
-                    if (!found) {
-                        @compileError("renameAxes: Could not map new axis '" ++ new_field.name ++ "' to any old axis.");
-                    }
+                    if (!found)
+                        @compileError("rename: cannot map new axis '" ++ new_field.name ++ "'");
                 }
-                break :map map;
+                break :blk m;
             };
 
-            // Build new shape and strides
-            const NewKey = NamedIndex(NewEnum).Axes;
-            var new_shape: NewKey = undefined;
-            var new_strides: NewKey = undefined;
+            const NewShape = AxesStruct(meta.fieldNames(NewEnum));
+            const NewStrides = AxesStructOf(meta.fieldNames(NewEnum), isize);
+
+            var new_shape: NewShape = undefined;
+            var new_strides: NewStrides = undefined;
             inline for (new_names, 0..) |new_field, ni| {
                 const old_name = map[ni];
                 @field(new_shape, new_field.name) = @field(self.shape, old_name);
                 @field(new_strides, new_field.name) = @field(self.strides, old_name);
             }
-            return NamedIndex(NewEnum){
-                .shape = new_shape,
-                .strides = new_strides,
-                .offset = self.offset,
-            };
+            return .{ .shape = new_shape, .strides = new_strides, .offset = self.offset };
         }
 
-        /// Broadcasts an existing axis of size 1 to a new size by setting its stride to 0.
-        /// Panics if size is not currently 1.
-        ///
-        /// To add a new axis instead, see `addEmptyAxis`.
         pub fn broadcastAxis(self: *const @This(), comptime axis: Axis, new_size: usize) @This() {
             const axis_name = field_names[@intFromEnum(axis)];
-            if (@field(self.shape, axis_name) != 1)
-                @panic("broadcastAxis: axis size must be 1");
+            if (@field(self.shape, axis_name) != 1) @panic("broadcastAxis: axis must have size 1");
             var new_shape = self.shape;
-            @field(new_shape, axis_name) = new_size;
             var new_strides = self.strides;
+            @field(new_shape, axis_name) = new_size;
             @field(new_strides, axis_name) = 0;
-            return .{
-                .shape = new_shape,
-                .strides = new_strides,
-                .offset = self.offset,
-            };
+            return .{ .shape = new_shape, .strides = new_strides, .offset = self.offset };
         }
 
-        /// Split a single axis into multiple axes.
-        /// - `TargetEnum` is the axes enum type of the new index.
-        /// - `target_shape` is an AxesOptional for the target axes, specifying the shape of each split axis.
-        /// Returns a new NamedIndex with the split axes.
-        pub fn splitAxis(
-            self: *const @This(),
-            comptime TargetEnum: type,
-            splitShapes: AxesOptionalStruct(meta.fieldNames(TargetEnum)),
-        ) NamedIndex(TargetEnum) {
+        pub fn splitAxis(self: *const @This(), comptime TargetEnum: type, splitShapes: AxesOptionalStruct(meta.fieldNames(TargetEnum))) NamedIndex(TargetEnum) {
             const SourceEnum = Axis;
             const source_field_names = comptime meta.fieldNames(SourceEnum);
             const target_field_names = comptime meta.fieldNames(TargetEnum);
 
-            // Find which axis in source is being split (present in source but not in target)
             var split_axis_name: ?[]const u8 = null;
             var split_axis_shape: usize = 0;
-            var split_axis_stride: usize = 0;
+            var split_axis_stride: isize = 0;
             inline for (source_field_names) |src_name| {
                 var found = false;
                 inline for (target_field_names) |tgt_name| {
@@ -505,45 +502,38 @@ pub fn NamedIndex(comptime AxisEnum: type) type {
                     break;
                 }
             }
-            if (split_axis_name == null)
-                @panic("splitAxis: No axis to split found");
+            if (split_axis_name == null) @panic("splitAxis: no axis to split");
 
-            // Find which axes in target are new (present in target but not in source)
             var new_axes: [target_field_names.len]struct { name: []const u8, shape: usize } = undefined;
             comptime var new_axes_count: usize = 0;
             inline for (target_field_names) |tgt_name| {
-                comptime var found = false;
+                comptime var present = false;
                 inline for (source_field_names) |src_name| {
                     if (comptime mem.eql(u8, tgt_name, src_name)) {
-                        found = true;
+                        present = true;
                         break;
                     }
                 }
-                if (comptime !found) {
-                    // Must be provided in target_shape
+                if (!present) {
                     const shape_opt = @field(splitShapes, tgt_name);
                     if (shape_opt == null)
-                        @panic("splitAxis: target_shape missing shape for axis '" ++ tgt_name ++ "'");
+                        @panic("splitAxis: missing shape for axis '" ++ tgt_name ++ "'");
                     new_axes[new_axes_count] = .{ .name = tgt_name, .shape = shape_opt.? };
                     new_axes_count += 1;
                 }
             }
 
-            // Product of new axes shapes must equal split axis shape
             var prod: usize = 1;
-            inline for (0..new_axes_count) |i| {
-                prod *= new_axes[i].shape;
-            }
+            inline for (0..new_axes_count) |i| prod *= new_axes[i].shape;
             if (prod != split_axis_shape)
-                @panic("splitAxis: product of split axes shapes does not match source axis shape");
+                @panic("splitAxis: product of new shapes mismatch");
 
-            // Build new shape and strides
-            const NewKey = AxesStruct(target_field_names);
-            var new_shape: NewKey = undefined;
-            var new_strides: NewKey = undefined;
+            const NewShape = AxesStruct(target_field_names);
+            const NewStrides = AxesStructOf(target_field_names, isize);
+            var new_shape: NewShape = undefined;
+            var new_strides: NewStrides = undefined;
 
-            // For axes present in both, copy shape and stride
-            var stride_: usize = split_axis_stride;
+            var stride_: isize = split_axis_stride;
             inline for (0..target_field_names.len) |tgt_idx| {
                 const tgt_idx_rev = target_field_names.len - 1 - tgt_idx;
                 const tgt_name = target_field_names[tgt_idx_rev];
@@ -557,57 +547,23 @@ pub fn NamedIndex(comptime AxisEnum: type) type {
                     }
                 }
                 if (!found) {
-                    // For split axes, assign shape and contiguous strides
-                    // Compute stride for each split axis
                     inline for (0..new_axes_count) |i| {
                         if (mem.eql(u8, tgt_name, new_axes[i].name)) {
                             @field(new_shape, tgt_name) = new_axes[i].shape;
                             @field(new_strides, tgt_name) = stride_;
-                            stride_ *= new_axes[i].shape;
+                            stride_ *= @intCast(new_axes[i].shape);
                         }
                     }
                 }
             }
-
-            return .{
-                .shape = new_shape,
-                .strides = new_strides,
-                .offset = self.offset,
-            };
+            return .{ .shape = new_shape, .strides = new_strides, .offset = self.offset };
         }
 
-        /// Merge all source axes that are absent in `TargetEnum` into the single new axis
-        /// (the axis present only in `TargetEnum`). Zero‑copy view: buffer pointer & offset preserved.
-        ///
-        /// TargetEnum constraints (compile-time):
-        /// - Must introduce exactly ONE new axis name (the merged axis).
-        /// - All other axis names in TargetEnum must already exist in the source enum.
-        ///
-        /// Runtime semantics:
-        /// - Let M be the set of source axes not in TargetEnum (axes to merge).
-        /// - If M has size 0, this is a trivial no-op rename scenario: return error.TrivialMerge.
-        /// - If M has size 1, treat as single-axis passthrough: new axis's shape/stride copied directly.
-        /// - Otherwise (|M| >= 2) verify contiguity:
-        ///       Order M by descending stride (fastest varying last).
-        ///       For consecutive axes a,b in that order:
-        ///           stride[a] == stride[b] * shape[b]
-        ///       If any check fails => error.StrideMisalignment.
-        ///
-        /// Resulting merged axis:
-        ///   shape  = product(shapes of merged axes)
-        ///   stride = stride of fastest varying merged axis (smallest stride after ordering)
-        ///
-        /// Errors:
-        ///   - error.TrivialMerge       : No axes would be merged (M empty)
-        ///   - error.StrideMisalignment : Contiguity rule violated
-        pub fn mergeAxes(self: *const @This(), comptime TargetEnum: type) error{ TrivialMerge, StrideMisalignment }!NamedIndex(TargetEnum) {
+        pub fn mergeAxes(self: *const @This(), comptime TargetEnum: type) error{StrideMisalignment}!NamedIndex(TargetEnum) {
             const source_names = field_names;
             const target_names = comptime meta.fieldNames(TargetEnum);
-            // Phase 1 (compile-time): discover new axis and membership map in a single block.
-            const MergeCompile = struct {
-                new_axis_name: [:0]const u8,
-                source_in_target: [source_names.len]bool,
-            };
+
+            const MergeCompile = struct { new_axis_name: [:0]const u8, source_in_target: [source_names.len]bool };
             const compile_phase: MergeCompile = comptime blk: {
                 var new_axis_count: usize = 0;
                 var new_axis_name: [:0]const u8 = undefined;
@@ -628,15 +584,17 @@ pub fn NamedIndex(comptime AxisEnum: type) type {
                 }
                 if (new_axis_count != 1)
                     @compileError("mergeAxes: TargetEnum must introduce exactly one new axis.");
-                break :blk .{
-                    .new_axis_name = new_axis_name,
-                    .source_in_target = source_in_target,
-                };
+                var missing_count: usize = 0;
+                for (source_names, 0..) |_, si| {
+                    if (!source_in_target[si]) missing_count += 1;
+                }
+                if (missing_count == 0)
+                    @compileError("mergeAxes: must omit at least one source axis.");
+                break :blk .{ .new_axis_name = new_axis_name, .source_in_target = source_in_target };
             };
             const new_axis_name = compile_phase.new_axis_name;
             const source_in_target = compile_phase.source_in_target;
 
-            // Collect merged source axis indices (not present in target)
             var merged_idxs: [source_names.len]usize = undefined;
             var merged_count: usize = 0;
             inline for (source_in_target, 0..) |keep, si| {
@@ -645,57 +603,48 @@ pub fn NamedIndex(comptime AxisEnum: type) type {
                     merged_count += 1;
                 }
             }
-            if (merged_count == 0) return error.TrivialMerge;
 
-            // Runtime arrays
-            const strides_arr: [source_names.len]usize = @bitCast(self.strides);
+            const strides_arr: [source_names.len]isize = @bitCast(self.strides);
             const shapes_arr: [source_names.len]usize = @bitCast(self.shape);
 
-            // Use axisOrder (descending stride order) and filter to merged axes
             const order = self.axisOrder();
             var ordered_merge: [source_names.len]usize = undefined;
             var om_count: usize = 0;
             inline for (order) |ax| {
                 const si = @intFromEnum(ax);
-                // linear scan small merged_idxs array
                 var is_merged = false;
                 var k: usize = 0;
-                while (k < merged_count) : (k += 1) {
+                while (k < merged_count) : (k += 1)
                     if (merged_idxs[k] == si) {
                         is_merged = true;
                         break;
-                    }
-                }
+                    };
                 if (is_merged) {
                     ordered_merge[om_count] = si;
                     om_count += 1;
                 }
             }
 
-            // Contiguity check only if more than one axis merged
             if (om_count > 1) {
                 var mi: usize = 0;
                 while (mi + 1 < om_count) : (mi += 1) {
                     const a = ordered_merge[mi];
                     const b = ordered_merge[mi + 1];
-                    const expected = strides_arr[b] * shapes_arr[b];
-                    if (strides_arr[a] != expected)
+                    const expected = @abs(strides_arr[b]) * shapes_arr[b];
+                    if (@abs(strides_arr[a]) != expected)
                         return error.StrideMisalignment;
                 }
             }
 
-            // Compute merged shape & stride
             var merged_shape_product: usize = 1;
             var ci: usize = 0;
-            while (ci < om_count) : (ci += 1) {
-                merged_shape_product *= shapes_arr[ordered_merge[ci]];
-            }
+            while (ci < om_count) : (ci += 1) merged_shape_product *= shapes_arr[ordered_merge[ci]];
             const merged_stride = strides_arr[ordered_merge[om_count - 1]];
 
-            // Build new shape/strides
-            const NewKey = AxesStruct(target_names);
-            var new_shape: NewKey = undefined;
-            var new_strides: NewKey = undefined;
+            const NewShape = AxesStruct(target_names);
+            const NewStrides = AxesStructOf(target_names, isize);
+            var new_shape: NewShape = undefined;
+            var new_strides: NewStrides = undefined;
             inline for (target_names) |tname| {
                 if (comptime mem.eql(u8, tname, new_axis_name)) {
                     @field(new_shape, tname) = merged_shape_product;
@@ -705,58 +654,38 @@ pub fn NamedIndex(comptime AxisEnum: type) type {
                     @field(new_strides, tname) = @field(self.strides, tname);
                 }
             }
-            return NamedIndex(TargetEnum){
-                .shape = new_shape,
-                .strides = new_strides,
-                .offset = self.offset,
-            };
+            return .{ .shape = new_shape, .strides = new_strides, .offset = self.offset };
         }
 
-        /// DeprecatedRename an axis.
-        // zig fmt: off
-        pub fn rename_old(self: *const @This(),
-            comptime axis: Axis,
-            comptime new_name: [:0]const u8
-        ) NamedIndex(Renamed(Axis, field_names[@intFromEnum(axis)], new_name)) {
-        // zig fmt: on
+        pub fn rename_old(self: *const @This(), comptime axis: Axis, comptime new_name: [:0]const u8) NamedIndex(Renamed(Axis, field_names[@intFromEnum(axis)], new_name)) {
             const old_name = field_names[@intFromEnum(axis)];
             const NewEnum = Renamed(Axis, old_name, new_name);
-            const NewKey = AxesStruct(meta.fieldNames(NewEnum));
-            const new_shape: NewKey = @bitCast(self.shape);
-            const new_strides: NewKey = @bitCast(self.strides);
-            return .{
-                .shape = new_shape,
-                .strides = new_strides,
-                .offset = self.offset,
-            };
+            const NewShape = AxesStruct(meta.fieldNames(NewEnum));
+            const NewStrides = AxesStructOf(meta.fieldNames(NewEnum), isize);
+            const new_shape: NewShape = @bitCast(self.shape);
+            const new_strides: NewStrides = @bitCast(self.strides);
+            return .{ .shape = new_shape, .strides = new_strides, .offset = self.offset };
         }
     };
 }
 
-/// Takes a variable number of shapes (as a tuple), possibly of different axes types, and records
-/// each axis' size.
-/// If any axis has multiple sizes, it returns an error.
+/// resolveDimensions unchanged (shapes only)
 pub fn resolveDimensions(shapes: anytype) NamedIndexError!AxesStruct(unionOfAxisNames(@TypeOf(shapes))) {
     const all_axis_names = comptime unionOfAxisNames(@TypeOf(shapes));
     const ResolvedShape = AxesStruct(all_axis_names);
-    const ResolvedShapeOptional = NamedIndex(KeyEnum(all_axis_names)).AxesOptional;
-
+    const ResolvedShapeOptional = AxesOptionalStruct(all_axis_names);
     var resolved_optional: ResolvedShapeOptional = .{};
-
     inline for (shapes) |shape| {
         const shape_info = @typeInfo(@TypeOf(shape)).@"struct";
         inline for (shape_info.fields) |field| {
             const current_size = @field(shape, field.name);
             if (@field(resolved_optional, field.name)) |existing_size| {
-                if (existing_size != current_size) {
-                    return NamedIndexError.ShapeMismatch;
-                }
+                if (existing_size != current_size) return NamedIndexError.ShapeMismatch;
             } else {
                 @field(resolved_optional, field.name) = current_size;
             }
         }
     }
-
     var resolved_shape: ResolvedShape = undefined;
     inline for (all_axis_names) |axis_name| {
         if (@field(resolved_optional, axis_name)) |size| {
@@ -765,50 +694,47 @@ pub fn resolveDimensions(shapes: anytype) NamedIndexError!AxesStruct(unionOfAxis
             @panic("Missing axis name: " ++ axis_name);
         }
     }
-
     return resolved_shape;
 }
 
-/// Struct for axis renaming pairs
 pub const AxisRenamePair = struct { old: []const u8, new: []const u8 };
 
-/// Iterates over all valid indices for a `NamedIndex` with given shape.
-/// Iteration order is according to stride order.
-/// That is, the keys are returned in the order they are encountered in the underlying buffer.
-pub fn KeyIterator(comptime Key: type) type {
-    const Field = meta.FieldEnum(Key);
-    const fnames = meta.fieldNames(Field);
-
+/// Iterator over keys in buffer order (descending absolute stride).
+pub fn KeyIterator(comptime ShapeKey: type, comptime StrideKey: type) type {
+    // Ensure field sets match
+    comptime {
+        const f1 = meta.fieldNames(ShapeKey);
+        const f2 = meta.fieldNames(StrideKey);
+        if (f1.len != f2.len) @compileError("KeyIterator: shape/stride field mismatch length");
+        for (f1, 0..) |n, i| {
+            if (!mem.eql(u8, n, f2[i])) @compileError("KeyIterator: field name mismatch");
+        }
+    }
+    const fnames = meta.fieldNames(ShapeKey);
     return struct {
         next_arr: [fnames.len]usize,
         shape_arr: [fnames.len]usize,
         dims_desc: [fnames.len]usize,
 
-        pub fn init(shape: Key, strides: Key) @This() {
+        pub fn init(shape: ShapeKey, strides: StrideKey) @This() {
             const start = [_]usize{0} ** fnames.len;
             const shape_arr: [fnames.len]usize = @bitCast(shape);
-            const strides_arr: [fnames.len]usize = @bitCast(strides);
+            const strides_arr: [fnames.len]isize = @bitCast(strides);
 
-            const dims_desc = argsort: {
-                var argsort: [fnames.len]usize = undefined;
-                for (0..fnames.len) |i| {
-                    argsort[i] = i;
-                }
-                const strides_slice: []const usize = strides_arr[0..];
-                mem.sort(usize, argsort[0..], strides_slice, fnames_gt);
-                break :argsort argsort;
-            };
-            return .{ .next_arr = start, .shape_arr = shape_arr, .dims_desc = dims_desc };
+            var argsort: [fnames.len]usize = undefined;
+            inline for (0..fnames.len) |i| argsort[i] = i;
+            const strides_slice: []const isize = strides_arr[0..];
+            mem.sort(usize, argsort[0..], strides_slice, fnames_gt_signed);
+            return .{ .next_arr = start, .shape_arr = shape_arr, .dims_desc = argsort };
         }
 
-        pub fn next(self: *@This()) ?Key {
-            if (self.dims_desc.len == 0)
-                return null;
+        pub fn next(self: *@This()) ?ShapeKey {
+            if (self.dims_desc.len == 0) return null;
             if (self.next_arr[self.dims_desc[0]] >= self.shape_arr[self.dims_desc[0]])
                 return null;
+
             const result_arr = self.next_arr;
 
-            // Update next
             inline for (0..fnames.len) |di| {
                 const dim_idx = fnames.len - 1 - di;
                 const dim = self.dims_desc[dim_idx];
@@ -816,7 +742,6 @@ pub fn KeyIterator(comptime Key: type) type {
                     self.next_arr[dim] += 1;
                     break;
                 } else {
-                    // carry over
                     if (dim_idx != 0) {
                         self.next_arr[dim] = 0;
                     } else {
@@ -824,82 +749,33 @@ pub fn KeyIterator(comptime Key: type) type {
                     }
                 }
             }
-
-            const result: Key = @bitCast(result_arr);
-            return result;
+            return @bitCast(result_arr);
         }
     };
 }
 
-fn fnames_gt(strides_arr: []const usize, lhs: usize, rhs: usize) bool {
-    // descending order
-    return strides_arr[lhs] > strides_arr[rhs];
+// Comparator for axis sorting (descending absolute stride)
+fn fnames_gt_signed(strides_arr: []const isize, lhs: usize, rhs: usize) bool {
+    const al = @abs(strides_arr[lhs]);
+    const ar = @abs(strides_arr[rhs]);
+    return al > ar or (al == ar and lhs < rhs); // tie-breaker by enum order
 }
 
-/// Reify a key struct with given field names.
-pub fn AxesStruct(comptime names: []const [:0]const u8) type {
-    const rank = names.len;
-    const fields = fields: {
-        var fields_: [rank]Type.StructField = undefined;
-        for (0..rank) |i| {
-            fields_[i] = .{
-                .name = names[i],
-                .type = usize,
-                .default_value_ptr = null,
-                .is_comptime = false,
-                .alignment = 0,
-            };
-        }
-        break :fields fields_;
-    };
-    const new_struct: Type.Struct = .{
-        .layout = .@"packed",
-        .backing_integer = null,
-        .fields = &fields,
-        .decls = &.{},
-        .is_tuple = false,
-    };
-    return @Type(Type{ .@"struct" = new_struct });
-}
+// (Old unsigned variant left for legacy code paths, if any)
+// fn fnames_gt(_unused: []const usize, _lhs: usize, _rhs: usize) bool {
+//     @panic("fnames_gt (unsigned) should not be used with negative strides");
+// }
 
-pub fn AxesOptionalStruct(comptime names: []const [:0]const u8) type {
-    const usize_null: ?usize = null;
-    const optional_fields = fields: {
-        var optional_fields_: [names.len]Type.StructField = undefined;
-        for (names, 0..) |field_name, fi| {
-            optional_fields_[fi] = .{
-                .name = field_name,
-                .type = ?usize,
-                .default_value_ptr = &usize_null,
-                .is_comptime = false,
-                .alignment = @alignOf(?usize),
-            };
-        }
-        break :fields optional_fields_;
-    };
-    const type_info: Type = .{ .@"struct" = .{
-        .layout = .auto,
-        .fields = &optional_fields,
-        .decls = &[_]Type.Declaration{},
-        .is_tuple = false,
-    } };
-    const type_ = @Type(type_info);
-    return type_;
-}
+// pub fn AxesOptionalStruct(comptime names: []const [:0]const u8) type {
+//     return AxesOptionalStructOf(names, usize);
+// }
 
-/// Reify an enum with given field names.
 pub fn KeyEnum(comptime names: []const [:0]const u8) type {
-    // Create an enum type with the given field names.
     const rank = names.len;
-    const fields = fields: {
-        var fields_: [rank]Type.EnumField = undefined;
-        for (0..rank) |i| {
-            fields_[i] = .{
-                .name = names[i],
-                .value = i,
-            };
-        }
-        break :fields fields_;
+    const fields = comptime blk: {
+        var f: [rank]Type.EnumField = undefined;
+        for (0..rank) |i| f[i] = .{ .name = names[i], .value = i };
+        break :blk f;
     };
     const bits = switch (rank) {
         0 => 0,
@@ -915,86 +791,65 @@ pub fn KeyEnum(comptime names: []const [:0]const u8) type {
     return @Type(Type{ .@"enum" = enum_type });
 }
 
-/// Return a copy of a given enum with a given field renamed.
 fn Renamed(comptime OldKey: type, old_name: [:0]const u8, new_name: [:0]const u8) type {
     const old_struct = @typeInfo(OldKey).@"enum";
-    const new_field_names = comptime fields: {
-        var new_field_names: [old_struct.fields.len][:0]const u8 = undefined;
+    const new_field_names = comptime blk: {
+        var out: [old_struct.fields.len][:0]const u8 = undefined;
         var matched = false;
         for (0..old_struct.fields.len) |fi| {
             const old_field = old_struct.fields[fi];
             if (mem.eql(u8, old_field.name, old_name)) {
-                new_field_names[fi] = new_name;
+                out[fi] = new_name;
                 matched = true;
             } else {
-                new_field_names[fi] = old_field.name;
+                out[fi] = old_field.name;
             }
         }
-        if (!matched)
-            @compileError("Field not found in enum: " ++ old_name);
-        break :fields new_field_names;
+        if (!matched) @compileError("Renamed: field not found: " ++ old_name);
+        break :blk out;
     };
     return KeyEnum(&new_field_names);
 }
 
-/// Return a copy of a given struct with a given field removed
 fn Removed(comptime OldKey: type, comptime name: [:0]const u8) type {
     const old_struct = @typeInfo(OldKey).@"enum";
     const old_rank = old_struct.fields.len;
     const new_rank = old_rank - 1;
-    const new_field_names = comptime fields: {
+    const new_field_names = comptime blk: {
         var matches: usize = 0;
-        // Check if name is actually a field name
         for (old_struct.fields) |field| {
-            if (!mem.eql(u8, field.name, name)) {
-                matches += 1;
-            }
+            if (!mem.eql(u8, field.name, name)) matches += 1;
         }
-        if (matches != new_rank)
-            @compileError("Field not found in enum: " ++ name);
-        var new_field_names: [matches][:0]const u8 = undefined;
+        if (matches != new_rank) @compileError("Removed: field not found: " ++ name);
+        var out: [matches][:0]const u8 = undefined;
         var idx: usize = 0;
         for (old_struct.fields) |field| {
             if (!mem.eql(u8, field.name, name)) {
-                new_field_names[idx] = field.name;
+                out[idx] = field.name;
                 idx += 1;
             }
         }
-        break :fields new_field_names;
+        break :blk out;
     };
     return KeyEnum(&new_field_names);
 }
 
-/// Return a copy of a given enum with a given field added
 fn Added(comptime OldKey: type, comptime name: [:0]const u8) type {
     const old_struct = @typeInfo(OldKey).@"enum";
-    const old_rank = old_struct.fields.len;
-    // Check that the field does not already exist
     inline for (old_struct.fields) |field| {
-        if (mem.eql(u8, field.name, name)) {
-            @compileError("Field already exists in enum: " ++ name);
-        }
+        if (mem.eql(u8, field.name, name))
+            @compileError("Added: field already exists: " ++ name);
     }
-    const new_rank = old_rank + 1;
-    const new_field_names = comptime fields: {
-        var new_field_names: [new_rank][:0]const u8 = undefined;
-        for (0..old_rank) |i| {
-            new_field_names[i] = old_struct.fields[i].name;
-        }
-        new_field_names[old_rank] = name;
-        break :fields new_field_names;
+    const new_rank = old_struct.fields.len + 1;
+    const new_field_names = comptime blk: {
+        var out: [new_rank][:0]const u8 = undefined;
+        for (0..old_struct.fields.len) |i| out[i] = old_struct.fields[i].name;
+        out[old_struct.fields.len] = name;
+        break :blk out;
     };
     return KeyEnum(&new_field_names);
 }
 
-/// Return a new enum that contains the fields that occur in one of two given enums, but not the
-/// other.
-///
-/// ## Example
-/// ```zig
-/// AC = Xor(enum {a, b}, enum {b, c});
-/// ```
-/// `AC` will be equivalent to `enum {a, c}`;
 pub fn Xor(comptime Enum1: type, comptime Enum2: type) type {
     const info1 = @typeInfo(Enum1).@"enum";
     const info2 = @typeInfo(Enum2).@"enum";
@@ -1003,13 +858,12 @@ pub fn Xor(comptime Enum1: type, comptime Enum2: type) type {
     comptime var num_matches: usize = 0;
 
     inline for (0..info1.fields.len) |fi| {
-        inline for (0..info2.fields.len) |fj| fj: {
-            const match = mem.eql(u8, info1.fields[fi].name, info2.fields[fj].name);
-            if (match) {
+        inline for (0..info2.fields.len) |fj| fj_blk: {
+            if (mem.eql(u8, info1.fields[fi].name, info2.fields[fj].name)) {
                 common1[fi] = true;
                 common2[fj] = true;
                 num_matches += 1;
-                break :fj;
+                break :fj_blk;
             }
         }
     }
@@ -1017,21 +871,15 @@ pub fn Xor(comptime Enum1: type, comptime Enum2: type) type {
     const xor_len = info1.fields.len + info2.fields.len - 2 * num_matches;
     comptime var xor_fnames: [xor_len][:0]const u8 = undefined;
     var i: usize = 0;
-    inline for (info1.fields, 0..) |field, fi| {
-        if (!common1[fi]) {
-            xor_fnames[i] = field.name;
-            i += 1;
-        }
-    }
-    inline for (info2.fields, 0..) |field, fj| {
-        if (!common2[fj]) {
-            xor_fnames[i] = field.name;
-            i += 1;
-        }
-    }
-
+    inline for (info1.fields, 0..) |field, fi| if (!common1[fi]) {
+        xor_fnames[i] = field.name;
+        i += 1;
+    };
+    inline for (info2.fields, 0..) |field, fj| if (!common2[fj]) {
+        xor_fnames[i] = field.name;
+        i += 1;
+    };
     assert(i == xor_len);
-
     return KeyEnum(&xor_fnames);
 }
 
@@ -1043,9 +891,8 @@ fn unionOfAxisNames(comptime ShapeTupleType: type) []const [:0]const u8 {
             const info = @typeInfo(tuple_field.type);
             if (info != .@"struct") @compileError("Shape must be a struct");
             for (info.@"struct".fields) |axis_field| {
-                if (axis_field.type != usize and axis_field.type != comptime_int) {
-                    @compileError("Expected all axes to be usize, found " ++ @typeName(axis_field.type));
-                }
+                if (axis_field.type != usize and axis_field.type != comptime_int)
+                    @compileError("Expected axis type usize, found " ++ @typeName(axis_field.type));
             }
             sum += info.@"struct".fields.len;
         }
@@ -1055,12 +902,11 @@ fn unionOfAxisNames(comptime ShapeTupleType: type) []const [:0]const u8 {
             const info = @typeInfo(tuple_field.type);
             for (info.@"struct".fields) |field| {
                 var found = false;
-                for (all_names[0..count]) |existing_name| {
-                    if (mem.eql(u8, existing_name, field.name)) {
+                for (all_names[0..count]) |existing|
+                    if (mem.eql(u8, existing, field.name)) {
                         found = true;
                         break;
-                    }
-                }
+                    };
                 if (!found) {
                     all_names[count] = field.name;
                     count += 1;
@@ -1070,12 +916,6 @@ fn unionOfAxisNames(comptime ShapeTupleType: type) []const [:0]const u8 {
         return all_names[0..count];
     }
 }
-
-// const FieldIntersection = struct {
-//     lwr: [][:0]const u8,
-//     common: [][:0]const u8,
-//     rwl: [][:0]const u8,
-// };
 
 const Index2dEnum = enum { row, col };
 

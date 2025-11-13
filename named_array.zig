@@ -431,8 +431,8 @@ test "NamedArray stride multi-axis negative and positive" {
     arr.idx = arr.idx.stride(.{ .i = -1, .j = 2 });
 
     // Shapes
-    try std.testing.expectEqual(@as(usize, 5), arr.idx.shape.i);
-    try std.testing.expectEqual(@as(usize, 3), arr.idx.shape.j);
+    try std.testing.expectEqual(5, arr.idx.shape.i);
+    try std.testing.expectEqual(3, arr.idx.shape.j);
 
     // Check mapping for a couple of points:
     // Logical i=0 -> original i=4; logical j=1 -> original j=2

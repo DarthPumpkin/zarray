@@ -176,9 +176,22 @@ pub fn NamedArrayConst(comptime Axis: type, comptime Scalar: type) type {
 
 // Works for both NamedArray and NamedArrayConst
 fn flatGeneric(self: anytype) ?@TypeOf(self.buf) {
-    if (self.idx.isContiguous())
-        return self.buf[self.idx.offset..][0..self.idx.count()];
-    return null;
+    // Only allow flatten when:
+    //  - layout is contiguous (absolute stride chain)
+    //  - all strides are non-negative (forward monotonic)
+    if (!self.idx.isContiguous())
+        return null;
+
+    // Reject negative strides (reverse views); they are logically contiguous
+    // but not a single forward slice starting at offset.
+    const StridesType = @TypeOf(self.idx.strides);
+    const info = @typeInfo(StridesType).@"struct";
+    inline for (info.fields) |field| {
+        if (@field(self.idx.strides, field.name) < 0)
+            return null;
+    }
+
+    return self.buf[self.idx.offset..][0..self.idx.count()];
 }
 
 // Works for both NamedArray and NamedArrayConst
@@ -259,6 +272,38 @@ test "flat, toContiguous" {
     try std.testing.expectEqualSlices(i32, &expected, flat_const);
 }
 
+test "NamedArray toContiguous from reversed view retains logical order" {
+    const IJ = enum { i, j };
+    const allocator = std.testing.allocator;
+    var arr = try NamedArray(IJ, i32).initAlloc(allocator, .{ .i = 3, .j = 4 });
+    defer arr.deinit(allocator);
+    _ = arr.fillArange(); // original layout values: row-major
+
+    // Reverse i
+    arr.idx = arr.idx.strideAxis(.i, -1);
+    const copy = try arr.toContiguous(allocator);
+    defer copy.deinit(allocator);
+
+    // copy is contiguous in logical reversed order; verify first and last rows
+    // Logical row 0 of reversed view corresponds to original last row
+    var reversed_first_row_ok = true;
+    for (0..arr.idx.shape.j) |j| {
+        const original_val = (arr.idx.shape.i - 1) * 4 + j;
+        const copied_val = copy.scalarAt(.{ .i = 0, .j = j });
+        if (original_val != copied_val) reversed_first_row_ok = false;
+    }
+    try std.testing.expect(reversed_first_row_ok);
+
+    // Logical last row corresponds to original first row
+    var reversed_last_row_ok = true;
+    for (0..arr.idx.shape.j) |j| {
+        const original_val = 0 * 4 + j;
+        const copied_val = copy.scalarAt(.{ .i = arr.idx.shape.i - 1, .j = j });
+        if (original_val != copied_val) reversed_last_row_ok = false;
+    }
+    try std.testing.expect(reversed_last_row_ok);
+}
+
 test "get*" {
     // Test all the get* methods, both for NamedArray and NamedArrayConst
     const IJ = enum { i, j };
@@ -332,6 +377,75 @@ test "stride" {
     const flat = arr_cont.flat().?;
     try std.testing.expectEqualSlices(i32, &actual, flat);
 }
+
+test "NamedArray negative strideAxis reversal contiguous flat" {
+    const IJ = enum { i, j };
+    const allocator = std.testing.allocator;
+    var arr = try NamedArray(IJ, i32).initAlloc(allocator, .{ .i = 3, .j = 4 });
+    defer arr.deinit(allocator);
+    _ = arr.fillArange();
+
+    // Reverse the major axis (i)
+    arr.idx = arr.idx.strideAxis(.i, -1);
+
+    // Contiguous reversed view should still flatten
+    const flat_opt = arr.flat();
+    try std.testing.expectEqual(null, flat_opt);
+}
+
+test "NamedArray negative subsampled stride non-contiguous flat null" {
+    const IJ = enum { i, j };
+    const allocator = std.testing.allocator;
+    var arr = try NamedArray(IJ, i32).initAlloc(allocator, .{ .i = 6, .j = 5 });
+    defer arr.deinit(allocator);
+    _ = arr.fillArange();
+
+    // Subsample + reverse i axis (step -2)
+    arr.idx = arr.idx.strideAxis(.i, -2);
+    // Non-contiguous now (abs stride chain breaks), flat should return null
+    try std.testing.expectEqual(null, arr.flat());
+
+    // Shape.i = ceil(6/2)=3; check a few mapped elements
+    // Logical i mapping: 0->5, 1->3, 2->1
+    const vals = [_]i32{
+        arr.scalarAt(.{ .i = 0, .j = 0 }),
+        arr.scalarAt(.{ .i = 1, .j = 0 }),
+        arr.scalarAt(.{ .i = 2, .j = 0 }),
+    };
+    const expected = [_]i32{
+        5 * 5 + 0, // original (5,0)
+        3 * 5 + 0, // original (3,0)
+        1 * 5 + 0, // original (1,0)
+    };
+    try std.testing.expectEqualSlices(i32, &expected, &vals);
+}
+
+test "NamedArray stride multi-axis negative and positive" {
+    const IJ = enum { i, j };
+    const allocator = std.testing.allocator;
+    var arr = try NamedArray(IJ, i32).initAlloc(allocator, .{ .i = 5, .j = 6 });
+    defer arr.deinit(allocator);
+    _ = arr.fillArange();
+
+    // Apply multi-axis stride: reverse i (step -1), subsample j by +2
+    arr.idx = arr.idx.stride(.{ .i = -1, .j = 2 });
+
+    // Shapes
+    try std.testing.expectEqual(@as(usize, 5), arr.idx.shape.i);
+    try std.testing.expectEqual(@as(usize, 3), arr.idx.shape.j);
+
+    // Check mapping for a couple of points:
+    // Logical i=0 -> original i=4; logical j=1 -> original j=2
+    const v1 = arr.scalarAt(.{ .i = 0, .j = 1 });
+    const expected_v1 = 4 * 6 + 2;
+    try std.testing.expectEqual(expected_v1, v1);
+
+    // Logical i=4 -> original i=0; logical j=2 -> original j=4
+    const v2 = arr.scalarAt(.{ .i = 4, .j = 2 });
+    const expected_v2 = 0 * 6 + 4;
+    try std.testing.expectEqual(expected_v2, v2);
+}
+
 test "NamedArray renameAxes strict" {
     const IJ = enum { i, j };
     const XY = enum { x, y };

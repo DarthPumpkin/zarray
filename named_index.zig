@@ -150,12 +150,13 @@ pub fn NamedIndex(comptime AxisEnum: type) type {
             // Dimension after striding (ceil division)
             dim_ptr.* = if (orig_dim == 0) 0 else (orig_dim + abs_step - 1) / abs_step;
 
-            // New stride
+            // New stride (signed)
             stride_ptr.* = orig_stride * step;
 
-            // Offset adjustment for negative traversal
+            // Offset adjustment for negative traversal:
+            // Always start from the very last element (orig_dim - 1), then stride backwards.
             if (step < 0 and orig_dim > 0) {
-                const last_index = orig_dim - 1 - ((orig_dim - 1) % abs_step);
+                const last_index = orig_dim - 1;
                 new_offset += @as(isize, @intCast(last_index)) * orig_stride;
             }
 
@@ -188,7 +189,7 @@ pub fn NamedIndex(comptime AxisEnum: type) type {
                     stride_ptr.* = orig_stride * step;
 
                     if (step < 0 and orig_dim > 0) {
-                        const last_index = orig_dim - 1 - ((orig_dim - 1) % abs_step);
+                        const last_index = orig_dim - 1;
                         new_offset += @as(isize, @intCast(last_index)) * orig_stride;
                     }
                 }
@@ -212,7 +213,7 @@ pub fn NamedIndex(comptime AxisEnum: type) type {
             out_stride.* = orig_stride * step;
 
             if (step < 0 and orig_dim > 0) {
-                const last_index = orig_dim - 1 - ((orig_dim - 1) % abs_step);
+                const last_index = orig_dim - 1;
                 return @as(isize, @intCast(last_index)) * orig_stride;
             }
             return 0;
@@ -1009,6 +1010,27 @@ test "linear overlapping" {
     try std.testing.expectEqual(null, idx_row_broadcast.linearChecked(oob2));
 }
 
+test "linear mapping multi-axis negative strides" {
+    const Axes = enum { x, y };
+    const NI = NamedIndex(Axes);
+    // Contiguous row-major base (y fastest)
+    const base = NI.initContiguous(.{ .x = 3, .y = 4 }); // strides: x=4, y=1
+    // Reverse x and subsample y by 2
+    const view = base.stride(NI.StepsOptional{ .x = -1, .y = 2 });
+    // Expect shape.x = 3 (step -1), shape.y = ceil(4/2)=2
+    try std.testing.expectEqual(@as(usize, 3), view.shape.x);
+    try std.testing.expectEqual(@as(usize, 2), view.shape.y);
+    // Strides: x: 4 * -1 = -4, y: 1 * 2 = 2
+    try std.testing.expectEqual(@as(isize, -4), view.strides.x);
+    try std.testing.expectEqual(@as(isize, 2), view.strides.y);
+    // Offset: reversed x adds (3-1)*4 = 8
+    try std.testing.expectEqual(base.offset + 8, view.offset);
+
+    // Mapping spot check: (x=0,y=0) -> original (x=2,y=0)
+    const orig = base.linear(.{ .x = 2, .y = 0 });
+    try std.testing.expectEqual(orig, view.linear(.{ .x = 0, .y = 0 }));
+}
+
 test "strideAxis" {
     const Structure2d = NamedIndex(Index2dEnum);
     const idx: Structure2d = .{
@@ -1024,35 +1046,123 @@ test "strideAxis" {
     try std.testing.expectEqual(1, stepped.offset);
 }
 
+test "strideAxis size1 reversal has no offset shift" {
+    const Axes = enum { d };
+    const NI = NamedIndex(Axes);
+    const base = NI.initContiguous(.{ .d = 1 });
+    const rev = base.strideAxis(.d, -1);
+    try std.testing.expectEqual(@as(usize, 1), rev.shape.d);
+    try std.testing.expectEqual(@as(isize, -1), rev.strides.d);
+    try std.testing.expectEqual(base.offset, rev.offset);
+    try std.testing.expect(rev.isContiguous());
+}
+
 test "stride" {
     const Structure2d = NamedIndex(Index2dEnum);
-    const KeyOptional = Structure2d.AxesOptional;
+    const StepsOptional = Structure2d.StepsOptional;
 
-    // Test with both fields set
+    // Base index
     const idx: Structure2d = .{
         .shape = .{ .row = 6, .col = 8 },
         .strides = .{ .row = 8, .col = 1 },
         .offset = 1,
     };
-    const steps: KeyOptional = .{ .row = 2, .col = 1 };
-    const stepped = idx.stride(steps);
+
+    // Positive steps on both axes
+    const steps_pos: StepsOptional = .{ .row = 2, .col = 1 };
+    const stepped = idx.stride(steps_pos);
     try std.testing.expectEqual(3, stepped.shape.row);
     try std.testing.expectEqual(8, stepped.shape.col);
-    try std.testing.expectEqual(16, stepped.strides.row);
-    try std.testing.expectEqual(1, stepped.strides.col);
-    try std.testing.expectEqual(1, stepped.offset);
+    try std.testing.expectEqual(@as(isize, 16), stepped.strides.row);
+    try std.testing.expectEqual(@as(isize, 1), stepped.strides.col);
+    try std.testing.expectEqual(@as(usize, 1), stepped.offset);
 
-    // Test with only one field set
-    const stepped_row = idx.stride(.{ .row = 2 });
+    // Single axis step
+    const stepped_row = idx.stride(StepsOptional{ .row = 2 });
     try std.testing.expectEqual(3, stepped_row.shape.row);
     try std.testing.expectEqual(8, stepped_row.shape.col);
-    try std.testing.expectEqual(16, stepped_row.strides.row);
-    try std.testing.expectEqual(1, stepped_row.strides.col);
-    try std.testing.expectEqual(1, stepped_row.offset);
+    try std.testing.expectEqual(@as(isize, 16), stepped_row.strides.row);
+    try std.testing.expectEqual(@as(isize, 1), stepped_row.strides.col);
+    try std.testing.expectEqual(@as(usize, 1), stepped_row.offset);
 
-    // Test with no fields set (should be identical to original)
-    const stepped_none = idx.stride(.{});
+    // No steps => identical
+    const stepped_none = idx.stride(StepsOptional{});
     try std.testing.expectEqual(idx, stepped_none);
+}
+
+test "strideAxis negative simple reversal" {
+    const Structure2d = NamedIndex(Index2dEnum);
+    const base: Structure2d = .{
+        .shape = .{ .row = 6, .col = 4 },
+        .strides = .{ .row = 4, .col = 1 },
+        .offset = 10,
+    };
+    const reversed = base.strideAxis(.row, -1);
+    try std.testing.expectEqual(@as(usize, 6), reversed.shape.row);
+    try std.testing.expectEqual(@as(usize, 4), reversed.shape.col);
+    try std.testing.expectEqual(@as(isize, -4), reversed.strides.row);
+    try std.testing.expectEqual(@as(isize, 1), reversed.strides.col);
+    try std.testing.expectEqual(@as(usize, 30), reversed.offset);
+
+    // Mapping checks
+    const orig_row5_col0 = base.linear(.{ .row = 5, .col = 0 });
+    const rev_row0_col0 = reversed.linear(.{ .row = 0, .col = 0 });
+    try std.testing.expectEqual(orig_row5_col0, rev_row0_col0);
+    const orig_row0_col0 = base.linear(.{ .row = 0, .col = 0 });
+    const rev_row5_col0 = reversed.linear(.{ .row = 5, .col = 0 });
+    try std.testing.expectEqual(orig_row0_col0, rev_row5_col0);
+
+    try std.testing.expect(reversed.isContiguous());
+}
+
+test "strideAxis negative subsample" {
+    const Structure2d = NamedIndex(Index2dEnum);
+    const base: Structure2d = .{
+        .shape = .{ .row = 6, .col = 3 },
+        .strides = .{ .row = 3, .col = 1 },
+        .offset = 0,
+    };
+    const reversed_step2 = base.strideAxis(.row, -2);
+    try std.testing.expectEqual(@as(usize, 3), reversed_step2.shape.row);
+    try std.testing.expectEqual(@as(usize, 3), reversed_step2.shape.col);
+    try std.testing.expectEqual(@as(isize, -6), reversed_step2.strides.row);
+    try std.testing.expectEqual(@as(isize, 1), reversed_step2.strides.col);
+    try std.testing.expectEqual(@as(usize, 15), reversed_step2.offset);
+
+    // Row mapping: 0->5, 1->3, 2->1
+    const row5 = base.linear(.{ .row = 5, .col = 0 });
+    const row3 = base.linear(.{ .row = 3, .col = 0 });
+    const row1 = base.linear(.{ .row = 1, .col = 0 });
+    try std.testing.expectEqual(row5, reversed_step2.linear(.{ .row = 0, .col = 0 }));
+    try std.testing.expectEqual(row3, reversed_step2.linear(.{ .row = 1, .col = 0 }));
+    try std.testing.expectEqual(row1, reversed_step2.linear(.{ .row = 2, .col = 0 }));
+
+    try std.testing.expect(!reversed_step2.isContiguous());
+}
+
+test "stride multiple axes with negative and positive steps" {
+    const Structure2d = NamedIndex(Index2dEnum);
+    const StepsOptional = Structure2d.StepsOptional;
+
+    const base: Structure2d = .{
+        .shape = .{ .row = 8, .col = 9 },
+        .strides = .{ .row = 9, .col = 1 },
+        .offset = 100,
+    };
+    const mixed = base.stride(StepsOptional{ .row = -2, .col = 3 });
+
+    try std.testing.expectEqual(@as(usize, 4), mixed.shape.row);
+    try std.testing.expectEqual(@as(usize, 3), mixed.shape.col);
+    try std.testing.expectEqual(@as(isize, -18), mixed.strides.row);
+    try std.testing.expectEqual(@as(isize, 3), mixed.strides.col);
+    try std.testing.expectEqual(@as(usize, 163), mixed.offset);
+
+    // Mapping check (row reversal + subsample)
+    const orig_row7_col0 = base.linear(.{ .row = 7, .col = 0 });
+    const new_row0_col0 = mixed.linear(.{ .row = 0, .col = 0 });
+    try std.testing.expectEqual(orig_row7_col0, new_row0_col0);
+
+    try std.testing.expect(!mixed.isContiguous());
 }
 
 test "sliceAxis" {
@@ -1146,6 +1256,23 @@ test "iterKeys 3d, major in middle" {
     try std.testing.expectEqual(expected_indices.len, i);
 }
 
+test "KeyIterator ordering ignores sign (negative fastest varying)" {
+    const Axes = enum { r, c };
+    const NI = NamedIndex(Axes);
+    const base = NI.initContiguous(.{ .r = 2, .c = 3 }); // strides r=3, c=1
+    const reversed_c = base.strideAxis(.c, -1); // strides r=3, c=-1 (abs 1 fastest)
+    var it = reversed_c.iterKeys();
+    var seen: usize = 0;
+    // Expect c to vary fastest (0..2), even though stride is negative
+    while (it.next()) |key| {
+        // Check bounds
+        try std.testing.expect(key.r < reversed_c.shape.r);
+        try std.testing.expect(key.c < reversed_c.shape.c);
+        seen += 1;
+    }
+    try std.testing.expectEqual(reversed_c.shape.r * reversed_c.shape.c, seen);
+}
+
 test "axisOrder" {
     const Structure2d = NamedIndex(Index2dEnum);
 
@@ -1175,6 +1302,38 @@ test "axisOrder" {
     };
     const order_equal = idx_equal.axisOrder();
     try std.testing.expectEqual(.{ .row, .col }, order_equal);
+}
+
+test "axisOrder negative strides" {
+    const Structure2d = NamedIndex(Index2dEnum);
+    const idx: Structure2d = .{
+        .shape = .{ .row = 5, .col = 4 },
+        .strides = .{ .row = -8, .col = 1 },
+        .offset = 0,
+    };
+    const order = idx.axisOrder();
+    try std.testing.expectEqual(.{ .row, .col }, order);
+
+    const idx2: Structure2d = .{
+        .shape = .{ .row = 5, .col = 4 },
+        .strides = .{ .row = -2, .col = 7 },
+        .offset = 0,
+    };
+    const order2 = idx2.axisOrder();
+    try std.testing.expectEqual(.{ .col, .row }, order2);
+}
+
+test "axisOrder tie absolute stride chooses enum order fallback" {
+    const Axes = enum { a, b, c };
+    const NI = NamedIndex(Axes);
+    const idx: NI = .{
+        .shape = .{ .a = 2, .b = 2, .c = 2 },
+        .strides = .{ .a = -5, .b = 5, .c = -5 }, // equal abs strides
+        .offset = 0,
+    };
+    // Expected order: a, b, c (enum declaration order) because abs(stride)==5 tie-breaker by original index
+    const order = idx.axisOrder();
+    try std.testing.expectEqual(.{ .a, .b, .c }, order);
 }
 
 test "isContiguous" {
@@ -1223,6 +1382,16 @@ test "isContiguous" {
         .offset = 0,
     };
     try std.testing.expect(!idx_noncontig_3d.isContiguous());
+}
+
+test "isContiguous reversed view" {
+    const Structure2d = NamedIndex(Index2dEnum);
+    const base = Structure2d.initContiguous(.{ .row = 3, .col = 4 });
+    const reversed = base.strideAxis(.row, -1);
+    try std.testing.expect(reversed.isContiguous());
+
+    const subsampled_reversed = base.strideAxis(.row, -2);
+    try std.testing.expect(!subsampled_reversed.isContiguous());
 }
 
 test "count" {
@@ -1456,6 +1625,19 @@ test "broadcastAxis" {
     }
 }
 
+test "broadcastAxis after reversal" {
+    const Axes = enum { u, v };
+    const NI = NamedIndex(Axes);
+    const base = NI.initContiguous(.{ .u = 1, .v = 4 });
+    const rev_v = base.strideAxis(.v, -1);
+    // Broadcast u from size 1 to size 7
+    const broadcasted = rev_v.broadcastAxis(.u, 7);
+    try std.testing.expectEqual(@as(usize, 7), broadcasted.shape.u);
+    try std.testing.expectEqual(@as(isize, 0), broadcasted.strides.u);
+    // v stride stays negative
+    try std.testing.expect(broadcasted.strides.v < 0);
+}
+
 test "Xor" {
     // Typical case: some overlapping, some not.
     const ABC = enum { a, b, c };
@@ -1606,6 +1788,54 @@ test "splitAxis into three" {
     const actual_split = source_idx.splitAxis(TargetAxes, .{ .j = 3, .k = 5, .l = 7 });
 
     try std.testing.expectEqual(expected_split, actual_split);
+}
+
+test "splitAxis propagates negative stride" {
+    const SourceAxes = enum { big, other };
+    const NI = NamedIndex(SourceAxes);
+    // Big size = 12; contiguous strides: big= other_size(??) Not using initContiguous to craft negative stride.
+    const base: NI = .{
+        .shape = .{ .big = 12, .other = 7 },
+        .strides = .{ .big = -7, .other = 1 }, // negative contiguous along big (abs 7)
+        .offset = 100,
+    };
+    const TargetAxes = enum { big_a, big_b, other };
+    const split = base.splitAxis(TargetAxes, .{ .big_a = 3, .big_b = 4 });
+    // Expect shapes 3 and 4; strides propagate negative base stride
+    try std.testing.expectEqual(@as(isize, -28), split.strides.big_a);
+    try std.testing.expectEqual(@as(isize, -7), split.strides.big_b);
+    try std.testing.expectEqual(@as(isize, 1), split.strides.other);
+}
+
+test "mergeAxes contiguity with reversed adjacent axes" {
+    const Axes = enum { a, b, c };
+    const NI = NamedIndex(Axes);
+
+    const good: NI = .{
+        .shape = .{ .a = 2, .b = 3, .c = 2 },
+        .strides = .{ .a = 6, .b = -2, .c = -1 },
+        .offset = 0,
+    };
+    const Target = enum { a, bc };
+    // Should merge b and c into bc (contiguous by abs values)
+    const merged = try good.mergeAxes(Target);
+    try std.testing.expectEqual(@as(usize, 6), merged.shape.bc); // 3*2
+    try std.testing.expectEqual(@as(isize, -1), merged.strides.bc); // fastest varying (c)
+    // Shape 'a' preserved
+    try std.testing.expectEqual(@as(usize, 2), merged.shape.a);
+}
+
+test "mergeAxes error negative stride misalignment" {
+    const Axes = enum { a, b, c };
+    const NI = NamedIndex(Axes);
+    const bad: NI = .{
+        .shape = .{ .a = 2, .b = 3, .c = 2 },
+        .strides = .{ .a = 100, .b = -5, .c = -1 }, // abs(b)=5, abs(c)=1, but expected abs(b)=abs(c)*shape(c)=2
+        .offset = 0,
+    };
+    const Target = enum { a, bc };
+    const attempt = bad.mergeAxes(Target);
+    try std.testing.expectError(NamedIndexError.StrideMisalignment, attempt);
 }
 
 // test "reindex: merge axes" {

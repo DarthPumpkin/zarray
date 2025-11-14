@@ -1194,6 +1194,31 @@ test "sliceAxis" {
     try std.testing.expectEqual(expected_again, sliced_again);
 }
 
+test "sliceAxis negative strides" {
+    const Structure2d = NamedIndex(Index2dEnum);
+    const idx: Structure2d = .{
+        .shape = .{ .row = 6, .col = 8 },
+        .strides = .{ .row = -8, .col = 1 },
+        .offset = 40,
+    };
+
+    const sliced_by_row = idx.sliceAxis(.row, 1, 5);
+    const expected_by_row: Structure2d = .{
+        .shape = .{ .row = 4, .col = 8 },
+        .strides = .{ .row = -8, .col = 1 },
+        .offset = 32,
+    };
+    try std.testing.expectEqual(expected_by_row, sliced_by_row);
+
+    const sliced_by_col = idx.sliceAxis(.col, 4, 5);
+    const expected_by_col: Structure2d = .{
+        .shape = .{ .row = 6, .col = 1 },
+        .strides = .{ .row = -8, .col = 1 },
+        .offset = 44,
+    };
+    try std.testing.expectEqual(expected_by_col, sliced_by_col);
+}
+
 test "iterKeys" {
     const Structure2d = NamedIndex(Index2dEnum);
     const idx: Structure2d = .{

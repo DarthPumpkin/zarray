@@ -320,6 +320,73 @@ test "dot" {
         math.floatEpsAt(T, expected),
     );
 }
+test "dotu" {
+    const I = enum { i };
+    const T = Complex(f32);
+    const Arr = NamedArrayConst(I, T);
+
+    const x = Arr{
+        .idx = .initContiguous(.{ .i = 2 }),
+        .buf = &[_]T{
+            .{ .re = 1.0, .im = 2.0 },
+            .{ .re = 3.0, .im = 4.0 },
+        },
+    };
+    const y = Arr{
+        .idx = .initContiguous(.{ .i = 2 }),
+        .buf = &[_]T{
+            .{ .re = 5.0, .im = 6.0 },
+            .{ .re = 7.0, .im = 8.0 },
+        },
+    };
+
+    const expected: T = .{ .re = -18.0, .im = 68.0 };
+    const actual = blas.dotu(I, T, x, y);
+    try std.testing.expectApproxEqAbs(
+        expected.re,
+        actual.re,
+        math.floatEpsAt(f32, expected.re),
+    );
+    try std.testing.expectApproxEqAbs(
+        expected.im,
+        actual.im,
+        math.floatEpsAt(f32, expected.im),
+    );
+}
+
+test "dotc" {
+    const I = enum { i };
+    const T = Complex(f32);
+    const Arr = NamedArrayConst(I, T);
+
+    const x = Arr{
+        .idx = .initContiguous(.{ .i = 2 }),
+        .buf = &[_]T{
+            .{ .re = 1.0, .im = 2.0 },
+            .{ .re = 3.0, .im = 4.0 },
+        },
+    };
+    const y = Arr{
+        .idx = .initContiguous(.{ .i = 2 }),
+        .buf = &[_]T{
+            .{ .re = 5.0, .im = 6.0 },
+            .{ .re = 7.0, .im = 8.0 },
+        },
+    };
+
+    const expected: T = .{ .re = 70.0, .im = -8.0 };
+    const actual = blas.dotc(I, T, x, y);
+    try std.testing.expectApproxEqAbs(
+        expected.re,
+        actual.re,
+        math.floatEpsAt(f32, expected.re),
+    );
+    try std.testing.expectApproxEqAbs(
+        expected.im,
+        actual.im,
+        math.floatEpsAt(f32, expected.im),
+    );
+}
 
 test "nrm2 real" {
     const I = enum { i };
@@ -612,72 +679,4 @@ test "scal complex" {
     try std.testing.expectApproxEqAbs(11.0, x.buf[1].im, math.floatEpsAt(f32, 11.0));
     try std.testing.expectApproxEqAbs(-0.5, x.buf[2].re, math.floatEpsAt(f32, -0.5));
     try std.testing.expectApproxEqAbs(-3.5, x.buf[2].im, math.floatEpsAt(f32, -3.5));
-}
-
-test "dotu" {
-    const I = enum { i };
-    const T = Complex(f32);
-    const Arr = NamedArrayConst(I, T);
-
-    const x = Arr{
-        .idx = .initContiguous(.{ .i = 2 }),
-        .buf = &[_]T{
-            .{ .re = 1.0, .im = 2.0 },
-            .{ .re = 3.0, .im = 4.0 },
-        },
-    };
-    const y = Arr{
-        .idx = .initContiguous(.{ .i = 2 }),
-        .buf = &[_]T{
-            .{ .re = 5.0, .im = 6.0 },
-            .{ .re = 7.0, .im = 8.0 },
-        },
-    };
-
-    const expected: T = .{ .re = -18.0, .im = 68.0 };
-    const actual = blas.dotu(I, T, x, y);
-    try std.testing.expectApproxEqAbs(
-        expected.re,
-        actual.re,
-        math.floatEpsAt(f32, expected.re),
-    );
-    try std.testing.expectApproxEqAbs(
-        expected.im,
-        actual.im,
-        math.floatEpsAt(f32, expected.im),
-    );
-}
-
-test "dotc" {
-    const I = enum { i };
-    const T = Complex(f32);
-    const Arr = NamedArrayConst(I, T);
-
-    const x = Arr{
-        .idx = .initContiguous(.{ .i = 2 }),
-        .buf = &[_]T{
-            .{ .re = 1.0, .im = 2.0 },
-            .{ .re = 3.0, .im = 4.0 },
-        },
-    };
-    const y = Arr{
-        .idx = .initContiguous(.{ .i = 2 }),
-        .buf = &[_]T{
-            .{ .re = 5.0, .im = 6.0 },
-            .{ .re = 7.0, .im = 8.0 },
-        },
-    };
-
-    const expected: T = .{ .re = 70.0, .im = -8.0 };
-    const actual = blas.dotc(I, T, x, y);
-    try std.testing.expectApproxEqAbs(
-        expected.re,
-        actual.re,
-        math.floatEpsAt(f32, expected.re),
-    );
-    try std.testing.expectApproxEqAbs(
-        expected.im,
-        actual.im,
-        math.floatEpsAt(f32, expected.im),
-    );
 }

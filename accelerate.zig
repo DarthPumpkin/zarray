@@ -75,6 +75,67 @@ pub const blas = struct {
         return result;
     }
 
+    pub fn nrm2(
+        comptime Axis: type,
+        comptime Scalar: type,
+        x: NamedArrayConst(Axis, Scalar),
+    ) switch (Scalar) {
+        f32 => f32,
+        f64 => f64,
+        Complex(f32) => f32,
+        Complex(f64) => f64,
+        else => @compileError("nrm2 is incompatible with given Scalar type."),
+    } {
+        const x_blas = Blas1d(Scalar).init(Axis, x);
+        const f = switch (Scalar) {
+            f32 => acc.cblas_snrm2,
+            f64 => acc.cblas_dnrm2,
+            Complex(f32) => acc.cblas_scnrm2,
+            Complex(f64) => acc.cblas_dznrm2,
+            else => unreachable,
+        };
+        return f(x_blas.len, x_blas.ptr, x_blas.inc);
+    }
+
+    pub fn asum(
+        comptime Axis: type,
+        comptime Scalar: type,
+        x: NamedArrayConst(Axis, Scalar),
+    ) switch (Scalar) {
+        f32 => f32,
+        f64 => f64,
+        Complex(f32) => f32,
+        Complex(f64) => f64,
+        else => @compileError("asum is incompatible with given Scalar type."),
+    } {
+        const x_blas = Blas1d(Scalar).init(Axis, x);
+        const f = switch (Scalar) {
+            f32 => acc.cblas_sasum,
+            f64 => acc.cblas_dasum,
+            Complex(f32) => acc.cblas_scasum,
+            Complex(f64) => acc.cblas_dzasum,
+            else => unreachable,
+        };
+        return f(x_blas.len, x_blas.ptr, x_blas.inc);
+    }
+
+    pub fn i_amax(
+        comptime Axis: type,
+        comptime Scalar: type,
+        x: NamedArrayConst(Axis, Scalar),
+    ) usize {
+        const x_blas = Blas1d(Scalar).init(Axis, x);
+        const f = switch (Scalar) {
+            f32 => acc.cblas_isamax,
+            f64 => acc.cblas_idamax,
+            Complex(f32) => acc.cblas_icamax,
+            Complex(f64) => acc.cblas_izamax,
+            else => @compileError("i_amax is incompatible with given Scalar type."),
+        };
+        const idx: c_int = f(x_blas.len, x_blas.ptr, x_blas.inc);
+        return @intCast(idx);
+    }
+
     fn Blas1d(comptime Scalar: type) type {
         return struct {
             len: c_int,
@@ -126,6 +187,120 @@ test "dot" {
         actual,
         math.floatEpsAt(T, expected),
     );
+}
+
+test "nrm2 real" {
+    const I = enum { i };
+    const T = f32;
+    const Arr = NamedArrayConst(I, T);
+
+    const x = Arr{
+        .idx = .initContiguous(.{ .i = 2 }),
+        .buf = &[_]T{ 3.0, 4.0 },
+    };
+
+    const expected: T = 5.0;
+    const actual = blas.nrm2(I, T, x);
+    try std.testing.expectApproxEqAbs(
+        expected,
+        actual,
+        math.floatEpsAt(T, expected),
+    );
+}
+
+test "nrm2 complex" {
+    const I = enum { i };
+    const T = Complex(f32);
+    const Arr = NamedArrayConst(I, T);
+
+    const x = Arr{
+        .idx = .initContiguous(.{ .i = 2 }),
+        .buf = &[_]T{
+            .{ .re = 1.0, .im = 2.0 },
+            .{ .re = 3.0, .im = 4.0 },
+        },
+    };
+
+    const expected: f32 = math.sqrt(@as(f32, 30.0));
+    const actual = blas.nrm2(I, T, x);
+    try std.testing.expectApproxEqAbs(
+        expected,
+        actual,
+        math.floatEpsAt(f32, expected),
+    );
+}
+
+test "asum real" {
+    const I = enum { i };
+    const T = f32;
+    const Arr = NamedArrayConst(I, T);
+
+    const x = Arr{
+        .idx = .initContiguous(.{ .i = 3 }),
+        .buf = &[_]T{ 2.0, -3.0, 5.0 },
+    };
+
+    const expected: T = 10.0;
+    const actual = blas.asum(I, T, x);
+    try std.testing.expectApproxEqAbs(
+        expected,
+        actual,
+        math.floatEpsAt(T, expected),
+    );
+}
+
+test "asum complex" {
+    const I = enum { i };
+    const T = Complex(f32);
+    const Arr = NamedArrayConst(I, T);
+
+    const x = Arr{
+        .idx = .initContiguous(.{ .i = 2 }),
+        .buf = &[_]T{
+            .{ .re = 1.0, .im = 2.0 },
+            .{ .re = -3.0, .im = 4.0 },
+        },
+    };
+
+    const expected: f32 = 10.0; // |1|+|2| + |−3|+|4|
+    const actual = blas.asum(I, T, x);
+    try std.testing.expectApproxEqAbs(
+        expected,
+        actual,
+        math.floatEpsAt(f32, expected),
+    );
+}
+
+test "i_amax real" {
+    const I = enum { i };
+    const T = f32;
+    const Arr = NamedArrayConst(I, T);
+
+    const x = Arr{
+        .idx = .initContiguous(.{ .i = 3 }),
+        .buf = &[_]T{ 2.0, -3.0, 5.0 },
+    };
+
+    const actual = blas.i_amax(I, T, x);
+    try std.testing.expectEqual(@as(usize, 2), actual);
+}
+
+test "i_amax complex" {
+    const I = enum { i };
+    const T = Complex(f32);
+    const Arr = NamedArrayConst(I, T);
+
+    const x = Arr{
+        .idx = .initContiguous(.{ .i = 3 }),
+        .buf = &[_]T{
+            .{ .re = 1.0, .im = 2.0 }, // |.| ≈ 2.236
+            .{ .re = 3.0, .im = 1.0 }, // |.| ≈ 3.162
+            .{ .re = -3.0, .im = 4.0 }, // |.| = 5
+        },
+    };
+
+    const actual = blas.i_amax(I, T, x);
+    try std.testing.expectEqual(@as(usize, 2), actual);
 }
 
 test "dotu" {

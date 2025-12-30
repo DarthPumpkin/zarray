@@ -136,6 +136,71 @@ pub const blas = struct {
         return @intCast(idx);
     }
 
+    pub fn swap(
+        comptime Axis: type,
+        comptime Scalar: type,
+        x: NamedArray(Axis, Scalar),
+        y: NamedArray(Axis, Scalar),
+    ) void {
+        const f = switch (Scalar) {
+            f32 => acc.cblas_sswap,
+            f64 => acc.cblas_dswap,
+            Complex(f32) => acc.cblas_cswap,
+            Complex(f64) => acc.cblas_zswap,
+            else => @compileError("swap is incompatible with given Scalar type."),
+        };
+
+        const x_blas = Blas1dMut(Scalar).init(Axis, x);
+        const y_blas = Blas1dMut(Scalar).init(Axis, y);
+        assert(x_blas.len == y_blas.len);
+
+        f(x_blas.len, x_blas.ptr, x_blas.inc, y_blas.ptr, y_blas.inc);
+    }
+
+    pub fn copy(
+        comptime Axis: type,
+        comptime Scalar: type,
+        x: NamedArrayConst(Axis, Scalar),
+        y: NamedArray(Axis, Scalar),
+    ) void {
+        const f = switch (Scalar) {
+            f32 => acc.cblas_scopy,
+            f64 => acc.cblas_dcopy,
+            Complex(f32) => acc.cblas_ccopy,
+            Complex(f64) => acc.cblas_zcopy,
+            else => @compileError("copy is incompatible with given Scalar type."),
+        };
+
+        const x_blas = Blas1d(Scalar).init(Axis, x);
+        const y_blas = Blas1dMut(Scalar).init(Axis, y);
+        assert(x_blas.len == y_blas.len);
+
+        f(x_blas.len, x_blas.ptr, x_blas.inc, y_blas.ptr, y_blas.inc);
+    }
+
+    pub fn axpy(
+        comptime Axis: type,
+        comptime Scalar: type,
+        alpha: Scalar,
+        x: NamedArrayConst(Axis, Scalar),
+        y: NamedArray(Axis, Scalar),
+    ) void {
+        const f = switch (Scalar) {
+            f32 => acc.cblas_saxpy,
+            f64 => acc.cblas_daxpy,
+            Complex(f32) => acc.cblas_caxpy,
+            Complex(f64) => acc.cblas_zaxpy,
+            else => @compileError("axpy is incompatible with given Scalar type."),
+        };
+
+        const x_blas = Blas1d(Scalar).init(Axis, x);
+        const y_blas = Blas1dMut(Scalar).init(Axis, y);
+        assert(x_blas.len == y_blas.len);
+
+        const alpha_blas = if (Scalar == Complex(f32) or Scalar == Complex(f64)) &alpha else alpha;
+        f(x_blas.len, alpha_blas, x_blas.ptr, x_blas.inc, y_blas.ptr, y_blas.inc);
+    }
+
     fn Blas1d(comptime Scalar: type) type {
         return struct {
             len: c_int,
@@ -154,6 +219,32 @@ pub const blas = struct {
                 // The pointer is expected to be to the scalar that comes first in virtual memory.
                 // For negative strides, this corresponds to the logically last scalar.
                 const ptr: *const Scalar = if (inc >= 0) arr.at(@bitCast([_]usize{0})) else arr.at(@bitCast([_]usize{len - 1}));
+
+                return .{
+                    .len = @intCast(len),
+                    .ptr = ptr,
+                    .inc = @intCast(inc),
+                };
+            }
+        };
+    }
+
+    fn Blas1dMut(comptime Scalar: type) type {
+        return struct {
+            len: c_int,
+            ptr: *Scalar,
+            inc: c_int,
+
+            fn init(comptime Axis: type, arr: anytype) @This() {
+                const axis_name = comptime blk: {
+                    const fields = meta.fields(Axis);
+                    assert(fields.len == 1);
+                    break :blk fields[0].name;
+                };
+
+                const len = @field(arr.idx.shape, axis_name);
+                const inc = @field(arr.idx.strides, axis_name);
+                const ptr: *Scalar = if (inc >= 0) arr.at(@bitCast([_]usize{0})) else arr.at(@bitCast([_]usize{len - 1}));
 
                 return .{
                     .len = @intCast(len),
@@ -301,6 +392,109 @@ test "i_amax complex" {
 
     const actual = blas.i_amax(I, T, x);
     try std.testing.expectEqual(@as(usize, 2), actual);
+}
+
+test "swap real" {
+    const I = enum { i };
+    const T = f32;
+    const Arr = NamedArray(I, T);
+
+    var x_buf = [_]T{ 1.0, 2.0, 3.0 };
+    var y_buf = [_]T{ 4.0, 5.0, 6.0 };
+    const x = Arr{
+        .idx = .initContiguous(.{ .i = 3 }),
+        .buf = &x_buf,
+    };
+    const y = Arr{
+        .idx = .initContiguous(.{ .i = 3 }),
+        .buf = &y_buf,
+    };
+
+    blas.swap(I, T, x, y);
+    try std.testing.expectEqualSlices(T, &[_]T{ 4.0, 5.0, 6.0 }, x.buf);
+    try std.testing.expectEqualSlices(T, &[_]T{ 1.0, 2.0, 3.0 }, y.buf);
+}
+
+test "copy complex" {
+    const I = enum { i };
+    const T = Complex(f32);
+    const ArrC = NamedArrayConst(I, T);
+    const Arr = NamedArray(I, T);
+
+    var y_buf = [_]T{
+        .{ .re = 0.0, .im = 0.0 },
+        .{ .re = 0.0, .im = 0.0 },
+    };
+    const x = ArrC{
+        .idx = .initContiguous(.{ .i = 2 }),
+        .buf = &[_]T{
+            .{ .re = 1.0, .im = -2.0 },
+            .{ .re = 3.5, .im = 4.0 },
+        },
+    };
+    const y = Arr{
+        .idx = .initContiguous(.{ .i = 2 }),
+        .buf = &y_buf,
+    };
+
+    blas.copy(I, T, x, y);
+    try std.testing.expectEqualDeep(x.buf[0], y.buf[0]);
+    try std.testing.expectEqualDeep(x.buf[1], y.buf[1]);
+}
+
+test "axpy real" {
+    const I = enum { i };
+    const T = f32;
+    const ArrC = NamedArrayConst(I, T);
+    const Arr = NamedArray(I, T);
+
+    const x_buf = [_]T{ 1.0, -2.0, 3.0 };
+    var y_buf = [_]T{ 10.0, 20.0, 30.0 };
+    const x = ArrC{
+        .idx = .initContiguous(.{ .i = 3 }),
+        .buf = &x_buf,
+    };
+    const y = Arr{
+        .idx = .initContiguous(.{ .i = 3 }),
+        .buf = &y_buf,
+    };
+
+    const alpha: T = 2.0;
+    blas.axpy(I, T, alpha, x, y);
+    try std.testing.expectEqualSlices(T, &[_]T{ 12.0, 16.0, 36.0 }, y.buf);
+}
+
+test "axpy complex" {
+    const I = enum { i };
+    const T = Complex(f32);
+    const ArrC = NamedArrayConst(I, T);
+    const Arr = NamedArray(I, T);
+
+    var y_buf = [_]T{
+        .{ .re = 5.0, .im = 6.0 },
+        .{ .re = 7.0, .im = 8.0 },
+    };
+    const x = ArrC{
+        .idx = .initContiguous(.{ .i = 2 }),
+        .buf = &[_]T{
+            .{ .re = 1.0, .im = 2.0 },
+            .{ .re = -3.0, .im = 4.0 },
+        },
+    };
+    const y = Arr{
+        .idx = .initContiguous(.{ .i = 2 }),
+        .buf = &y_buf,
+    };
+
+    const alpha: T = .{ .re = 2.0, .im = -1.0 };
+    blas.axpy(I, T, alpha, x, y);
+    // Manually compute expected:
+    // y0 + alpha*x0 = (5+6i) + (2-i)*(1+2i) = (5+6i) + (2+4i - i -2i^2) = (5+6i) + (4 + 3i) = (9 + 9i)
+    // y1 + alpha*x1 = (7+8i) + (2-i)*(-3+4i) = (7+8i) + (-6+8i +3i -4i^2) = (7+8i) + (-2 +11i) = (5 + 19i)
+    try std.testing.expectApproxEqAbs(9.0, y.buf[0].re, math.floatEpsAt(f32, 9.0));
+    try std.testing.expectApproxEqAbs(9.0, y.buf[0].im, math.floatEpsAt(f32, 9.0));
+    try std.testing.expectApproxEqAbs(5.0, y.buf[1].re, math.floatEpsAt(f32, 5.0));
+    try std.testing.expectApproxEqAbs(19.0, y.buf[1].im, math.floatEpsAt(f32, 19.0));
 }
 
 test "dotu" {

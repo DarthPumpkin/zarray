@@ -41,17 +41,17 @@ pub fn add(
     }
 }
 
-pub fn dot(
+pub fn inner(
     comptime Axis: type,
     comptime Scalar1: type,
     comptime Scalar2: type,
     arr1: NamedArrayConst(Axis, Scalar1),
     arr2: NamedArrayConst(Axis, Scalar2),
-) @TypeOf(arr1.buf[0] * arr2.buf[0]) {
+) Promote(Scalar1, Scalar2) {
     if (arr1.idx.shape != arr2.idx.shape)
-        @panic("Incompatible shapes for dot product");
+        @panic("Incompatible shapes for inner product");
 
-    const ResultType = @TypeOf(arr1.buf[0] * arr2.buf[0]);
+    const ResultType = Promote(Scalar1, Scalar2);
     var sum: ResultType = 0;
     var keys = arr1.idx.iterKeys();
     while (keys.next()) |key| {
@@ -71,7 +71,7 @@ pub fn dot(
 /// The output axis type must be an enum whose field names are the names of the preserved axes,
 /// i.e., symmetric difference (XOR) of the input axis names.
 ///
-/// **Note**: Currently, there must be at least one preserved axis. There is a separate `dot` function
+/// **Note**: Currently, there must be at least one preserved axis. There is a separate `inner` function
 /// for when all axes should be contracted.
 ///
 /// The output array will have shape determined by the preserved axes, and each element will be
@@ -105,7 +105,7 @@ pub fn einsum(
 
     // At least one axis must be preserved
     if (comptime output_names.len == 0) {
-        @compileError("einsum with zero output axes (rank-0) is not yet supported. Use dot instead.");
+        @compileError("einsum with zero output axes (rank-0) is not yet supported. Use inner instead.");
     }
 
     // Validate axis names
@@ -294,16 +294,16 @@ test "add row-major col-major" {
     try std.testing.expectEqualSlices(i32, &expected, &buf_out);
 }
 
-test "dot 1d mixed types" {
+test "inner 1d mixed types" {
     const Axis = enum { i };
     const idx = NamedIndex(Axis).initContiguous(.{ .i = 3 });
     const arr1 = NamedArrayConst(Axis, f32){ .idx = idx, .buf = &[_]f32{ 1, 2, 3 } };
     const arr2 = NamedArrayConst(Axis, f64){ .idx = idx, .buf = &[_]f64{ 4.0, 5.0, 6.0 } };
-    const result = dot(Axis, f32, f64, arr1, arr2);
+    const result = inner(Axis, f32, f64, arr1, arr2);
     try std.testing.expectEqual(result, 32.0); // 1*4.0 + 2*5.0 + 3*6.0 = 32.0
 }
 
-test "dot 2d row-major col-major" {
+test "inner 2d row-major col-major" {
     const IJ = enum { i, j };
     const idx_row_major = NamedIndex(IJ).initContiguous(.{ .i = 2, .j = 3 });
     const idx_col_major = NamedIndex(IJ){
@@ -324,12 +324,12 @@ test "dot 2d row-major col-major" {
     const arr_row_major = NamedArrayConst(IJ, i32){ .idx = idx_row_major, .buf = &buf_row_major };
     const arr_col_major = NamedArrayConst(IJ, i32){ .idx = idx_col_major, .buf = &buf_col_major };
 
-    const result = dot(IJ, i32, i32, arr_row_major, arr_col_major);
+    const result = inner(IJ, i32, i32, arr_row_major, arr_col_major);
 
     // Calculation:
     // arr_row_major: [ [1,2,3], [4,5,6] ]
     // arr_col_major: [ [10,20,30], [40,50,60] ] (column-major)
-    // Dot product: sum over i,j of arr_row_major[i,j] * arr_col_major[i,j]
+    // Inner product: sum over i,j of arr_row_major[i,j] * arr_col_major[i,j]
     // = 1*10 + 2*20 + 3*30 + 4*40 + 5*50 + 6*60
     // = 10 + 40 + 90 + 160 + 250 + 360 = 910
 

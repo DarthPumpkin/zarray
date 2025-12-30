@@ -73,17 +73,15 @@ pub fn NamedIndex(comptime AxisEnum: type) type {
     _ = @typeInfo(AxisEnum).@"enum";
     const field_names = meta.fieldNames(AxisEnum);
     return struct {
-        // Shapes remain unsigned
         shape: Axes,
-        // Strides now signed to allow negative traversal
         strides: Strides,
         offset: usize = 0,
 
         pub const Axis = AxisEnum;
         pub const Axes = AxesStruct(field_names);
         pub const Strides = AxesStructOf(field_names, isize);
-        pub const AxesOptional = AxesOptionalStruct(field_names); // shape-related optionals (?usize)
-        pub const StepsOptional = AxesOptionalStructOf(field_names, isize); // stride step optionals (?isize)
+        pub const AxesOptional = AxesOptionalStruct(field_names);
+        pub const StepsOptional = AxesOptionalStructOf(field_names, isize);
 
         /// Create contiguous index (row-major: last axis fastest).
         pub fn initContiguous(shape: Axes) @This() {
@@ -147,10 +145,7 @@ pub fn NamedIndex(comptime AxisEnum: type) type {
             const orig_stride = stride_ptr.*;
 
             const abs_step: usize = @intCast(@abs(step));
-            // Dimension after striding (ceil division)
-            dim_ptr.* = if (orig_dim == 0) 0 else (orig_dim + abs_step - 1) / abs_step;
-
-            // New stride (signed)
+            dim_ptr.* = std.math.divCeil(usize, orig_dim, abs_step) catch unreachable;
             stride_ptr.* = orig_stride * step;
 
             // Offset adjustment for negative traversal:

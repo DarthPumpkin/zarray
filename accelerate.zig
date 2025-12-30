@@ -14,6 +14,7 @@ const acc = @cImport(@cInclude("Accelerate/Accelerate.h"));
 
 pub const blas = struct {
     // TODO: sdsdot, dsdot (internally double precision)
+    // TODO: all the rot* functions
     pub fn dot(
         comptime Axis: type,
         comptime Scalar: type,
@@ -199,6 +200,46 @@ pub const blas = struct {
 
         const alpha_blas = if (Scalar == Complex(f32) or Scalar == Complex(f64)) &alpha else alpha;
         f(x_blas.len, alpha_blas, x_blas.ptr, x_blas.inc, y_blas.ptr, y_blas.inc);
+    }
+
+    pub fn scal(
+        comptime Axis: type,
+        comptime VecScalar: type,
+        comptime AlphaScalar: type,
+        alpha: AlphaScalar,
+        x: NamedArray(Axis, VecScalar),
+    ) void {
+        const f = switch (VecScalar) {
+            f32 => switch (AlphaScalar) {
+                f32 => acc.cblas_sscal,
+                else => @compileError("scal: alpha type must be f32 when vector is f32."),
+            },
+            f64 => switch (AlphaScalar) {
+                f64 => acc.cblas_dscal,
+                else => @compileError("scal: alpha type must be f64 when vector is f64."),
+            },
+            Complex(f32) => switch (AlphaScalar) {
+                // Complex vector scaled by real scalar
+                f32 => acc.cblas_csscal,
+                // Complex vector scaled by complex scalar
+                Complex(f32) => acc.cblas_cscal,
+                else => @compileError("scal: alpha type must be f32 or Complex(f32) when vector is Complex(f32)."),
+            },
+            Complex(f64) => switch (AlphaScalar) {
+                f64 => acc.cblas_zdscal,
+                Complex(f64) => acc.cblas_zscal,
+                else => @compileError("scal: alpha type must be f64 or Complex(f64) when vector is Complex(f64)."),
+            },
+            else => @compileError("scal is incompatible with given vector Scalar type."),
+        };
+
+        const x_blas = Blas1dMut(VecScalar).init(Axis, x);
+        const alpha_blas = switch (AlphaScalar) {
+            f32, f64 => alpha,
+            Complex(f32), Complex(f64) => &alpha,
+            else => @compileError("scal: unsupported alpha type."),
+        };
+        f(x_blas.len, alpha_blas, x_blas.ptr, x_blas.inc);
     }
 
     fn Blas1d(comptime Scalar: type) type {
@@ -495,6 +536,82 @@ test "axpy complex" {
     try std.testing.expectApproxEqAbs(9.0, y.buf[0].im, math.floatEpsAt(f32, 9.0));
     try std.testing.expectApproxEqAbs(5.0, y.buf[1].re, math.floatEpsAt(f32, 5.0));
     try std.testing.expectApproxEqAbs(19.0, y.buf[1].im, math.floatEpsAt(f32, 19.0));
+}
+
+test "scal real" {
+    const I = enum { i };
+    const T = f32;
+    const Arr = NamedArray(I, T);
+
+    var buf_x: [4]T = .{ 1.0, -2.0, 3.0, -4.0 };
+    const x = Arr{
+        .idx = .initContiguous(.{ .i = 4 }),
+        .buf = &buf_x,
+    };
+
+    const alpha: T = 2.5;
+    blas.scal(I, T, T, alpha, x);
+
+    const expected: [4]T = .{ 2.5, -5.0, 7.5, -10.0 };
+    try std.testing.expectEqualSlices(T, expected[0..], x.buf);
+}
+
+test "scal complex with real alpha" {
+    const I = enum { i };
+    const T = Complex(f32);
+    const Arr = NamedArray(I, T);
+
+    var buf_x: [3]T = .{
+        .{ .re = 1.0, .im = 2.0 },
+        .{ .re = -3.0, .im = 4.0 },
+        .{ .re = 0.5, .im = -1.5 },
+    };
+    const x = Arr{
+        .idx = .initContiguous(.{ .i = 3 }),
+        .buf = &buf_x,
+    };
+
+    const alpha: f32 = 2.0;
+    // Use csscal path: complex vector scaled by real alpha
+    blas.scal(I, T, f32, alpha, x);
+
+    // Expected: element-wise 2 * x
+    try std.testing.expectApproxEqAbs(2.0, x.buf[0].re, math.floatEpsAt(f32, 2.0));
+    try std.testing.expectApproxEqAbs(4.0, x.buf[0].im, math.floatEpsAt(f32, 4.0));
+    try std.testing.expectApproxEqAbs(-6.0, x.buf[1].re, math.floatEpsAt(f32, -6.0));
+    try std.testing.expectApproxEqAbs(8.0, x.buf[1].im, math.floatEpsAt(f32, 8.0));
+    try std.testing.expectApproxEqAbs(1.0, x.buf[2].re, math.floatEpsAt(f32, 1.0));
+    try std.testing.expectApproxEqAbs(-3.0, x.buf[2].im, math.floatEpsAt(f32, -3.0));
+}
+
+test "scal complex" {
+    const I = enum { i };
+    const T = Complex(f32);
+    const Arr = NamedArray(I, T);
+
+    var buf_x: [3]T = .{
+        .{ .re = 1.0, .im = 2.0 },
+        .{ .re = -3.0, .im = 4.0 },
+        .{ .re = 0.5, .im = -1.5 },
+    };
+    const x = Arr{
+        .idx = .initContiguous(.{ .i = 3 }),
+        .buf = &buf_x,
+    };
+
+    const alpha: T = .{ .re = 2.0, .im = -1.0 };
+    blas.scal(I, T, T, alpha, x);
+
+    // Expected: element-wise (2 - i) * x
+    // e0: (2 - i)*(1 + 2i) = 2 + 4i - i - 2i^2 = (4 + 3i)
+    // e1: (2 - i)*(-3 + 4i) = -6 + 8i + 3i - 4i^2 = (-2 + 11i)
+    // e2: (2 - i)*(0.5 - 1.5i) = 1 - 3i - 0.5i + 1.5i^2 = ( -0.5 - 3.5i )
+    try std.testing.expectApproxEqAbs(4.0, x.buf[0].re, math.floatEpsAt(f32, 4.0));
+    try std.testing.expectApproxEqAbs(3.0, x.buf[0].im, math.floatEpsAt(f32, 3.0));
+    try std.testing.expectApproxEqAbs(-2.0, x.buf[1].re, math.floatEpsAt(f32, -2.0));
+    try std.testing.expectApproxEqAbs(11.0, x.buf[1].im, math.floatEpsAt(f32, 11.0));
+    try std.testing.expectApproxEqAbs(-0.5, x.buf[2].re, math.floatEpsAt(f32, -0.5));
+    try std.testing.expectApproxEqAbs(-3.5, x.buf[2].im, math.floatEpsAt(f32, -3.5));
 }
 
 test "dotu" {

@@ -1,0 +1,4 @@
+CompileFlags:
+  Add:
+    - "-I/Users/dominik/Documents/Other repos/ndarray_zig/include"
+    - "-I/Users/dominik/Documents/repos/tblis/test_build/include"

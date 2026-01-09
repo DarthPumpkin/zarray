@@ -211,6 +211,10 @@ pub fn einsum(
     };
 }
 
+// test "log" {
+//     @compileLog("hi");
+// }
+
 test "add inplace" {
     const Axis = enum { i };
     const idx = NamedIndex(Axis).initContiguous(.{ .i = 3 });

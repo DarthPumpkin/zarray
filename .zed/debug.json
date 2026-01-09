@@ -1,0 +1,13 @@
+[
+  {
+    "label": "zarray: Debug root_test",
+    "program": "./zig-out/bin/root_test",
+    "request": "launch",
+    "cwd": "$ZED_WORKTREE_ROOT",
+    "sourceLanguages": ["zig"],
+    "adapter": "CodeLLDB",
+    // "env": {
+    //   "TBLIS_PREFIX": "/Users/dominik/Documents/repos/tblis/test_build",
+    // },
+  },
+]

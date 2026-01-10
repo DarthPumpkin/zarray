@@ -1,4 +1,5 @@
 [
+  // https://github.com/zed-industries/zed/discussions/36285
   {
     "label": "zarray: Debug root_test",
     "program": "./zig-out/bin/root_test",
@@ -6,8 +7,5 @@
     "cwd": "$ZED_WORKTREE_ROOT",
     "sourceLanguages": ["zig"],
     "adapter": "CodeLLDB",
-    // "env": {
-    //   "TBLIS_PREFIX": "/Users/dominik/Documents/repos/tblis/test_build",
-    // },
   },
 ]

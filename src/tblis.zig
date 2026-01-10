@@ -1,10 +1,12 @@
 const std = @import("std");
+const meta = std.meta;
 const assert = std.debug.assert;
 const expect = std.testing.expect;
 const Complex = std.math.Complex;
 
+const arr = @import("named_array.zig");
+
 const c = @cImport(@cInclude("tblis_zig.h"));
-// const c = @cImport(@cInclude("tblis.h"));
 
 const TblisScalar = c.tblis_zig_scalar;
 const TblisTensor = c.tblis_zig_tensor;
@@ -12,6 +14,66 @@ const TblisTypeT = c.zig_type_t;
 const TblisReduceT = c.reduce_t;
 const c32_tblis = c.scomplex_zig;
 const c64_tblis = c.dcomplex_zig;
+
+/// $B_j <- alpha A_i + beta B_j$
+pub fn add(
+    comptime Axis: type,
+    comptime Scalar: type,
+    a: arr.NamedArrayConst(Axis, Scalar),
+    b: arr.NamedArray(Axis, Scalar),
+    opt: struct { scale_a: Scalar = one(Scalar), scale_b: Scalar = one(Scalar) },
+) void {
+    const axis_names = comptime meta.fieldNames(Axis);
+    const rank = comptime axis_names.len;
+    comptime assert(rank <= 255 - 'a' + 1);
+
+    var a_shape: [rank]c.zig_len_type = undefined;
+    var b_shape: [rank]c.zig_len_type = undefined;
+    var a_stride: [rank]c.zig_stride_type = undefined;
+    var b_stride: [rank]c.zig_stride_type = undefined;
+    var idx_str: [rank]c.zig_label_type = undefined;
+
+    inline for (axis_names, 0..) |name, i| {
+        const char_idx: u8 = 'a' + @as(u8, @intCast(i));
+        idx_str[i] = char_idx;
+        a_shape[i] = @intCast(@field(a.idx.shape, name));
+        b_shape[i] = @intCast(@field(b.idx.shape, name));
+        a_stride[i] = @intCast(@field(a.idx.strides, name));
+        b_stride[i] = @intCast(@field(b.idx.strides, name));
+    }
+    var a_tensor = init_tensor(Scalar, rank, &a_shape, &a_stride, @constCast(a.buf.ptr));
+    a_tensor.scalar = init_scalar(Scalar, opt.scale_a);
+    var b_tensor = init_tensor(Scalar, rank, &b_shape, &b_stride, b.buf.ptr);
+    b_tensor.scalar = init_scalar(Scalar, opt.scale_b);
+
+    c.tblis_zig_tensor_add(null, null, &a_tensor, &idx_str, &b_tensor, &idx_str);
+}
+
+test "add" {
+    const IJ = enum { i, j };
+    const T = f32;
+    const Arr = arr.NamedArray(IJ, T);
+    const ArrConst = arr.NamedArrayConst(IJ, T);
+
+    const a_buf = [_]T{
+        1, 2, 3,
+        4, 5, 6,
+    };
+    const a = ArrConst{
+        .idx = .initContiguous(.{ .i = 2, .j = 3 }),
+        .buf = &a_buf,
+    };
+    var b_buf = [_]T{ 1, 2, 10, 20, 100, 200, 1_000, 2_000, 10_000, 20_000, 100_000, 200_000 };
+    const b = Arr{
+        .idx = .{ .shape = .{ .i = 2, .j = 3 }, .strides = .{ .i = 2, .j = 4 } },
+        .buf = &b_buf,
+    };
+
+    const expected = [_]T{ 2, 2, 14, 20, 102, 200, 1_005, 2_000, 10_003, 20_000, 100_006, 200_000 };
+    add(IJ, T, a, b, .{});
+
+    try std.testing.expectEqualDeep(&expected, &b_buf);
+}
 
 fn init_type_t(comptime T: type) TblisTypeT {
     return switch (T) {

@@ -310,6 +310,73 @@ pub fn reduce(
     };
 }
 
+pub fn scale(
+    comptime AxisA: type,
+    comptime Scalar: type,
+    alpha: Scalar,
+    a: arr.NamedArray(AxisA, Scalar),
+) void {
+    const a_idx = comptime index_strings(&.{AxisA})[0];
+    const rank = a_idx.len;
+
+    var a_mem: TblisTensorBuf(rank) = undefined;
+    var a_tensor = toTblisTensor(AxisA, Scalar, a, &a_mem);
+    a_tensor.scalar = init_scalar(Scalar, alpha);
+
+    C.tblis_zig_tensor_scale(
+        null,
+        null,
+        &a_tensor,
+        a_idx.ptr,
+    );
+}
+
+pub fn set(
+    comptime AxisA: type,
+    comptime Scalar: type,
+    alpha: Scalar,
+    a: arr.NamedArray(AxisA, Scalar),
+) void {
+    const a_idx = comptime index_strings(&.{AxisA})[0];
+    const rank = a_idx.len;
+
+    var a_mem: TblisTensorBuf(rank) = undefined;
+    var a_tensor = toTblisTensor(AxisA, Scalar, a, &a_mem);
+    const alpha_scalar = init_scalar(Scalar, alpha);
+
+    C.tblis_zig_tensor_set(
+        null,
+        null,
+        &alpha_scalar,
+        &a_tensor,
+        a_idx.ptr,
+    );
+}
+
+pub fn shift(
+    comptime AxisA: type,
+    comptime Scalar: type,
+    alpha: Scalar,
+    a: arr.NamedArray(AxisA, Scalar),
+    opt: struct { scale_a: Scalar = one(Scalar) },
+) void {
+    const a_idx = comptime index_strings(&.{AxisA})[0];
+    const rank = a_idx.len;
+
+    var a_mem: TblisTensorBuf(rank) = undefined;
+    var a_tensor = toTblisTensor(AxisA, Scalar, a, &a_mem);
+    a_tensor.scalar = init_scalar(Scalar, opt.scale_a);
+    const alpha_scalar = init_scalar(Scalar, alpha);
+
+    C.tblis_zig_tensor_shift(
+        null,
+        null,
+        &alpha_scalar,
+        &a_tensor,
+        a_idx.ptr,
+    );
+}
+
 fn shapesAreConsistent(shapes: anytype) bool {
     _ = idx_.resolveDimensions(shapes) catch {
         return false;
@@ -888,6 +955,32 @@ test "scale.h" {
     try std.testing.expectEqualDeep(one(T), get_scalar_val(T, a.scalar));
 }
 
+test "scale" {
+    const T = Complex(f64);
+    const IJKL = enum { i, j, k, l };
+    var a_data = [_]T{
+        .{ .re = 1.0, .im = 0.0 },
+        .{ .re = 1.0, .im = -1.0 },
+        .{ .re = 0.0, .im = 1.0 },
+    };
+    const a = arr.NamedArray(IJKL, T){
+        .idx = .{
+            .shape = .{ .i = 1, .j = 1, .k = 3, .l = 1 },
+            .strides = .{ .i = 6290, .j = 19348, .k = 1, .l = 6890000 },
+        },
+        .buf = &a_data,
+    };
+
+    scale(IJKL, T, .init(1.0, 1.0), a);
+
+    const expected = [_]T{
+        .init(1.0, 1.0),
+        .init(2.0, 0.0),
+        .init(-1.0, 1.0),
+    };
+    try std.testing.expectEqualDeep(expected, a_data);
+}
+
 test "set.h f32 contiguous 1d" {
     const T = f32;
     const rank = 1;
@@ -910,6 +1003,23 @@ test "set.h f32 contiguous 1d" {
     const expected = [_]T{3.5} ** 5;
     try std.testing.expectEqualDeep(expected, data);
     try std.testing.expectEqualDeep(one(T), get_scalar_val(T, a.scalar));
+}
+
+test "set f32 contiguous 1d" {
+    const T = f32;
+    const I = enum { i };
+    var data: [5]T = undefined;
+    @memset(&data, 0.0);
+
+    const a = arr.NamedArray(I, T){
+        .idx = .{ .shape = .{ .i = data.len }, .strides = .{ .i = 1 } },
+        .buf = &data,
+    };
+
+    set(I, T, 3.5, a);
+
+    const expected = [_]T{3.5} ** 5;
+    try std.testing.expectEqualDeep(expected, data);
 }
 
 test "set.h complex strided 3d with gaps" {
@@ -976,6 +1086,51 @@ test "shift.h f32 contiguous 1d" {
     try std.testing.expectEqualDeep(one(T), get_scalar_val(T, a.scalar));
 }
 
+test "set complex strided 3d with gaps" {
+    const T = Complex(f64);
+    const IJK = enum { i, j, k };
+    const m = 2;
+    const n = 2;
+    const p = 2;
+
+    // Layout: simulate padding by placing planes 8 apart, rows 4 apart, cols 1 apart.
+    // Only 8 logical elements, but allocate a larger buffer and verify non-accessed padding unchanged.
+    const logical = [_]usize{ 0, 1, 4, 5, 8, 9, 12, 13 };
+
+    var buf: [16]T = undefined;
+    @memset(&buf, .init(0, 0));
+
+    const a = arr.NamedArray(IJK, T){
+        .idx = .{ .shape = .{ .i = m, .j = n, .k = p }, .strides = .{ .i = 8, .j = 4, .k = 1 } },
+        .buf = &buf,
+    };
+
+    set(IJK, T, one(T), a);
+
+    // Verify logical positions were modified, and others were not.
+    for (0..16) |i| {
+        const is_logical = std.mem.containsAtLeastScalar(usize, &logical, 1, i);
+        const expected = if (is_logical) one(T) else T.init(0, 0);
+        try std.testing.expectEqual(expected, buf[i]);
+    }
+}
+
+test "shift f32 contiguous 1d" {
+    const T = f32;
+    const I = enum { i };
+    var data: [5]T = .{ 1.0, 2.0, 3.0, 4.0, 5.0 };
+
+    const a = arr.NamedArray(I, T){
+        .idx = .initContiguous(.{ .i = data.len }),
+        .buf = &data,
+    };
+
+    shift(I, T, 3.5, a, .{ .scale_a = 2.0 });
+
+    const expected = [_]T{ 5.5, 7.5, 9.5, 11.5, 13.5 };
+    try std.testing.expectEqualDeep(expected, data);
+}
+
 test "shift.h complex strided 3d with gaps" {
     const T = Complex(f64);
     const m = 2;
@@ -1031,6 +1186,51 @@ test "shift.h complex strided 3d with gaps" {
 
     // Scalar should be reset to 1 after operation
     try std.testing.expectEqualDeep(one(T), get_scalar_val(T, a.scalar));
+}
+
+test "shift complex strided 3d with gaps" {
+    const T = Complex(f64);
+    const IJK = enum { i, j, k };
+    const m = 2;
+    const n = 2;
+    const p = 2;
+
+    // Layout with padding: planes 8 apart, rows 4 apart, cols 1 apart.
+    const logical = [_]usize{ 0, 1, 4, 5, 8, 9, 12, 13 };
+
+    var buf: [16]T = .{
+        // plane 0 (indices 0..7)
+        T.init(0, 0), T.init(1, 0), T.init(0, 0), T.init(0, 0),
+        T.init(2, 0), T.init(3, 0), T.init(0, 0), T.init(0, 0),
+        // plane 1 (indices 8..15)
+        T.init(4, 0), T.init(5, 0), T.init(0, 0), T.init(0, 0),
+        T.init(6, 0), T.init(7, 0), T.init(0, 0), T.init(0, 0),
+    };
+
+    const a = arr.NamedArray(IJK, T){
+        .idx = .{ .shape = .{ .i = m, .j = n, .k = p }, .strides = .{ .i = 8, .j = 4, .k = 1 } },
+        .buf = &buf,
+    };
+
+    shift(IJK, T, one(T), a, .{});
+
+    // Verify logical positions were incremented by alpha and padding unchanged.
+    for (0..16) |i| {
+        const is_logical = std.mem.containsAtLeastScalar(usize, &logical, 1, i);
+        const before = switch (i) {
+            0 => T.init(0, 0),
+            1 => T.init(1, 0),
+            4 => T.init(2, 0),
+            5 => T.init(3, 0),
+            8 => T.init(4, 0),
+            9 => T.init(5, 0),
+            12 => T.init(6, 0),
+            13 => T.init(7, 0),
+            else => T.init(0, 0),
+        };
+        const expected = if (is_logical) T.init(before.re + 1.0, before.im) else before;
+        try std.testing.expectEqual(expected, buf[i]);
+    }
 }
 
 test "thread.h" {

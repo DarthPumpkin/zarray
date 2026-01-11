@@ -12,9 +12,19 @@ const C = @cImport(@cInclude("tblis_zig.h"));
 const TblisScalar = C.tblis_zig_scalar;
 const TblisTensor = C.tblis_zig_tensor;
 const TblisTypeT = C.zig_type_t;
-const TblisReduceT = C.reduce_t;
+const TblisReduceT = C.zig_reduce_t;
 const c32_tblis = C.scomplex_zig;
 const c64_tblis = C.dcomplex_zig;
+
+pub const Reduce = enum {
+    SUM,
+    SUM_ABS,
+    MAX,
+    MAX_ABS,
+    MIN,
+    MIN_ABS,
+    NORM_2,
+};
 
 /// Assign `B <- alpha A + beta B`
 /// where `A, B` have the same shape and `alpha, beta` are optional scalars.
@@ -245,6 +255,59 @@ pub fn mult(
         &c_tensor,
         idx_strs[2].ptr,
     );
+}
+
+// Return a reduction result over `a` using `op`.
+// The returned struct contains the reduced scalar value and the index (one per axis)
+// at which the extremum occurred for MAX/MIN-type reductions. For SUM/NORM variants,
+// the index content is undefined and can be ignored.
+pub fn reduce(
+    comptime AxisA: type,
+    comptime Scalar: type,
+    op: Reduce,
+    a: arr.NamedArrayConst(AxisA, Scalar),
+) struct { value: Scalar, index: @TypeOf(a.idx.shape) } {
+    const a_idx = comptime index_strings(&.{AxisA})[0];
+    const rank = a_idx.len;
+
+    var a_mem: TblisTensorBuf(rank) = undefined;
+    var a_tensor = toTblisTensor(AxisA, Scalar, a, &a_mem);
+
+    var out_scalar = init_scalar(Scalar, undefined);
+    var out_index: [rank]C.zig_len_type = undefined;
+
+    const c_op: TblisReduceT = switch (op) {
+        .SUM => C.ZIG_REDUCE_SUM,
+        .SUM_ABS => C.ZIG_REDUCE_SUM_ABS,
+        .MAX => C.ZIG_REDUCE_MAX,
+        .MAX_ABS => C.ZIG_REDUCE_MAX_ABS,
+        .MIN => C.ZIG_REDUCE_MIN,
+        .MIN_ABS => C.ZIG_REDUCE_MIN_ABS,
+        .NORM_2 => C.ZIG_REDUCE_NORM_2,
+    };
+
+    C.tblis_zig_tensor_reduce(
+        null,
+        null,
+        c_op,
+        &a_tensor,
+        a_idx.ptr,
+        &out_scalar,
+        &out_index,
+    );
+
+    var index: @TypeOf(a.idx.shape) = undefined;
+    inline for (comptime meta.fieldNames(AxisA), out_index) |name, val| {
+        @field(index, name) = switch (op) {
+            .MAX, .MAX_ABS, .MIN, .MIN_ABS => @intCast(val),
+            else => 0,
+        };
+    }
+
+    return .{
+        .value = get_scalar_val(Scalar, out_scalar),
+        .index = index,
+    };
 }
 
 fn shapesAreConsistent(shapes: anytype) bool {
@@ -774,6 +837,26 @@ test "reduce.h i" {
     try std.testing.expectEqual(init_type_t(T), a_max.type);
     try std.testing.expectEqual(5.0 * 2, a_max.data.d);
     try std.testing.expectEqualDeep([_]C.zig_len_type{4}, a_max_idx);
+}
+
+test "reduce i" {
+    const T = f64;
+    const I = enum { i };
+    const data = [_]T{ 1, -2, 3, -4, 5 };
+    const a = arr.NamedArrayConst(I, T){
+        .idx = .initContiguous(.{ .i = data.len }),
+        .buf = &data,
+    };
+
+    const r_sum = reduce(I, T, .SUM, a);
+    try std.testing.expectEqual(@as(T, 3.0), r_sum.value);
+
+    const r_sum_abs = reduce(I, T, .SUM_ABS, a);
+    try std.testing.expectEqual(@as(T, 15.0), r_sum_abs.value);
+
+    const r_max = reduce(I, T, .MAX, a);
+    try std.testing.expectEqual(@as(T, 5.0), r_max.value);
+    try std.testing.expectEqual(@as(C.zig_len_type, 4), r_max.index.i);
 }
 
 test "scale.h" {

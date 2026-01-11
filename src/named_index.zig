@@ -913,6 +913,54 @@ fn unionOfAxisNames(comptime ShapeTupleType: type) []const [:0]const u8 {
     }
 }
 
+/// Given a tuple of Axis enums, return a comptime slice of the union of their field names.
+pub fn unionOfAxisNamesEnum(comptime axisEnums: []const type) []const [:0]const u8 {
+    comptime {
+        var sum: usize = 0;
+        for (axisEnums) |Axis| {
+            const info = @typeInfo(Axis);
+            if (info != .@"enum") @compileError("Axis must be enum");
+            sum += info.@"enum".fields.len;
+        }
+        var all_names: [sum][:0]const u8 = undefined;
+        var count: usize = 0;
+        for (axisEnums) |Axis| {
+            const info = @typeInfo(Axis);
+            for (info.@"enum".fields) |field| {
+                var found = false;
+                for (all_names[0..count]) |existing|
+                    if (mem.eql(u8, existing, field.name)) {
+                        found = true;
+                        break;
+                    };
+                if (!found) {
+                    all_names[count] = field.name;
+                    count += 1;
+                }
+            }
+        }
+        const Context = struct {
+            pub fn lessThan(_: @This(), a: [:0]const u8, b: [:0]const u8) bool {
+                return std.mem.order(u8, a, b) == .lt;
+            }
+        };
+        mem.sort([:0]const u8, all_names[0..count], Context{}, Context.lessThan);
+        return all_names[0..count];
+    }
+}
+
+test "unionOfAxisNamesEnum" {
+    comptime {
+        const IJK = enum { i, j, k };
+        const JLI = enum { j, l, i };
+
+        const expected = [_][:0]const u8{ "i", "j", "k", "l" };
+        const actual = unionOfAxisNamesEnum(&.{ IJK, JLI });
+
+        try std.testing.expectEqualDeep(&expected, actual);
+    }
+}
+
 const Index2dEnum = enum { row, col };
 
 test "init strides" {

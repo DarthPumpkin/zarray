@@ -85,6 +85,10 @@ void tblis_set_num_threads(unsigned num_threads);
 /*
  * add.h adapted
  */
+/// `B_j <- alpha A_i + beta B_j`,
+/// where the index sequences $i, j$ have the same elements, but can be in a different order.
+/// Returns garbage when $i, j$ have different elements.
+/// For instance, I checked that 'ab b' as well as 'a b' return garbage.
 void tblis_zig_tensor_add(const tblis_comm* comm,
                     const tblis_zig_config* cntx,
                     const tblis_zig_tensor* A,

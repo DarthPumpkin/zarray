@@ -160,26 +160,12 @@ void tblis_zig_tensor_dot(
     tblis_scalar result_conv;
     result_conv.type = A->type;
 
-    // printf("Before:\n");
-    // printf("%d\n", result_conv.type);
-    // printf("%f\n", result_conv.data.s);
-    // printf("%f\n", result_conv.data.d);
-    // printf("%f + %fi\n", crealf(result_conv.data.c), cimagf(result_conv.data.c));
-    // printf("%f + %fi\n", creal(result_conv.data.z), cimag(result_conv.data.z));
-
     tblis_tensor_dot(comm, cntx, &A_conv, idx_A, &B_conv, idx_B, &result_conv);
 
     free(A_len);
     free(A_stride);
     free(B_len);
     free(B_stride);
-
-    // printf("After:\n");
-    // printf("%d\n", result_conv.type);
-    // printf("%f\n", result_conv.data.s);
-    // printf("%f\n", result_conv.data.d);
-    // printf("%f + %fi\n", crealf(result_conv.data.c), cimagf(result_conv.data.c));
-    // printf("%f + %fi\n", creal(result_conv.data.z), cimag(result_conv.data.z));
 
     update_zig_scalar(result, &result_conv);
 }

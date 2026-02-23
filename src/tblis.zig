@@ -362,6 +362,7 @@ test "reduce i" {
     try std.testing.expectEqual(@as(C.zig_len_type, 4), r_max.index.i);
 }
 
+/// Update `A <- alpha A` where `alpha` is a scalar.
 pub fn scale(
     comptime AxisA: type,
     comptime Scalar: type,
@@ -409,6 +410,7 @@ test "scale" {
     try std.testing.expectEqualDeep(expected, a_data);
 }
 
+// Update `A <- alpha` where `A` is a tensor and `alpha` is a scalar.
 pub fn set(
     comptime AxisA: type,
     comptime Scalar: type,
@@ -477,6 +479,8 @@ test "set complex strided 3d with gaps" {
     }
 }
 
+// Update `A <- beta * A + alpha` where `alpha` and `beta` are scalars.
+// `beta` defaults to 1.
 pub fn shift(
     comptime AxisA: type,
     comptime Scalar: type,

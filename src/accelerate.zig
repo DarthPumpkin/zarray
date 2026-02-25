@@ -13,17 +13,17 @@ const NamedArrayConst = named_array.NamedArrayConst;
 const acc = @cImport(@cInclude("Accelerate/Accelerate.h"));
 
 pub const blas = struct {
-    // TODO: sdsdot, dsdot (internally double precision)
     // TODO: all the rot* functions
     pub fn dot(
         comptime Axis: type,
         comptime Scalar: type,
         x: NamedArrayConst(Axis, Scalar),
         y: NamedArrayConst(Axis, Scalar),
+        comptime config: struct { internal_double_precision: bool = false },
     ) Scalar {
         const cblas_dot = switch (Scalar) {
-            f32 => acc.cblas_sdot,
-            f64 => acc.cblas_ddot,
+            f32 => if (config.internal_double_precision) acc.cblas_sdsdot else acc.cblas_sdot,
+            f64 => if (config.internal_double_precision) acc.cblas_dsdot else acc.cblas_ddot,
             else => @compileError("dot is incompatible with given Scalar type."),
         };
 
@@ -242,6 +242,200 @@ pub const blas = struct {
         f(x_blas.len, alpha_blas, x_blas.ptr, x_blas.inc);
     }
 
+    /// `srotg` and `drotg` in BLAS.
+    /// See `rotg_complex` for the complex versions.
+    pub fn rotg_real(
+        comptime Scalar: type,
+        a: *Scalar,
+        b: *Scalar,
+    ) GivensRotationReal(Scalar) {
+        const f = switch (Scalar) {
+            f32 => acc.cblas_srotg,
+            f64 => acc.cblas_drotg,
+            else => @compileError("rotg_real is incompatible with given Scalar type."),
+        };
+        var rotation: GivensRotationReal(Scalar) = undefined;
+        f(a, b, &rotation.c, &rotation.s);
+        return rotation;
+    }
+
+    /// `crotg` and `zrotg` in BLAS.
+    /// See `rotg_real` for the real versions.
+    pub fn rotg_complex(
+        comptime RealScalar: type,
+        a: *Complex(RealScalar),
+        b: *Complex(RealScalar),
+    ) GivensRotationComplex(RealScalar) {
+        const f = switch (RealScalar) {
+            f32 => acc.cblas_crotg,
+            f64 => acc.cblas_zrotg,
+            else => @compileError("rotg_complex is incompatible with given RealScalar type."),
+        };
+        var rotation: GivensRotationComplex(RealScalar) = undefined;
+        f(a, b, &rotation.c, &rotation.s);
+        return rotation;
+    }
+
+    /// `srot` and `drot` in BLAS. See `rot_complex` for the complex versions.
+    pub fn rot_real(
+        comptime Scalar: type,
+        rot: GivensRotationReal(Scalar),
+        points: NamedArray(enum { i, j }, Scalar),
+    ) void {
+        const f = switch (Scalar) {
+            f32 => acc.cblas_srot,
+            f64 => acc.cblas_drot,
+            else => @compileError("rot_real is incompatible with given Scalar type."),
+        };
+        const I = enum { i };
+        assert(points.idx.shape.j == 2);
+        const x_na = NamedArray(I, Scalar).init(
+            points.idx.sliceAxis(.j, 0, 1).conformAxes(I),
+            points.buf,
+        );
+        const y_na = NamedArray(I, Scalar).init(
+            points.idx.sliceAxis(.j, 1, 2).conformAxes(I),
+            points.buf,
+        );
+        const x_blas = Blas1dMut(Scalar).init(I, x_na);
+        const y_blas = Blas1dMut(Scalar).init(I, y_na);
+        f(
+            x_blas.len,
+            x_blas.ptr,
+            x_blas.inc,
+            y_blas.ptr,
+            y_blas.inc,
+            &rot.c,
+            &rot.s,
+        );
+    }
+
+    /// `crot` and `zrot` in BLAS. See `rot_real` for the real versions.
+    pub fn rot_complex(
+        comptime RealScalar: type,
+        rot: GivensRotationComplex(RealScalar),
+        points: NamedArray(enum { i, j }, Complex(RealScalar)),
+    ) void {
+        const f = switch (RealScalar) {
+            f32 => acc.cblas_crot,
+            f64 => acc.cblas_zrot,
+            else => @compileError("rot_complex is incompatible with given RealScalar type."),
+        };
+        const I = enum { i };
+        assert(points.idx.shape.j == 2);
+        const x_na = NamedArray(I, Complex(RealScalar)).init(
+            points.idx.sliceAxis(.j, 0, 1).conformAxes(I),
+            points.buf,
+        );
+        const y_na = NamedArray(I, Complex(RealScalar)).init(
+            points.idx.sliceAxis(.j, 1, 2).conformAxes(I),
+            points.buf,
+        );
+        const x_blas = Blas1dMut(Complex(RealScalar)).init(I, x_na);
+        const y_blas = Blas1dMut(Complex(RealScalar)).init(I, y_na);
+        f(
+            x_blas.len,
+            x_blas.ptr,
+            x_blas.inc,
+            y_blas.ptr,
+            y_blas.inc,
+            &rot.c,
+            &rot.s,
+        );
+    }
+
+    pub fn rotmg(
+        comptime Scalar: type,
+        d1: *Scalar,
+        d2: *Scalar,
+        a: *Scalar,
+        b: Scalar,
+    ) ModifiedGivensRotation(Scalar) {
+        const f = switch (Scalar) {
+            f32 => acc.cblas_srotmg,
+            f64 => acc.cblas_drotmg,
+            else => @compileError("rotmg is incompatible with given Scalar type."),
+        };
+        var rotation: ModifiedGivensRotation(Scalar) = undefined;
+        f(d1, d2, a, b, &rotation.data);
+        return rotation;
+    }
+
+    pub fn rotm(
+        comptime Scalar: type,
+        rot: ModifiedGivensRotation(Scalar),
+        points: NamedArray(enum { i, j }, Scalar),
+    ) void {
+        const f = switch (Scalar) {
+            f32 => acc.cblas_srotm,
+            f64 => acc.cblas_drotm,
+            else => @compileError("rotm is incompatible with given Scalar type."),
+        };
+        const I = enum { i };
+        assert(points.idx.shape.j == 2);
+        const x_na = NamedArray(I, Scalar).init(
+            points.idx.sliceAxis(.j, 0, 1).conformAxes(I),
+            points.buf,
+        );
+        const y_na = NamedArray(I, Scalar).init(
+            points.idx.sliceAxis(.j, 1, 2).conformAxes(I),
+            points.buf,
+        );
+        const x_blas = Blas1dMut(Scalar).init(I, x_na);
+        const y_blas = Blas1dMut(Scalar).init(I, y_na);
+        f(
+            x_blas.len,
+            x_blas.ptr,
+            x_blas.inc,
+            y_blas.ptr,
+            y_blas.inc,
+            &rot.data,
+        );
+    }
+
+    pub fn GivensRotationReal(comptime Scalar: type) type {
+        return struct {
+            c: Scalar,
+            s: Scalar,
+        };
+    }
+
+    pub fn GivensRotationComplex(comptime RealScalar: type) type {
+        return struct {
+            c: RealScalar,
+            s: Complex(RealScalar),
+        };
+    }
+
+    pub fn ModifiedGivensRotation(comptime Scalar: type) type {
+        return struct {
+            data: [5]Scalar,
+
+            pub fn flag(self: @This()) MGRFlag {
+                return switch (self.data[0]) {
+                    -1.0 => MGRFlag.Full,
+                    0.0 => MGRFlag.OffDiagonal,
+                    1.0 => MGRFlag.Diagonal,
+                    2.0 => MGRFlag.Identity,
+                    else => @compileError("Invalid flag value in ModifiedGivensRotation data."),
+                };
+            }
+
+            pub fn fromFlag(flag_: MGRFlag) @This() {
+                var data: [5]Scalar = undefined;
+                data[0] = switch (flag_) {
+                    MGRFlag.Full => -1.0,
+                    MGRFlag.OffDiagonal => 0.0,
+                    MGRFlag.Diagonal => 1.0,
+                    MGRFlag.Identity => 2.0,
+                };
+                return .{ .data = data };
+            }
+        };
+    }
+
+    pub const MGRFlag = enum { Full, OffDiagonal, Diagonal, Identity };
+
     fn Blas1d(comptime Scalar: type) type {
         return struct {
             len: c_int,
@@ -315,7 +509,7 @@ test "dot" {
     };
 
     const expected: T = 235.0;
-    const actual = blas.dot(I, T, x, y);
+    const actual = blas.dot(I, T, x, y, .{});
     try std.testing.expectApproxEqAbs(
         expected,
         actual,

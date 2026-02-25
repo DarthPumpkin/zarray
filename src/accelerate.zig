@@ -13,7 +13,6 @@ const NamedArrayConst = named_array.NamedArrayConst;
 const acc = @cImport(@cInclude("Accelerate/Accelerate.h"));
 
 pub const blas = struct {
-    // TODO: all the rot* functions
     pub fn dot(
         comptime Axis: type,
         comptime Scalar: type,

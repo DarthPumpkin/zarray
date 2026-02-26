@@ -587,6 +587,73 @@ pub const blas = struct {
         );
     }
 
+    /// `strmv`, `dtrmv`, `ctrmv` and `ztrmv` in BLAS.
+    /// Computes `x = A * x` in-place where `A` is a triangular matrix.
+    /// Only the triangle of `A` where `triangle >= the other axis` is read.
+    /// If `diag` is `.unit`, the diagonal of `A` is assumed to be all ones and is not read.
+    pub fn trmv(
+        comptime Scalar: type,
+        comptime AxisA: type,
+        comptime AxisX: type,
+        triangle: AxisA,
+        diag: Diag,
+        A: NamedArrayConst(AxisA, Scalar),
+        x: NamedArray(AxisX, Scalar),
+    ) void {
+        const a_names = comptime meta.fieldNames(AxisA);
+        comptime {
+            assert(meta.fields(AxisA).len == 2);
+            assert(meta.fields(AxisX).len == 1);
+            const x_name = meta.fields(AxisX)[0].name;
+            assert(std.mem.eql(u8, a_names[0], x_name) or std.mem.eql(u8, a_names[1], x_name));
+        }
+        const f = switch (Scalar) {
+            f32 => acc.cblas_strmv,
+            f64 => acc.cblas_dtrmv,
+            Complex(f32) => acc.cblas_ctrmv,
+            Complex(f64) => acc.cblas_ztrmv,
+            else => @compileError("trmv is incompatible with given Scalar type."),
+        };
+
+        _ = named_index.resolveDimensions(.{ A.idx.shape, x.idx.shape }) catch
+            @panic("trmv: dimension mismatch");
+
+        const a_ij_idx = A.idx.rename(IJ, &.{
+            .{ .old = a_names[0], .new = "i" },
+            .{ .old = a_names[1], .new = "j" },
+        });
+        const A_ij: NamedArrayConst(IJ, Scalar) = .{ .idx = a_ij_idx, .buf = A.buf };
+        const A_blas = Blas2d(Scalar).init(A_ij);
+        assert(A_blas.rows == A_blas.cols);
+
+        const x_blas = Blas1dMut(Scalar).init(AxisX, x);
+
+        // first axis → rows (i), second axis → cols (j)
+        // triangle == second axis → data at j >= i → Upper
+        // triangle == first axis  → data at i >= j → Lower
+        const uplo_blas: acc.CBLAS_UPLO = if (@intFromEnum(triangle) == 1)
+            @intCast(acc.CblasUpper)
+        else
+            @intCast(acc.CblasLower);
+
+        const diag_blas: acc.CBLAS_DIAG = switch (diag) {
+            .unit => @intCast(acc.CblasUnit),
+            .non_unit => @intCast(acc.CblasNonUnit),
+        };
+
+        f(
+            A_blas.layout,
+            uplo_blas,
+            @intCast(acc.CblasNoTrans),
+            diag_blas,
+            A_blas.rows, // N
+            A_blas.ptr,
+            A_blas.leading,
+            x_blas.ptr,
+            x_blas.inc,
+        );
+    }
+
     pub fn GivensRotationReal(comptime Scalar: type) type {
         return struct {
             c: Scalar,
@@ -631,6 +698,7 @@ pub const blas = struct {
     pub const MGRFlag = enum { Full, OffDiagonal, Diagonal, Identity };
 
     pub const Uplo = enum { upper, lower };
+    pub const Diag = enum { unit, non_unit };
 
     pub const IJ = enum { i, j };
     const I = enum { i };
@@ -1880,6 +1948,168 @@ test "symv nontrivial scalars and strides" {
     try std.testing.expectApproxEqAbs(@as(f32, 12.5), y_buf[2], eps);
     // sentinel untouched
     try std.testing.expectEqual(@as(f32, 99.0), y_buf[1]);
+}
+
+test "trmv real" {
+    const MK = enum { m, k };
+    const K = enum { k };
+    const T = f64;
+
+    // Upper triangular 3x3 (triangle = .k, i.e. data where k >= m).
+    // Lower triangle positions hold sentinels.
+    //   [[2, 3, 5],
+    //    [_, 7, 11],
+    //    [_, _, 13]]
+    const a_buf = [_]T{
+        2,  3,  5,
+        99, 7,  11,
+        99, 99, 13,
+    };
+    const A = NamedArrayConst(MK, T){
+        .idx = NamedIndex(MK).initContiguous(.{ .m = 3, .k = 3 }),
+        .buf = &a_buf,
+    };
+
+    var x_buf = [_]T{ 1, 2, 3 };
+    const x = NamedArray(K, T){
+        .idx = NamedIndex(K).initContiguous(.{ .k = 3 }),
+        .buf = &x_buf,
+    };
+
+    // x := A * x:
+    //   x[0] = 2*1 + 3*2 + 5*3  = 23
+    //   x[1] = 0*1 + 7*2 + 11*3 = 47
+    //   x[2] = 0*1 + 0*2 + 13*3 = 39
+    blas.trmv(T, MK, K, .k, .non_unit, A, x);
+
+    const expected = [_]T{ 23.0, 47.0, 39.0 };
+    for (0..3) |i| {
+        try std.testing.expectApproxEqAbs(expected[i], x_buf[i], math.floatEpsAt(T, expected[i]));
+    }
+}
+
+test "trmv real unit diagonal" {
+    const MK = enum { m, k };
+    const K = enum { k };
+    const T = f64;
+
+    // Lower triangular 3x3 with unit diagonal (triangle = .m, i.e. data where m >= k).
+    // Diagonal and upper positions hold sentinels that BLAS must ignore.
+    //   [[1, _, _],       effective matrix (diag = 1)
+    //    [4, 1, _],
+    //    [5, 6, 1]]
+    const a_buf = [_]T{
+        99, 99, 99,
+        4,  99, 99,
+        5,  6,  99,
+    };
+    const A = NamedArrayConst(MK, T){
+        .idx = NamedIndex(MK).initContiguous(.{ .m = 3, .k = 3 }),
+        .buf = &a_buf,
+    };
+
+    var x_buf = [_]T{ 1, 2, 3 };
+    const x = NamedArray(K, T){
+        .idx = NamedIndex(K).initContiguous(.{ .k = 3 }),
+        .buf = &x_buf,
+    };
+
+    // x := A * x (with unit diagonal):
+    //   x[0] = 1*1 + 0*2 + 0*3 = 1
+    //   x[1] = 4*1 + 1*2 + 0*3 = 6
+    //   x[2] = 5*1 + 6*2 + 1*3 = 20
+    blas.trmv(T, MK, K, .m, .unit, A, x);
+
+    const expected = [_]T{ 1.0, 6.0, 20.0 };
+    for (0..3) |i| {
+        try std.testing.expectApproxEqAbs(expected[i], x_buf[i], math.floatEpsAt(T, expected[i]));
+    }
+}
+
+test "trmv complex" {
+    const MK = enum { m, k };
+    const K = enum { k };
+    const T = Complex(f64);
+
+    // Upper triangular 2x2 (triangle = .k):
+    //   [[1+i,  2+3i],
+    //    [ _,   4-i ]]
+    const a_buf = [_]T{
+        .{ .re = 1, .im = 1 },   .{ .re = 2, .im = 3 },
+        .{ .re = 99, .im = 99 }, .{ .re = 4, .im = -1 },
+    };
+    const A = NamedArrayConst(MK, T){
+        .idx = NamedIndex(MK).initContiguous(.{ .m = 2, .k = 2 }),
+        .buf = &a_buf,
+    };
+
+    var x_buf = [_]T{
+        .{ .re = 1, .im = 0 },
+        .{ .re = 0, .im = 1 },
+    };
+    const x = NamedArray(K, T){
+        .idx = NamedIndex(K).initContiguous(.{ .k = 2 }),
+        .buf = &x_buf,
+    };
+
+    // x := A * x:
+    //   x[0] = (1+i)(1) + (2+3i)(i) = 1+i + 2i+3i² = 1+i+2i-3 = -2+3i
+    //   x[1] = 0*(1) + (4-i)(i) = 4i-i² = 1+4i
+    blas.trmv(T, MK, K, .k, .non_unit, A, x);
+
+    const eps = 1e-10;
+    try std.testing.expectApproxEqAbs(@as(f64, -2), x_buf[0].re, eps);
+    try std.testing.expectApproxEqAbs(@as(f64, 3), x_buf[0].im, eps);
+    try std.testing.expectApproxEqAbs(@as(f64, 1), x_buf[1].re, eps);
+    try std.testing.expectApproxEqAbs(@as(f64, 4), x_buf[1].im, eps);
+}
+
+test "trmv nontrivial strides" {
+    const AB = enum { a, b };
+    const B = enum { b };
+    const T = Complex(f32);
+
+    // Lower triangular 2x2 (triangle = .a, i.e. data where a >= b):
+    //   [[3+0i,    _    ],
+    //    [1+2i,  5+0i   ]]
+    const a_buf = [_]T{
+        .{ .re = 3, .im = 0 }, .{ .re = 99, .im = 99 },
+        .{ .re = 1, .im = 2 }, .{ .re = 5, .im = 0 },
+    };
+    const A = NamedArrayConst(AB, T){
+        .idx = NamedIndex(AB).initContiguous(.{ .a = 2, .b = 2 }),
+        .buf = &a_buf,
+    };
+
+    // x with stride 2: positions 0, 2 in buffer; logical x = [1+i, 2+0i]
+    var x_buf = [_]T{
+        .{ .re = 1, .im = 1 },
+        .{ .re = 99, .im = 99 }, // sentinel
+        .{ .re = 2, .im = 0 },
+    };
+    const x_idx: NamedIndex(B) = .{
+        .shape = .{ .b = 2 },
+        .strides = .{ .b = 2 },
+        .offset = 0,
+    };
+    const x = NamedArray(B, T){
+        .idx = x_idx,
+        .buf = &x_buf,
+    };
+
+    // x := A * x:
+    //   x[0] = (3)(1+i) + 0*(2) = 3+3i
+    //   x[1] = (1+2i)(1+i) + (5)(2) = 1+i+2i+2i² + 10 = 9+3i
+    blas.trmv(T, AB, B, .a, .non_unit, A, x);
+
+    const eps: f32 = 1e-5;
+    try std.testing.expectApproxEqAbs(@as(f32, 3), x_buf[0].re, eps);
+    try std.testing.expectApproxEqAbs(@as(f32, 3), x_buf[0].im, eps);
+    try std.testing.expectApproxEqAbs(@as(f32, 9), x_buf[2].re, eps);
+    try std.testing.expectApproxEqAbs(@as(f32, 3), x_buf[2].im, eps);
+    // sentinel untouched
+    try std.testing.expectEqual(@as(f32, 99), x_buf[1].re);
+    try std.testing.expectEqual(@as(f32, 99), x_buf[1].im);
 }
 
 // TODO: Figure this out. See blas.rot_complex above.

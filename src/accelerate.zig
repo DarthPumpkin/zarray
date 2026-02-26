@@ -526,6 +526,67 @@ pub const blas = struct {
         );
     }
 
+    /// `ssymv` and `dsymv` in BLAS.
+    /// Computes `y = alpha * A * x + beta * y` where `A` is a real symmetric matrix.
+    /// Only one triangle of `A` is read, selected by `uplo`.
+    /// The scalars `alpha` and `beta` are optional and default to 1.
+    pub fn symv(
+        comptime Scalar: type,
+        comptime AxisA: type,
+        comptime AxisXY: type,
+        uplo: Uplo,
+        A: NamedArrayConst(AxisA, Scalar),
+        x: NamedArrayConst(AxisXY, Scalar),
+        y: NamedArray(AxisXY, Scalar),
+        scalars: struct { alpha: Scalar = one(Scalar), beta: Scalar = one(Scalar) },
+    ) void {
+        const a_names = comptime meta.fieldNames(AxisA);
+        comptime {
+            assert(meta.fields(AxisA).len == 2);
+            assert(meta.fields(AxisXY).len == 1);
+            const xy_name = meta.fields(AxisXY)[0].name;
+            assert(std.mem.eql(u8, a_names[0], xy_name) or std.mem.eql(u8, a_names[1], xy_name));
+        }
+        const f = switch (Scalar) {
+            f32 => acc.cblas_ssymv,
+            f64 => acc.cblas_dsymv,
+            else => @compileError("symv requires f32 or f64."),
+        };
+
+        _ = named_index.resolveDimensions(.{ A.idx.shape, x.idx.shape, y.idx.shape }) catch
+            @panic("symv: dimension mismatch");
+
+        const a_ij_idx = A.idx.rename(IJ, &.{
+            .{ .old = a_names[0], .new = "i" },
+            .{ .old = a_names[1], .new = "j" },
+        });
+        const A_ij: NamedArrayConst(IJ, Scalar) = .{ .idx = a_ij_idx, .buf = A.buf };
+        const A_blas = Blas2d(Scalar).init(A_ij);
+        assert(A_blas.rows == A_blas.cols);
+
+        const x_blas = Blas1d(Scalar).init(AxisXY, x);
+        const y_blas = Blas1dMut(Scalar).init(AxisXY, y);
+
+        const uplo_blas: acc.CBLAS_UPLO = switch (uplo) {
+            .upper => @intCast(acc.CblasUpper),
+            .lower => @intCast(acc.CblasLower),
+        };
+
+        f(
+            A_blas.layout,
+            uplo_blas,
+            A_blas.rows, // N
+            scalars.alpha,
+            A_blas.ptr,
+            A_blas.leading,
+            x_blas.ptr,
+            x_blas.inc,
+            scalars.beta,
+            y_blas.ptr,
+            y_blas.inc,
+        );
+    }
+
     pub fn GivensRotationReal(comptime Scalar: type) type {
         return struct {
             c: Scalar,
@@ -1684,6 +1745,141 @@ test "hemv nontrivial scalars and strides" {
     // sentinel untouched
     try std.testing.expectEqual(@as(f32, 99), y_buf[1].re);
     try std.testing.expectEqual(@as(f32, 99), y_buf[1].im);
+}
+
+test "symv upper" {
+    const MK = enum { m, k };
+    const K = enum { k };
+    const T = f64;
+
+    // Symmetric 3x3 matrix (upper triangle stored):
+    //   [[2, 3, 5],
+    //    [3, 7, 11],
+    //    [5, 11, 13]]
+    // Lower triangle positions hold sentinels that BLAS must ignore.
+    const a_buf = [_]T{
+        2,  3,  5,
+        99, 7,  11,
+        99, 99, 13,
+    };
+    const A = NamedArrayConst(MK, T){
+        .idx = NamedIndex(MK).initContiguous(.{ .m = 3, .k = 3 }),
+        .buf = &a_buf,
+    };
+
+    const x_buf = [_]T{ 1, 2, 3 };
+    const x = NamedArrayConst(K, T){
+        .idx = NamedIndex(K).initContiguous(.{ .k = 3 }),
+        .buf = &x_buf,
+    };
+
+    var y_buf = [_]T{ 0, 0, 0 };
+    const y = NamedArray(K, T){
+        .idx = NamedIndex(K).initContiguous(.{ .k = 3 }),
+        .buf = &y_buf,
+    };
+
+    // y = A * x:
+    //   y[0] = 2*1 + 3*2 + 5*3  = 2 + 6 + 15  = 23
+    //   y[1] = 3*1 + 7*2 + 11*3 = 3 + 14 + 33 = 50
+    //   y[2] = 5*1 + 11*2 + 13*3 = 5 + 22 + 39 = 66
+    blas.symv(T, MK, K, .upper, A, x, y, .{ .alpha = 1.0, .beta = 0.0 });
+
+    const expected = [_]T{ 23.0, 50.0, 66.0 };
+    for (0..3) |i| {
+        try std.testing.expectApproxEqAbs(expected[i], y_buf[i], math.floatEpsAt(T, expected[i]));
+    }
+}
+
+test "symv lower" {
+    const MK = enum { m, k };
+    const K = enum { k };
+    const T = f64;
+
+    // Same symmetric matrix, but now the *lower* triangle is stored.
+    // Upper triangle positions hold sentinels that BLAS must ignore.
+    //   [[2,  _,  _ ],
+    //    [3,  7,  _ ],
+    //    [5,  11, 13]]
+    const a_buf = [_]T{
+        2, 99, 99,
+        3, 7,  99,
+        5, 11, 13,
+    };
+    const A = NamedArrayConst(MK, T){
+        .idx = NamedIndex(MK).initContiguous(.{ .m = 3, .k = 3 }),
+        .buf = &a_buf,
+    };
+
+    const x_buf = [_]T{ 1, 2, 3 };
+    const x = NamedArrayConst(K, T){
+        .idx = NamedIndex(K).initContiguous(.{ .k = 3 }),
+        .buf = &x_buf,
+    };
+
+    var y_buf = [_]T{ 0, 0, 0 };
+    const y = NamedArray(K, T){
+        .idx = NamedIndex(K).initContiguous(.{ .k = 3 }),
+        .buf = &y_buf,
+    };
+
+    // Same result as the upper test: y = [23, 50, 66]
+    blas.symv(T, MK, K, .lower, A, x, y, .{ .alpha = 1.0, .beta = 0.0 });
+
+    const expected = [_]T{ 23.0, 50.0, 66.0 };
+    for (0..3) |i| {
+        try std.testing.expectApproxEqAbs(expected[i], y_buf[i], math.floatEpsAt(T, expected[i]));
+    }
+}
+
+test "symv nontrivial scalars and strides" {
+    const AB = enum { a, b };
+    const B = enum { b };
+    const T = f32;
+
+    // Symmetric 2x2: [[4, 3], [3, 7]]
+    // Upper triangle stored; lower position holds sentinel.
+    const a_buf = [_]T{ 4, 3, 99, 7 };
+    const A = NamedArrayConst(AB, T){
+        .idx = NamedIndex(AB).initContiguous(.{ .a = 2, .b = 2 }),
+        .buf = &a_buf,
+    };
+
+    // x physical = [1, 2]; stride -1 → logical x = [2, 1]
+    const x_buf = [_]T{ 1, 2 };
+    var x_idx = NamedIndex(B).initContiguous(.{ .b = 2 });
+    x_idx = x_idx.stride(.{ .b = -1 });
+    const x = NamedArrayConst(B, T){
+        .idx = x_idx,
+        .buf = &x_buf,
+    };
+
+    // y with stride 2; y_init = [10, 20]
+    var y_buf = [_]T{ 10, 99, 20 };
+    const y_idx: NamedIndex(B) = .{
+        .shape = .{ .b = 2 },
+        .strides = .{ .b = 2 },
+        .offset = 0,
+    };
+    const y = NamedArray(B, T){
+        .idx = y_idx,
+        .buf = &y_buf,
+    };
+
+    // alpha = 2.5, beta = -1
+    //
+    // A * x_logical = A * [2, 1]:
+    //   row0: 4*2 + 3*1 = 11
+    //   row1: 3*2 + 7*1 = 13
+    //
+    // y = 2.5 * [11, 13] + (-1) * [10, 20] = [27.5-10, 32.5-20] = [17.5, 12.5]
+    blas.symv(T, AB, B, .upper, A, x, y, .{ .alpha = 2.5, .beta = -1.0 });
+
+    const eps: f32 = 1e-5;
+    try std.testing.expectApproxEqAbs(@as(f32, 17.5), y_buf[0], eps);
+    try std.testing.expectApproxEqAbs(@as(f32, 12.5), y_buf[2], eps);
+    // sentinel untouched
+    try std.testing.expectEqual(@as(f32, 99.0), y_buf[1]);
 }
 
 // TODO: Figure this out. See blas.rot_complex above.

@@ -464,6 +464,68 @@ pub const blas = struct {
         );
     }
 
+    /// `chemv` and `zhemv` in BLAS.
+    /// Computes `y = alpha * A * x + beta * y` where `A` is a Hermitian matrix.
+    /// Only one triangle of `A` is read, selected by `uplo`.
+    /// The scalars `alpha` and `beta` are optional and default to 1.
+    /// `A` must have one axis in common with `x` and `y`.
+    pub fn hemv(
+        comptime Scalar: type,
+        comptime AxisA: type,
+        comptime AxisXY: type,
+        uplo: Uplo,
+        A: NamedArrayConst(AxisA, Scalar),
+        x: NamedArrayConst(AxisXY, Scalar),
+        y: NamedArray(AxisXY, Scalar),
+        scalars: struct { alpha: Scalar = one(Scalar), beta: Scalar = one(Scalar) },
+    ) void {
+        const a_names = comptime meta.fieldNames(AxisA);
+        comptime {
+            assert(meta.fields(AxisA).len == 2);
+            assert(meta.fields(AxisXY).len == 1);
+            const xy_name = meta.fields(AxisXY)[0].name;
+            assert(std.mem.eql(u8, a_names[0], xy_name) or std.mem.eql(u8, a_names[1], xy_name));
+        }
+        const f = switch (Scalar) {
+            Complex(f32) => acc.cblas_chemv,
+            Complex(f64) => acc.cblas_zhemv,
+            else => @compileError("hemv requires Complex(f32) or Complex(f64)."),
+        };
+
+        _ = named_index.resolveDimensions(.{ A.idx.shape, x.idx.shape, y.idx.shape }) catch
+            @panic("hemv: dimension mismatch");
+
+        const a_ij_idx = A.idx.rename(IJ, &.{
+            .{ .old = a_names[0], .new = "i" },
+            .{ .old = a_names[1], .new = "j" },
+        });
+        const A_ij: NamedArrayConst(IJ, Scalar) = .{ .idx = a_ij_idx, .buf = A.buf };
+        const A_blas = Blas2d(Scalar).init(A_ij);
+        assert(A_blas.rows == A_blas.cols);
+
+        const x_blas = Blas1d(Scalar).init(AxisXY, x);
+        const y_blas = Blas1dMut(Scalar).init(AxisXY, y);
+
+        const uplo_blas: acc.CBLAS_UPLO = switch (uplo) {
+            .upper => @intCast(acc.CblasUpper),
+            .lower => @intCast(acc.CblasLower),
+        };
+
+        f(
+            A_blas.layout,
+            uplo_blas,
+            A_blas.rows, // N
+            &scalars.alpha,
+            A_blas.ptr,
+            A_blas.leading,
+            x_blas.ptr,
+            x_blas.inc,
+            &scalars.beta,
+            y_blas.ptr,
+            y_blas.inc,
+        );
+    }
+
     pub fn GivensRotationReal(comptime Scalar: type) type {
         return struct {
             c: Scalar,
@@ -506,6 +568,8 @@ pub const blas = struct {
     }
 
     pub const MGRFlag = enum { Full, OffDiagonal, Diagonal, Identity };
+
+    pub const Uplo = enum { upper, lower };
 
     pub const IJ = enum { i, j };
     const I = enum { i };
@@ -1428,6 +1492,195 @@ test "gemv complex nontrivial scalars and strides" {
     try std.testing.expectApproxEqAbs(@as(f32, 1), y_buf[0].im, eps);
     try std.testing.expectApproxEqAbs(@as(f32, -1), y_buf[2].re, eps);
     try std.testing.expectApproxEqAbs(@as(f32, 5), y_buf[2].im, eps);
+    // sentinel untouched
+    try std.testing.expectEqual(@as(f32, 99), y_buf[1].re);
+    try std.testing.expectEqual(@as(f32, 99), y_buf[1].im);
+}
+
+test "hemv upper" {
+    const MK = enum { m, k };
+    const K = enum { k };
+    const T = Complex(f64);
+
+    // Hermitian 3x3 matrix (upper triangle stored):
+    //   [[2,      1-i,   3+2i],
+    //    [1+i,    5,     2-i ],
+    //    [3-2i,   2+i,   4   ]]
+    // Buffer is row-major; BLAS reads only upper triangle (col >= row).
+    const a_buf = [_]T{
+        .{ .re = 2, .im = 0 },   .{ .re = 1, .im = -1 },  .{ .re = 3, .im = 2 },
+        .{ .re = 99, .im = 99 }, .{ .re = 5, .im = 0 },   .{ .re = 2, .im = -1 },
+        .{ .re = 99, .im = 99 }, .{ .re = 99, .im = 99 }, .{ .re = 4, .im = 0 },
+    };
+    const A = NamedArrayConst(MK, T){
+        .idx = NamedIndex(MK).initContiguous(.{ .m = 3, .k = 3 }),
+        .buf = &a_buf,
+    };
+
+    const x_buf = [_]T{
+        .{ .re = 1, .im = 0 },
+        .{ .re = 0, .im = 1 },
+        .{ .re = 1, .im = 0 },
+    };
+    const x = NamedArrayConst(K, T){
+        .idx = NamedIndex(K).initContiguous(.{ .k = 3 }),
+        .buf = &x_buf,
+    };
+
+    var y_buf = [_]T{
+        .{ .re = 0, .im = 0 },
+        .{ .re = 0, .im = 0 },
+        .{ .re = 0, .im = 0 },
+    };
+    const y = NamedArray(K, T){
+        .idx = NamedIndex(K).initContiguous(.{ .k = 3 }),
+        .buf = &y_buf,
+    };
+
+    // y = A * x:
+    //   y[0] = 2*(1) + (1-i)*(i) + (3+2i)*(1) = 2 + i+1 + 3+2i = 6+3i
+    //   y[1] = (1+i)*(1) + 5*(i) + (2-i)*(1) = 1+i + 5i + 2-i = 3+5i
+    //   y[2] = (3-2i)*(1) + (2+i)*(i) + 4*(1) = 3-2i + 2i-1 + 4 = 6+0i
+    blas.hemv(T, MK, K, .upper, A, x, y, .{
+        .alpha = .{ .re = 1, .im = 0 },
+        .beta = .{ .re = 0, .im = 0 },
+    });
+
+    const expected = [_]T{
+        .{ .re = 6, .im = 3 },
+        .{ .re = 3, .im = 5 },
+        .{ .re = 6, .im = 0 },
+    };
+    const eps = 1e-10;
+    for (0..3) |i| {
+        try std.testing.expectApproxEqAbs(expected[i].re, y_buf[i].re, eps);
+        try std.testing.expectApproxEqAbs(expected[i].im, y_buf[i].im, eps);
+    }
+}
+
+test "hemv lower" {
+    const MK = enum { m, k };
+    const K = enum { k };
+    const T = Complex(f64);
+
+    // Same Hermitian matrix, but now the *lower* triangle is stored.
+    // Upper triangle positions hold sentinels that BLAS must ignore.
+    //   [[2,      _,      _     ],
+    //    [1+i,    5,      _     ],
+    //    [3-2i,   2+i,    4     ]]
+    const a_buf = [_]T{
+        .{ .re = 2, .im = 0 },  .{ .re = 99, .im = 99 }, .{ .re = 99, .im = 99 },
+        .{ .re = 1, .im = 1 },  .{ .re = 5, .im = 0 },   .{ .re = 99, .im = 99 },
+        .{ .re = 3, .im = -2 }, .{ .re = 2, .im = 1 },   .{ .re = 4, .im = 0 },
+    };
+    const A = NamedArrayConst(MK, T){
+        .idx = NamedIndex(MK).initContiguous(.{ .m = 3, .k = 3 }),
+        .buf = &a_buf,
+    };
+
+    const x_buf = [_]T{
+        .{ .re = 1, .im = 0 },
+        .{ .re = 0, .im = 1 },
+        .{ .re = 1, .im = 0 },
+    };
+    const x = NamedArrayConst(K, T){
+        .idx = NamedIndex(K).initContiguous(.{ .k = 3 }),
+        .buf = &x_buf,
+    };
+
+    var y_buf = [_]T{
+        .{ .re = 0, .im = 0 },
+        .{ .re = 0, .im = 0 },
+        .{ .re = 0, .im = 0 },
+    };
+    const y = NamedArray(K, T){
+        .idx = NamedIndex(K).initContiguous(.{ .k = 3 }),
+        .buf = &y_buf,
+    };
+
+    // Same result as the upper test: y = [6+3i, 3+5i, 6+0i]
+    blas.hemv(T, MK, K, .lower, A, x, y, .{
+        .alpha = .{ .re = 1, .im = 0 },
+        .beta = .{ .re = 0, .im = 0 },
+    });
+
+    const expected = [_]T{
+        .{ .re = 6, .im = 3 },
+        .{ .re = 3, .im = 5 },
+        .{ .re = 6, .im = 0 },
+    };
+    const eps = 1e-10;
+    for (0..3) |i| {
+        try std.testing.expectApproxEqAbs(expected[i].re, y_buf[i].re, eps);
+        try std.testing.expectApproxEqAbs(expected[i].im, y_buf[i].im, eps);
+    }
+}
+
+test "hemv nontrivial scalars and strides" {
+    const AB = enum { a, b };
+    const B = enum { b };
+    const T = Complex(f32);
+
+    // Hermitian 2x2: [[3, 1+2i], [1-2i, 5]]
+    // Upper triangle stored; lower positions hold sentinels.
+    const a_buf = [_]T{
+        .{ .re = 3, .im = 0 },   .{ .re = 1, .im = 2 },
+        .{ .re = 99, .im = 99 }, .{ .re = 5, .im = 0 },
+    };
+    const A = NamedArrayConst(AB, T){
+        .idx = NamedIndex(AB).initContiguous(.{ .a = 2, .b = 2 }),
+        .buf = &a_buf,
+    };
+
+    // x physical = [1+i, 2+0i]; stride -1 → logical x = [2+0i, 1+i]
+    const x_buf = [_]T{
+        .{ .re = 1, .im = 1 },
+        .{ .re = 2, .im = 0 },
+    };
+    var x_idx = NamedIndex(B).initContiguous(.{ .b = 2 });
+    x_idx = x_idx.stride(.{ .b = -1 });
+    const x = NamedArrayConst(B, T){
+        .idx = x_idx,
+        .buf = &x_buf,
+    };
+
+    // y with stride 2; y_init = [1+0i, 2+i]
+    var y_buf = [_]T{
+        .{ .re = 1, .im = 0 },
+        .{ .re = 99, .im = 99 }, // sentinel
+        .{ .re = 2, .im = 1 },
+    };
+    const y_idx: NamedIndex(B) = .{
+        .shape = .{ .b = 2 },
+        .strides = .{ .b = 2 },
+        .offset = 0,
+    };
+    const y = NamedArray(B, T){
+        .idx = y_idx,
+        .buf = &y_buf,
+    };
+
+    // alpha = 1+i, beta = 2
+    //
+    // A * x_logical = A * [2, 1+i]:
+    //   row0: 3*(2) + (1+2i)*(1+i) = 6 + 1+i+2i+2i² = 6 + -1+3i = 5+3i
+    //   row1: (1-2i)*(2) + 5*(1+i) = 2-4i + 5+5i = 7+i
+    //
+    // y = (1+i)*[5+3i, 7+i] + 2*[1, 2+i]:
+    //   (1+i)(5+3i) = 5+3i+5i+3i² = 2+8i
+    //   (1+i)(7+i)  = 7+i+7i+i²   = 6+8i
+    //   y[0] = 2+8i + 2   = 4+8i
+    //   y[1] = 6+8i + 4+2i = 10+10i
+    blas.hemv(T, AB, B, .upper, A, x, y, .{
+        .alpha = .{ .re = 1, .im = 1 },
+        .beta = .{ .re = 2, .im = 0 },
+    });
+
+    const eps: f32 = 1e-5;
+    try std.testing.expectApproxEqAbs(@as(f32, 4), y_buf[0].re, eps);
+    try std.testing.expectApproxEqAbs(@as(f32, 8), y_buf[0].im, eps);
+    try std.testing.expectApproxEqAbs(@as(f32, 10), y_buf[2].re, eps);
+    try std.testing.expectApproxEqAbs(@as(f32, 10), y_buf[2].im, eps);
     // sentinel untouched
     try std.testing.expectEqual(@as(f32, 99), y_buf[1].re);
     try std.testing.expectEqual(@as(f32, 99), y_buf[1].im);

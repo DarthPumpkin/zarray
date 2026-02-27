@@ -1042,6 +1042,144 @@ pub const blas = struct {
         );
     }
 
+    /// `ssyr2` and `dsyr2` in BLAS.
+    /// Computes `A := alpha * x * yᵀ + alpha * y * xᵀ + A` (symmetric rank-2 update) for real scalars.
+    /// Only the triangle of `A` where `triangle >= the other axis` is read and written.
+    /// `x`'s axis must match one axis of `A` and `y`'s axis must match the other.
+    /// The scalar `alpha` is optional and defaults to 1.
+    pub fn syr2(
+        comptime Scalar: type,
+        comptime AxisA: type,
+        comptime AxisX: type,
+        comptime AxisY: type,
+        triangle: AxisA,
+        A: NamedArray(AxisA, Scalar),
+        x: NamedArrayConst(AxisX, Scalar),
+        y: NamedArrayConst(AxisY, Scalar),
+        scalars: struct { alpha: Scalar = one(Scalar) },
+    ) void {
+        const a_names = comptime meta.fieldNames(AxisA);
+        comptime {
+            assert(meta.fields(AxisA).len == 2);
+            assert(meta.fields(AxisX).len == 1);
+            assert(meta.fields(AxisY).len == 1);
+            const x_name = meta.fields(AxisX)[0].name;
+            const y_name = meta.fields(AxisY)[0].name;
+            assert(!std.mem.eql(u8, x_name, y_name));
+            assert(std.mem.eql(u8, a_names[0], x_name) or std.mem.eql(u8, a_names[1], x_name));
+            assert(std.mem.eql(u8, a_names[0], y_name) or std.mem.eql(u8, a_names[1], y_name));
+        }
+        const f = switch (Scalar) {
+            f32 => acc.cblas_ssyr2,
+            f64 => acc.cblas_dsyr2,
+            else => @compileError("syr2 requires f32 or f64."),
+        };
+
+        _ = named_index.resolveDimensions(.{ A.idx.shape, x.idx.shape, y.idx.shape }) catch
+            @panic("syr2: dimension mismatch");
+
+        const a_ij_idx = A.idx.rename(IJ, &.{
+            .{ .old = a_names[0], .new = "i" },
+            .{ .old = a_names[1], .new = "j" },
+        });
+        const A_ij: NamedArray(IJ, Scalar) = .{ .idx = a_ij_idx, .buf = A.buf };
+        const A_blas = Blas2dMut(Scalar).init(A_ij);
+        assert(A_blas.rows == A_blas.cols);
+
+        const x_blas = Blas1d(Scalar).init(AxisX, x);
+        const y_blas = Blas1d(Scalar).init(AxisY, y);
+
+        // first axis → rows (i), second axis → cols (j)
+        // triangle == second axis → data at j >= i → Upper
+        // triangle == first axis  → data at i >= j → Lower
+        const uplo_blas: acc.CBLAS_UPLO = if (@intFromEnum(triangle) == 1)
+            @intCast(acc.CblasUpper)
+        else
+            @intCast(acc.CblasLower);
+
+        f(
+            A_blas.layout,
+            uplo_blas,
+            A_blas.rows, // N
+            scalars.alpha,
+            x_blas.ptr,
+            x_blas.inc,
+            y_blas.ptr,
+            y_blas.inc,
+            A_blas.ptr,
+            A_blas.leading,
+        );
+    }
+
+    /// `cher2` and `zher2` in BLAS.
+    /// Computes `A := alpha * x * yᴴ + conj(alpha) * y * xᴴ + A` (Hermitian rank-2 update) for complex scalars.
+    /// Only the triangle of `A` where `triangle >= the other axis` is read and written.
+    /// `x`'s axis must match one axis of `A` and `y`'s axis must match the other.
+    /// The scalar `alpha` is complex and optional, defaulting to 1.
+    pub fn her2(
+        comptime Scalar: type,
+        comptime AxisA: type,
+        comptime AxisX: type,
+        comptime AxisY: type,
+        triangle: AxisA,
+        A: NamedArray(AxisA, Scalar),
+        x: NamedArrayConst(AxisX, Scalar),
+        y: NamedArrayConst(AxisY, Scalar),
+        scalars: struct { alpha: Scalar = one(Scalar) },
+    ) void {
+        const a_names = comptime meta.fieldNames(AxisA);
+        comptime {
+            assert(meta.fields(AxisA).len == 2);
+            assert(meta.fields(AxisX).len == 1);
+            assert(meta.fields(AxisY).len == 1);
+            const x_name = meta.fields(AxisX)[0].name;
+            const y_name = meta.fields(AxisY)[0].name;
+            assert(!std.mem.eql(u8, x_name, y_name));
+            assert(std.mem.eql(u8, a_names[0], x_name) or std.mem.eql(u8, a_names[1], x_name));
+            assert(std.mem.eql(u8, a_names[0], y_name) or std.mem.eql(u8, a_names[1], y_name));
+        }
+        const f = switch (Scalar) {
+            Complex(f32) => acc.cblas_cher2,
+            Complex(f64) => acc.cblas_zher2,
+            else => @compileError("her2 requires Complex(f32) or Complex(f64)."),
+        };
+
+        _ = named_index.resolveDimensions(.{ A.idx.shape, x.idx.shape, y.idx.shape }) catch
+            @panic("her2: dimension mismatch");
+
+        const a_ij_idx = A.idx.rename(IJ, &.{
+            .{ .old = a_names[0], .new = "i" },
+            .{ .old = a_names[1], .new = "j" },
+        });
+        const A_ij: NamedArray(IJ, Scalar) = .{ .idx = a_ij_idx, .buf = A.buf };
+        const A_blas = Blas2dMut(Scalar).init(A_ij);
+        assert(A_blas.rows == A_blas.cols);
+
+        const x_blas = Blas1d(Scalar).init(AxisX, x);
+        const y_blas = Blas1d(Scalar).init(AxisY, y);
+
+        // first axis → rows (i), second axis → cols (j)
+        // triangle == second axis → data at j >= i → Upper
+        // triangle == first axis  → data at i >= j → Lower
+        const uplo_blas: acc.CBLAS_UPLO = if (@intFromEnum(triangle) == 1)
+            @intCast(acc.CblasUpper)
+        else
+            @intCast(acc.CblasLower);
+
+        f(
+            A_blas.layout,
+            uplo_blas,
+            A_blas.rows, // N
+            &scalars.alpha,
+            x_blas.ptr,
+            x_blas.inc,
+            y_blas.ptr,
+            y_blas.inc,
+            A_blas.ptr,
+            A_blas.leading,
+        );
+    }
+
     pub fn GivensRotationReal(comptime Scalar: type) type {
         return struct {
             c: Scalar,
@@ -3176,6 +3314,269 @@ test "her complex nontrivial strides" {
     try std.testing.expectApproxEqAbs(@as(f32, 3), a_buf[2].re, eps);
     try std.testing.expectApproxEqAbs(@as(f32, -3), a_buf[2].im, eps);
     try std.testing.expectApproxEqAbs(@as(f32, 7), a_buf[3].re, eps);
+    try std.testing.expectApproxEqAbs(@as(f32, 0), a_buf[3].im, eps);
+}
+
+test "syr2 real (triangle = second axis)" {
+    const MK = enum { m, k };
+    const M = enum { m };
+    const K = enum { k };
+    const T = f64;
+
+    // Symmetric 3x3, upper triangle stored (triangle = .k, data where k >= m).
+    // Lower triangle positions hold sentinels.
+    //   [[1, 2, 3],
+    //    [_, 5, 6],
+    //    [_, _, 9]]
+    var a_buf = [_]T{
+        1,  2,  3,
+        99, 5,  6,
+        99, 99, 9,
+    };
+    const A = NamedArray(MK, T){
+        .idx = NamedIndex(MK).initContiguous(.{ .m = 3, .k = 3 }),
+        .buf = &a_buf,
+    };
+
+    const x_buf = [_]T{ 1, 2, 3 };
+    const x = NamedArrayConst(M, T){
+        .idx = NamedIndex(M).initContiguous(.{ .m = 3 }),
+        .buf = &x_buf,
+    };
+
+    const y_buf = [_]T{ 4, 5, 6 };
+    const y = NamedArrayConst(K, T){
+        .idx = NamedIndex(K).initContiguous(.{ .k = 3 }),
+        .buf = &y_buf,
+    };
+
+    // alpha = 1 (default)
+    // x*y^T = [[4,5,6],[8,10,12],[12,15,18]]
+    // y*x^T = [[4,8,12],[5,10,15],[6,12,18]]
+    // x*y^T + y*x^T = [[8,13,18],[13,20,27],[18,27,36]]
+    // A_new upper = [[8,13,18],[_,20,27],[_,_,36]] + [[1,2,3],[_,5,6],[_,_,9]]
+    //            = [[9,15,21],[_,25,33],[_,_,45]]
+    blas.syr2(T, MK, M, K, .k, A, x, y, .{});
+
+    const eps = 1e-10;
+    // Row 0
+    try std.testing.expectApproxEqAbs(@as(T, 9), a_buf[0], eps);
+    try std.testing.expectApproxEqAbs(@as(T, 15), a_buf[1], eps);
+    try std.testing.expectApproxEqAbs(@as(T, 21), a_buf[2], eps);
+    // Row 1: sentinel, then diagonal and upper
+    try std.testing.expectEqual(@as(T, 99), a_buf[3]); // sentinel untouched
+    try std.testing.expectApproxEqAbs(@as(T, 25), a_buf[4], eps);
+    try std.testing.expectApproxEqAbs(@as(T, 33), a_buf[5], eps);
+    // Row 2: sentinels, then diagonal
+    try std.testing.expectEqual(@as(T, 99), a_buf[6]); // sentinel untouched
+    try std.testing.expectEqual(@as(T, 99), a_buf[7]); // sentinel untouched
+    try std.testing.expectApproxEqAbs(@as(T, 45), a_buf[8], eps);
+}
+
+test "syr2 real nontrivial strides" {
+    const AB = enum { a, b };
+    const A_ = enum { a };
+    const B = enum { b };
+    const T = f32;
+
+    // Symmetric 2x2, lower triangle stored (triangle = .a, data where a >= b).
+    // Upper off-diagonal holds sentinel.
+    //   [[3, _ ],
+    //    [1, 7 ]]
+    var a_buf = [_]T{ 3, 99, 1, 7 };
+    const A = NamedArray(AB, T){
+        .idx = NamedIndex(AB).initContiguous(.{ .a = 2, .b = 2 }),
+        .buf = &a_buf,
+    };
+
+    // x physical = [1, 2]; stride -1 → logical x = [2, 1]
+    const x_buf = [_]T{ 1, 2 };
+    var x_idx = NamedIndex(B).initContiguous(.{ .b = 2 });
+    x_idx = x_idx.stride(.{ .b = -1 });
+    const x = NamedArrayConst(B, T){
+        .idx = x_idx,
+        .buf = &x_buf,
+    };
+
+    const y_buf = [_]T{ 3, 4 };
+    const y = NamedArrayConst(A_, T){
+        .idx = NamedIndex(A_).initContiguous(.{ .a = 2 }),
+        .buf = &y_buf,
+    };
+
+    // alpha = 2
+    // logical x = [2, 1], y = [3, 4]
+    // x*y^T = [[6, 8], [3, 4]]
+    // y*x^T = [[6, 3], [8, 4]]
+    // x*y^T + y*x^T = [[12, 11], [11, 8]]
+    // A_new lower = 2 * [[12, _], [11, 8]] + [[3, _], [1, 7]]
+    //            = [[24, _], [22, 16]] + [[3, _], [1, 7]]
+    //            = [[27, _], [23, 23]]
+    blas.syr2(T, AB, B, A_, .a, A, x, y, .{ .alpha = 2.0 });
+
+    const eps: f32 = 1e-5;
+    try std.testing.expectApproxEqAbs(@as(f32, 27), a_buf[0], eps);
+    try std.testing.expectEqual(@as(f32, 99), a_buf[1]); // sentinel untouched
+    try std.testing.expectApproxEqAbs(@as(f32, 23), a_buf[2], eps);
+    try std.testing.expectApproxEqAbs(@as(f32, 23), a_buf[3], eps);
+}
+
+test "her2 complex (triangle = second axis)" {
+    const MK = enum { m, k };
+    const M = enum { m };
+    const K = enum { k };
+    const T = Complex(f64);
+
+    // Hermitian 2x2, upper triangle stored (triangle = .k, data where k >= m).
+    // Lower off-diagonal holds sentinel.
+    //   [[1+0i,    2+i ],
+    //    [  _,     3+0i]]
+    var a_buf = [_]T{
+        .{ .re = 1, .im = 0 },   .{ .re = 2, .im = 1 },
+        .{ .re = 99, .im = 99 }, .{ .re = 3, .im = 0 },
+    };
+    const A = NamedArray(MK, T){
+        .idx = NamedIndex(MK).initContiguous(.{ .m = 2, .k = 2 }),
+        .buf = &a_buf,
+    };
+
+    const x_buf = [_]T{
+        .{ .re = 1, .im = 1 },
+        .{ .re = 2, .im = 0 },
+    };
+    const x = NamedArrayConst(M, T){
+        .idx = NamedIndex(M).initContiguous(.{ .m = 2 }),
+        .buf = &x_buf,
+    };
+
+    const y_buf = [_]T{
+        .{ .re = 0, .im = 1 },
+        .{ .re = 1, .im = -1 },
+    };
+    const y = NamedArrayConst(K, T){
+        .idx = NamedIndex(K).initContiguous(.{ .k = 2 }),
+        .buf = &y_buf,
+    };
+
+    // alpha = 1+0i (default)
+    // x = [1+i, 2], y = [i, 1-i]
+    // x*y^H:
+    //   (1+i)*conj(i) = (1+i)*(-i) = -i-i^2 = 1-i
+    //   (1+i)*conj(1-i) = (1+i)*(1+i) = 1+2i+i^2 = 2i
+    //   2*conj(i) = 2*(-i) = -2i
+    //   2*conj(1-i) = 2*(1+i) = 2+2i
+    // x*y^H = [[1-i, 2i], [-2i, 2+2i]]
+    //
+    // conj(alpha)*y*x^H = y*x^H (since alpha=1):
+    //   i*conj(1+i) = i*(1-i) = i-i^2 = 1+i
+    //   i*conj(2) = 2i
+    //   (1-i)*conj(1+i) = (1-i)*(1-i) = 1-2i+i^2 = -2i
+    //   (1-i)*conj(2) = 2-2i
+    // y*x^H = [[1+i, 2i], [-2i, 2-2i]]
+    //
+    // x*y^H + y*x^H = [[2, 4i], [-4i, 4]]
+    // Upper part: [[2, 4i], [_, 4]]
+    // A_new upper = [[2, 4i], [_, 4]] + [[1, 2+i], [_, 3]]
+    //            = [[3+0i, 2+5i], [_, 7+0i]]
+    blas.her2(T, MK, M, K, .k, A, x, y, .{});
+
+    const eps = 1e-10;
+    try std.testing.expectApproxEqAbs(@as(f64, 3), a_buf[0].re, eps);
+    try std.testing.expectApproxEqAbs(@as(f64, 0), a_buf[0].im, eps);
+    try std.testing.expectApproxEqAbs(@as(f64, 2), a_buf[1].re, eps);
+    try std.testing.expectApproxEqAbs(@as(f64, 5), a_buf[1].im, eps);
+    // sentinel untouched
+    try std.testing.expectEqual(@as(f64, 99), a_buf[2].re);
+    try std.testing.expectEqual(@as(f64, 99), a_buf[2].im);
+    try std.testing.expectApproxEqAbs(@as(f64, 7), a_buf[3].re, eps);
+    try std.testing.expectApproxEqAbs(@as(f64, 0), a_buf[3].im, eps);
+}
+
+test "her2 complex nontrivial strides" {
+    const AB = enum { a, b };
+    const A_ = enum { a };
+    const B = enum { b };
+    const T = Complex(f32);
+
+    // Hermitian 2x2, lower triangle stored (triangle = .a, data where a >= b).
+    // Upper off-diagonal holds sentinel.
+    //   [[5+0i,       _     ],
+    //    [1-i,     3+0i     ]]
+    var a_buf = [_]T{
+        .{ .re = 5, .im = 0 },  .{ .re = 99, .im = 99 },
+        .{ .re = 1, .im = -1 }, .{ .re = 3, .im = 0 },
+    };
+    const A = NamedArray(AB, T){
+        .idx = NamedIndex(AB).initContiguous(.{ .a = 2, .b = 2 }),
+        .buf = &a_buf,
+    };
+
+    // x physical = [1+i, i]; stride -1 → logical x = [i, 1+i]
+    const x_buf = [_]T{
+        .{ .re = 1, .im = 1 },
+        .{ .re = 0, .im = 1 },
+    };
+    var x_idx = NamedIndex(B).initContiguous(.{ .b = 2 });
+    x_idx = x_idx.stride(.{ .b = -1 });
+    const x = NamedArrayConst(B, T){
+        .idx = x_idx,
+        .buf = &x_buf,
+    };
+
+    const y_buf = [_]T{
+        .{ .re = 1, .im = 0 },
+        .{ .re = 0, .im = 1 },
+    };
+    const y = NamedArrayConst(A_, T){
+        .idx = NamedIndex(A_).initContiguous(.{ .a = 2 }),
+        .buf = &y_buf,
+    };
+
+    // alpha = 2+i
+    // logical x = [i, 1+i], y = [1, i]
+    //
+    // alpha * x * y^H:
+    //   x*y^H:
+    //     i*conj(1) = i,  i*conj(i) = i*(-i) = 1
+    //     (1+i)*conj(1) = 1+i,  (1+i)*conj(i) = (1+i)*(-i) = -i-i^2 = 1-i
+    //   x*y^H = [[i, 1], [1+i, 1-i]]
+    //   alpha * x*y^H = (2+i)*[[i, 1], [1+i, 1-i]]
+    //     [0,0] = (2+i)*i = 2i+i^2 = -1+2i
+    //     [0,1] = (2+i)*1 = 2+i
+    //     [1,0] = (2+i)*(1+i) = 2+2i+i+i^2 = 1+3i
+    //     [1,1] = (2+i)*(1-i) = 2-2i+i-i^2 = 3-i
+    //
+    // conj(alpha) * y * x^H:
+    //   y*x^H:
+    //     1*conj(i) = -i,  1*conj(1+i) = 1-i
+    //     i*conj(i) = i*(-i) = 1,  i*conj(1+i) = i*(1-i) = i-i^2 = 1+i
+    //   y*x^H = [[-i, 1-i], [1, 1+i]]
+    //   conj(alpha) * y*x^H = (2-i)*[[-i, 1-i], [1, 1+i]]
+    //     [0,0] = (2-i)*(-i) = -2i+i^2 = -1-2i
+    //     [0,1] = (2-i)*(1-i) = 2-2i-i+i^2 = 1-3i
+    //     [1,0] = (2-i)*1 = 2-i
+    //     [1,1] = (2-i)*(1+i) = 2+2i-i-i^2 = 3+i
+    //
+    // sum = alpha*x*y^H + conj(alpha)*y*x^H:
+    //   [0,0] = (-1+2i) + (-1-2i) = -2+0i
+    //   [0,1] = (2+i) + (1-3i) = 3-2i
+    //   [1,0] = (1+3i) + (2-i) = 3+2i
+    //   [1,1] = (3-i) + (3+i) = 6+0i
+    //
+    // Lower part: [[-2, _], [3+2i, 6]]
+    // A_new lower = [[-2,_],[3+2i,6]] + [[5,_],[1-i,3]]
+    //            = [[3+0i, _], [4+i, 9+0i]]
+    blas.her2(T, AB, B, A_, .a, A, x, y, .{ .alpha = .{ .re = 2, .im = 1 } });
+
+    const eps: f32 = 1e-4;
+    try std.testing.expectApproxEqAbs(@as(f32, 3), a_buf[0].re, eps);
+    try std.testing.expectApproxEqAbs(@as(f32, 0), a_buf[0].im, eps);
+    // sentinel untouched
+    try std.testing.expectEqual(@as(f32, 99), a_buf[1].re);
+    try std.testing.expectEqual(@as(f32, 99), a_buf[1].im);
+    try std.testing.expectApproxEqAbs(@as(f32, 4), a_buf[2].re, eps);
+    try std.testing.expectApproxEqAbs(@as(f32, 1), a_buf[2].im, eps);
+    try std.testing.expectApproxEqAbs(@as(f32, 9), a_buf[3].re, eps);
     try std.testing.expectApproxEqAbs(@as(f32, 0), a_buf[3].im, eps);
 }
 

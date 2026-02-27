@@ -13,10 +13,11 @@ const NamedArrayConst = named_array.NamedArrayConst;
 const acc = @cImport(@cInclude("Accelerate/Accelerate.h"));
 
 pub const blas = struct {
-    /// `sdot` and `ddot` in BLAS (`sdsdot` and `dsdot` with `internal_double_precision`).
+    /// `sdot` and `ddot` in BLAS (`sdsdot` with `internal_double_precision`).
     /// Computes the dot product `xᵀy = Σ x_i * y_i` for real scalars.
     /// `x` and `y` must have the same axis and length.
     /// If `internal_double_precision` is `true`, the accumulation is performed in double precision.
+    /// This option is only supported for `f32` scalars (maps to `cblas_sdsdot`).
     pub fn dot(
         comptime Scalar: type,
         comptime Axis: type,
@@ -24,17 +25,41 @@ pub const blas = struct {
         y: NamedArrayConst(Axis, Scalar),
         comptime config: struct { internal_double_precision: bool = false },
     ) Scalar {
-        const cblas_dot = switch (Scalar) {
-            f32 => if (config.internal_double_precision) acc.cblas_sdsdot else acc.cblas_sdot,
-            f64 => if (config.internal_double_precision) acc.cblas_dsdot else acc.cblas_ddot,
-            else => @compileError("dot is incompatible with given Scalar type."),
-        };
-
         const x_blas = Blas1d(Scalar).init(Axis, x);
         const y_blas = Blas1d(Scalar).init(Axis, y);
         assert(x_blas.len == y_blas.len);
 
-        return cblas_dot(x_blas.len, x_blas.ptr, x_blas.inc, y_blas.ptr, y_blas.inc);
+        if (config.internal_double_precision) {
+            // cblas_sdsdot computes the dot product in double precision and returns
+            // `alpha + xᵀy` as a float. We pass alpha = 0 to get the pure dot product.
+            const cblas_dot = switch (Scalar) {
+                f32 => acc.cblas_sdsdot,
+                else => @compileError("internal_double_precision is only supported for f32 scalars."),
+            };
+            return cblas_dot(x_blas.len, 0.0, x_blas.ptr, x_blas.inc, y_blas.ptr, y_blas.inc);
+        } else {
+            const cblas_dot = switch (Scalar) {
+                f32 => acc.cblas_sdot,
+                f64 => acc.cblas_ddot,
+                else => @compileError("dot is incompatible with given Scalar type."),
+            };
+            return cblas_dot(x_blas.len, x_blas.ptr, x_blas.inc, y_blas.ptr, y_blas.inc);
+        }
+    }
+
+    /// `dsdot` in BLAS.
+    /// Computes the dot product `xᵀy = Σ x_i * y_i` with `f32` inputs,
+    /// accumulating and returning the result in `f64` (double precision).
+    pub fn dsdot(
+        comptime Axis: type,
+        x: NamedArrayConst(Axis, f32),
+        y: NamedArrayConst(Axis, f32),
+    ) f64 {
+        const x_blas = Blas1d(f32).init(Axis, x);
+        const y_blas = Blas1d(f32).init(Axis, y);
+        assert(x_blas.len == y_blas.len);
+
+        return acc.cblas_dsdot(x_blas.len, x_blas.ptr, x_blas.inc, y_blas.ptr, y_blas.inc);
     }
 
     /// `cdotu` and `zdotu` in BLAS.
@@ -1276,6 +1301,56 @@ test "dot" {
     );
 }
 
+test "dot internal_double_precision" {
+    const I = enum { i };
+    const T = f32;
+    const Arr = NamedArrayConst(I, T);
+
+    // Use values where double-precision accumulation matters:
+    // large * large + small can lose the small contribution in f32.
+    const x = Arr{
+        .idx = .initContiguous(.{ .i = 3 }),
+        .buf = &[_]T{ 1.0, 2.0, 3.0 },
+    };
+    const y = Arr{
+        .idx = .initContiguous(.{ .i = 3 }),
+        .buf = &[_]T{ 4.0, 5.0, 6.0 },
+    };
+
+    // 1*4 + 2*5 + 3*6 = 4 + 10 + 18 = 32
+    const expected: T = 32.0;
+    const actual = blas.dot(T, I, x, y, .{ .internal_double_precision = true });
+    try std.testing.expectApproxEqAbs(
+        expected,
+        actual,
+        math.floatEpsAt(T, expected),
+    );
+}
+
+test "dsdot" {
+    const I = enum { i };
+    const Arr = NamedArrayConst(I, f32);
+
+    var x = Arr{
+        .idx = .initContiguous(.{ .i = 3 }),
+        .buf = &[_]f32{ 2.0, 3.0, 5.0 },
+    };
+    x.idx = x.idx.stride(.{ .i = -1 });
+    const y = Arr{
+        .idx = .initContiguous(.{ .i = 3 }),
+        .buf = &[_]f32{ 1.0, 10.0, 100.0 },
+    };
+
+    // With reversed x: [5, 3, 2] · [1, 10, 100] = 5 + 30 + 200 = 235
+    const expected: f64 = 235.0;
+    const actual: f64 = blas.dsdot(I, x, y);
+    try std.testing.expectApproxEqAbs(
+        expected,
+        actual,
+        math.floatEpsAt(f64, expected),
+    );
+}
+
 test "dotu" {
     const I = enum { i };
     const T = Complex(f32);
@@ -1974,6 +2049,38 @@ test "gemv real column-major matrix" {
     for (0..2) |i| {
         try std.testing.expectApproxEqAbs(expected[i], y_buf[i], math.floatEpsAt(T, expected[i]));
     }
+}
+
+test "gemv real 1x1 matrix" {
+    const MK = enum { m, k };
+    const M = enum { m };
+    const K = enum { k };
+    const T = f64;
+
+    // A = [[7]] (1x1 matrix)
+    const a_buf = [_]T{7};
+    const A = NamedArrayConst(MK, T){
+        .idx = NamedIndex(MK).initContiguous(.{ .m = 1, .k = 1 }),
+        .buf = &a_buf,
+    };
+
+    const x_buf = [_]T{3};
+    const x = NamedArrayConst(K, T){
+        .idx = NamedIndex(K).initContiguous(.{ .k = 1 }),
+        .buf = &x_buf,
+    };
+
+    // y starts at 10, beta = 2, alpha = 3
+    // y = alpha * A * x + beta * y = 3 * 7 * 3 + 2 * 10 = 63 + 20 = 83
+    var y_buf = [_]T{10};
+    const y = NamedArray(M, T){
+        .idx = NamedIndex(M).initContiguous(.{ .m = 1 }),
+        .buf = &y_buf,
+    };
+
+    blas.gemv(T, MK, K, M, A, x, y, .{ .alpha = 3.0, .beta = 2.0 });
+
+    try std.testing.expectApproxEqAbs(@as(T, 83.0), y_buf[0], math.floatEpsAt(T, 83.0));
 }
 
 test "gemv complex" {

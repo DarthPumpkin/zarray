@@ -2305,6 +2305,60 @@ test "hemv nontrivial scalars and strides" {
     try std.testing.expectEqual(@as(f32, 99), y_buf[1].im);
 }
 
+test "hemv column-major matrix" {
+    const IJ = enum { i, j };
+    const I = enum { i };
+    const J = enum { j };
+    const T = Complex(f64);
+
+    // Hermitian 2x2: [[2, 1-i], [1+i, 3]]
+    // Upper triangle stored (triangle = .j, data where j >= i).
+    // Column-major buffer: col0=[2+0i, sentinel], col1=[1-i, 3+0i]
+    const a_buf = [_]T{
+        .{ .re = 2, .im = 0 },  .{ .re = 99, .im = 99 },
+        .{ .re = 1, .im = -1 }, .{ .re = 3, .im = 0 },
+    };
+    const A = NamedArrayConst(IJ, T){
+        .idx = .{
+            .shape = .{ .i = 2, .j = 2 },
+            .strides = .{ .i = 1, .j = 2 },
+        },
+        .buf = &a_buf,
+    };
+
+    const x_buf = [_]T{
+        .{ .re = 1, .im = 0 },
+        .{ .re = 0, .im = 1 },
+    };
+    const x = NamedArrayConst(J, T){
+        .idx = NamedIndex(J).initContiguous(.{ .j = 2 }),
+        .buf = &x_buf,
+    };
+
+    var y_buf = [_]T{
+        .{ .re = 0, .im = 0 },
+        .{ .re = 0, .im = 0 },
+    };
+    const y = NamedArray(I, T){
+        .idx = NamedIndex(I).initContiguous(.{ .i = 2 }),
+        .buf = &y_buf,
+    };
+
+    // y = A*x:
+    //   y[0] = 2*1 + (1-i)*(i) = 2 + i+1 = 3+i
+    //   y[1] = (1+i)*1 + 3*(i) = 1+i+3i = 1+4i
+    blas.hemv(T, IJ, J, I, .j, A, x, y, .{
+        .alpha = .{ .re = 1, .im = 0 },
+        .beta = .{ .re = 0, .im = 0 },
+    });
+
+    const eps = 1e-10;
+    try std.testing.expectApproxEqAbs(@as(f64, 3), y_buf[0].re, eps);
+    try std.testing.expectApproxEqAbs(@as(f64, 1), y_buf[0].im, eps);
+    try std.testing.expectApproxEqAbs(@as(f64, 1), y_buf[1].re, eps);
+    try std.testing.expectApproxEqAbs(@as(f64, 4), y_buf[1].im, eps);
+}
+
 test "symv upper (triangle = second axis)" {
     const MK = enum { m, k };
     const M = enum { m };
@@ -2441,6 +2495,45 @@ test "symv nontrivial scalars and strides" {
     try std.testing.expectApproxEqAbs(@as(f32, 12.5), y_buf[2], eps);
     // sentinel untouched
     try std.testing.expectEqual(@as(f32, 99.0), y_buf[1]);
+}
+
+test "symv column-major matrix" {
+    const IJ = enum { i, j };
+    const I = enum { i };
+    const J = enum { j };
+    const T = f64;
+
+    // Symmetric 2x2: [[4, 3], [3, 7]]
+    // Upper triangle stored (triangle = .j, data where j >= i).
+    // Column-major buffer: col0=[4, sentinel], col1=[3, 7]
+    const a_buf = [_]T{ 4, 99, 3, 7 };
+    const A = NamedArrayConst(IJ, T){
+        .idx = .{
+            .shape = .{ .i = 2, .j = 2 },
+            .strides = .{ .i = 1, .j = 2 },
+        },
+        .buf = &a_buf,
+    };
+
+    const x_buf = [_]T{ 1, 2 };
+    const x = NamedArrayConst(J, T){
+        .idx = NamedIndex(J).initContiguous(.{ .j = 2 }),
+        .buf = &x_buf,
+    };
+
+    var y_buf = [_]T{ 0, 0 };
+    const y = NamedArray(I, T){
+        .idx = NamedIndex(I).initContiguous(.{ .i = 2 }),
+        .buf = &y_buf,
+    };
+
+    // y = A*x = [4*1+3*2, 3*1+7*2] = [10, 17]
+    blas.symv(T, IJ, J, I, .j, A, x, y, .{ .alpha = 1.0, .beta = 0.0 });
+
+    const expected = [_]T{ 10.0, 17.0 };
+    for (0..2) |i| {
+        try std.testing.expectApproxEqAbs(expected[i], y_buf[i], math.floatEpsAt(T, expected[i]));
+    }
 }
 
 test "trmv real" {
@@ -2605,6 +2698,42 @@ test "trmv nontrivial strides" {
     try std.testing.expectEqual(@as(f32, 99), x_buf[1].im);
 }
 
+test "trmv column-major matrix" {
+    const IJ = enum { i, j };
+    const J = enum { j };
+    const T = f64;
+
+    // Upper triangular 2x2 (triangle = .j, data where j >= i):
+    //   [[2, 3],
+    //    [_, 5]]
+    // Column-major buffer: col0=[2, sentinel], col1=[3, 5]
+    const a_buf = [_]T{ 2, 99, 3, 5 };
+    const A = NamedArrayConst(IJ, T){
+        .idx = .{
+            .shape = .{ .i = 2, .j = 2 },
+            .strides = .{ .i = 1, .j = 2 },
+        },
+        .buf = &a_buf,
+    };
+
+    // x maps to j-axis; x = [1, 2]
+    // x := A * x:
+    //   x[0] = 2*1 + 3*2 = 8
+    //   x[1] = 0*1 + 5*2 = 10
+    var x_buf = [_]T{ 1, 2 };
+    const x = NamedArray(J, T){
+        .idx = NamedIndex(J).initContiguous(.{ .j = 2 }),
+        .buf = &x_buf,
+    };
+
+    blas.trmv(T, IJ, J, .j, .non_unit, A, x);
+
+    const expected = [_]T{ 8.0, 10.0 };
+    for (0..2) |i| {
+        try std.testing.expectApproxEqAbs(expected[i], x_buf[i], math.floatEpsAt(T, expected[i]));
+    }
+}
+
 test "trsv real" {
     const MK = enum { m, k };
     const K = enum { k };
@@ -2761,6 +2890,40 @@ test "trsv nontrivial strides" {
     try std.testing.expectEqual(@as(f32, 99), x_buf[1].im);
 }
 
+test "trsv column-major matrix" {
+    const IJ = enum { i, j };
+    const J = enum { j };
+    const T = f64;
+
+    // Same upper triangular 2x2 as trmv column-major test:
+    //   [[2, 3],
+    //    [_, 5]]
+    // Column-major buffer: col0=[2, sentinel], col1=[3, 5]
+    const a_buf = [_]T{ 2, 99, 3, 5 };
+    const A = NamedArrayConst(IJ, T){
+        .idx = .{
+            .shape = .{ .i = 2, .j = 2 },
+            .strides = .{ .i = 1, .j = 2 },
+        },
+        .buf = &a_buf,
+    };
+
+    // x_init = A * [1,2] = [8, 10]  (from trmv column-major test)
+    // After trsv: x should be [1, 2].
+    var x_buf = [_]T{ 8, 10 };
+    const x = NamedArray(J, T){
+        .idx = NamedIndex(J).initContiguous(.{ .j = 2 }),
+        .buf = &x_buf,
+    };
+
+    blas.trsv(T, IJ, J, .j, .non_unit, A, x);
+
+    const expected = [_]T{ 1.0, 2.0 };
+    for (0..2) |i| {
+        try std.testing.expectApproxEqAbs(expected[i], x_buf[i], math.floatEpsAt(T, expected[i]));
+    }
+}
+
 test "ger real" {
     const MK = enum { m, k };
     const M = enum { m };
@@ -2843,6 +3006,45 @@ test "ger real nontrivial strides" {
     try std.testing.expectApproxEqAbs(@as(f32, 10), a_buf[3], eps);
 }
 
+test "ger column-major matrix" {
+    const IJ = enum { i, j };
+    const I = enum { i };
+    const J = enum { j };
+    const T = f64;
+
+    // A = zeros(2, 3), column-major
+    // Column-major buffer (2 rows, 3 cols): col0=[0,0], col1=[0,0], col2=[0,0]
+    var a_buf = [_]T{ 0, 0, 0, 0, 0, 0 };
+    const A = NamedArray(IJ, T){
+        .idx = .{
+            .shape = .{ .i = 2, .j = 3 },
+            .strides = .{ .i = 1, .j = 2 },
+        },
+        .buf = &a_buf,
+    };
+
+    const x_buf = [_]T{ 1, 2 };
+    const x = NamedArrayConst(I, T){
+        .idx = NamedIndex(I).initContiguous(.{ .i = 2 }),
+        .buf = &x_buf,
+    };
+
+    const y_buf = [_]T{ 3, 4, 5 };
+    const y = NamedArrayConst(J, T){
+        .idx = NamedIndex(J).initContiguous(.{ .j = 3 }),
+        .buf = &y_buf,
+    };
+
+    // A := x * y^T = [[3,4,5],[6,8,10]]
+    // Column-major buffer: col0=[3,6], col1=[4,8], col2=[5,10]
+    blas.ger(T, IJ, I, J, A, x, y, .{});
+
+    const expected = [_]T{ 3, 6, 4, 8, 5, 10 };
+    for (0..6) |i| {
+        try std.testing.expectApproxEqAbs(expected[i], a_buf[i], math.floatEpsAt(T, expected[i]));
+    }
+}
+
 test "geru complex" {
     const MK = enum { m, k };
     const M = enum { m };
@@ -2893,6 +3095,62 @@ test "geru complex" {
     };
     const eps = 1e-10;
     for (0..6) |i| {
+        try std.testing.expectApproxEqAbs(expected[i].re, a_buf[i].re, eps);
+        try std.testing.expectApproxEqAbs(expected[i].im, a_buf[i].im, eps);
+    }
+}
+
+test "geru column-major matrix" {
+    const IJ = enum { i, j };
+    const I = enum { i };
+    const J = enum { j };
+    const T = Complex(f64);
+
+    // A = zeros(2, 2), column-major
+    var a_buf = [_]T{
+        .{ .re = 0, .im = 0 }, .{ .re = 0, .im = 0 },
+        .{ .re = 0, .im = 0 }, .{ .re = 0, .im = 0 },
+    };
+    const A = NamedArray(IJ, T){
+        .idx = .{
+            .shape = .{ .i = 2, .j = 2 },
+            .strides = .{ .i = 1, .j = 2 },
+        },
+        .buf = &a_buf,
+    };
+
+    const x_buf = [_]T{
+        .{ .re = 1, .im = 1 },
+        .{ .re = 2, .im = 0 },
+    };
+    const x = NamedArrayConst(I, T){
+        .idx = NamedIndex(I).initContiguous(.{ .i = 2 }),
+        .buf = &x_buf,
+    };
+
+    const y_buf = [_]T{
+        .{ .re = 1, .im = 0 },
+        .{ .re = 0, .im = 1 },
+    };
+    const y = NamedArrayConst(J, T){
+        .idx = NamedIndex(J).initContiguous(.{ .j = 2 }),
+        .buf = &y_buf,
+    };
+
+    // A := x * y^T (unconjugated):
+    //   (0,0) = (1+i)*1   = 1+i
+    //   (1,0) = 2*1       = 2
+    //   (0,1) = (1+i)*i   = -1+i
+    //   (1,1) = 2*i       = 2i
+    // Column-major buffer: col0=[1+i, 2], col1=[-1+i, 2i]
+    blas.geru(T, IJ, I, J, A, x, y, .{});
+
+    const expected = [_]T{
+        .{ .re = 1, .im = 1 },  .{ .re = 2, .im = 0 },
+        .{ .re = -1, .im = 1 }, .{ .re = 0, .im = 2 },
+    };
+    const eps = 1e-10;
+    for (0..4) |i| {
         try std.testing.expectApproxEqAbs(expected[i].re, a_buf[i].re, eps);
         try std.testing.expectApproxEqAbs(expected[i].im, a_buf[i].im, eps);
     }
@@ -3021,6 +3279,63 @@ test "gerc nontrivial strides" {
     try std.testing.expectApproxEqAbs(@as(f32, 0), a_buf[3].im, eps);
 }
 
+test "gerc column-major matrix" {
+    const IJ = enum { i, j };
+    const I = enum { i };
+    const J = enum { j };
+    const T = Complex(f64);
+
+    // A = zeros(2, 2), column-major
+    var a_buf = [_]T{
+        .{ .re = 0, .im = 0 }, .{ .re = 0, .im = 0 },
+        .{ .re = 0, .im = 0 }, .{ .re = 0, .im = 0 },
+    };
+    const A = NamedArray(IJ, T){
+        .idx = .{
+            .shape = .{ .i = 2, .j = 2 },
+            .strides = .{ .i = 1, .j = 2 },
+        },
+        .buf = &a_buf,
+    };
+
+    const x_buf = [_]T{
+        .{ .re = 1, .im = 1 },
+        .{ .re = 2, .im = 0 },
+    };
+    const x = NamedArrayConst(I, T){
+        .idx = NamedIndex(I).initContiguous(.{ .i = 2 }),
+        .buf = &x_buf,
+    };
+
+    const y_buf = [_]T{
+        .{ .re = 1, .im = 0 },
+        .{ .re = 0, .im = 1 },
+    };
+    const y = NamedArrayConst(J, T){
+        .idx = NamedIndex(J).initContiguous(.{ .j = 2 }),
+        .buf = &y_buf,
+    };
+
+    // A := x * y^H = x * conj(y)^T:
+    //   conj(y) = [1, -i]
+    //   (0,0) = (1+i)*1   = 1+i
+    //   (1,0) = 2*1       = 2
+    //   (0,1) = (1+i)*(-i) = -i-i^2 = 1-i
+    //   (1,1) = 2*(-i)    = -2i
+    // Column-major buffer: col0=[1+i, 2], col1=[1-i, -2i]
+    blas.gerc(T, IJ, I, J, A, x, y, .{});
+
+    const expected = [_]T{
+        .{ .re = 1, .im = 1 },  .{ .re = 2, .im = 0 },
+        .{ .re = 1, .im = -1 }, .{ .re = 0, .im = -2 },
+    };
+    const eps = 1e-10;
+    for (0..4) |i| {
+        try std.testing.expectApproxEqAbs(expected[i].re, a_buf[i].re, eps);
+        try std.testing.expectApproxEqAbs(expected[i].im, a_buf[i].im, eps);
+    }
+}
+
 test "syr real (triangle = second axis)" {
     const MK = enum { m, k };
     const K = enum { k };
@@ -3105,6 +3420,41 @@ test "syr real nontrivial strides" {
     try std.testing.expectEqual(@as(f32, 99), a_buf[1]); // sentinel untouched
     try std.testing.expectApproxEqAbs(@as(f32, 5), a_buf[2], eps);
     try std.testing.expectApproxEqAbs(@as(f32, 9), a_buf[3], eps);
+}
+
+test "syr column-major matrix" {
+    const IJ = enum { i, j };
+    const J = enum { j };
+    const T = f64;
+
+    // Symmetric 2x2, lower triangle stored (triangle = .i, data where i >= j).
+    // A_init = [[1, _], [2, 3]]
+    // Column-major buffer: col0=[1, 2], col1=[sentinel, 3]
+    var a_buf = [_]T{ 1, 2, 99, 3 };
+    const A = NamedArray(IJ, T){
+        .idx = .{
+            .shape = .{ .i = 2, .j = 2 },
+            .strides = .{ .i = 1, .j = 2 },
+        },
+        .buf = &a_buf,
+    };
+
+    const x_buf = [_]T{ 1, 2 };
+    const x = NamedArrayConst(J, T){
+        .idx = NamedIndex(J).initContiguous(.{ .j = 2 }),
+        .buf = &x_buf,
+    };
+
+    // x*x^T = [[1, 2], [2, 4]]
+    // A_new lower = [[1+1, _], [2+2, 3+4]] = [[2, _], [4, 7]]
+    // Column-major buffer: [2, 4, sentinel, 7]
+    blas.syr(T, IJ, J, .i, A, x, .{});
+
+    const eps = 1e-10;
+    try std.testing.expectApproxEqAbs(@as(T, 2), a_buf[0], eps);
+    try std.testing.expectApproxEqAbs(@as(T, 4), a_buf[1], eps);
+    try std.testing.expectEqual(@as(T, 99), a_buf[2]); // sentinel untouched
+    try std.testing.expectApproxEqAbs(@as(T, 7), a_buf[3], eps);
 }
 
 test "her complex (triangle = second axis)" {
@@ -3205,6 +3555,55 @@ test "her complex nontrivial strides" {
     try std.testing.expectApproxEqAbs(@as(f32, -3), a_buf[2].im, eps);
     try std.testing.expectApproxEqAbs(@as(f32, 7), a_buf[3].re, eps);
     try std.testing.expectApproxEqAbs(@as(f32, 0), a_buf[3].im, eps);
+}
+
+test "her column-major matrix" {
+    const IJ = enum { i, j };
+    const J = enum { j };
+    const T = Complex(f64);
+
+    // Hermitian 2x2, lower triangle stored (triangle = .i, data where i >= j).
+    // A_init = [[3+0i, _], [1+i, 5+0i]]
+    // Column-major buffer: col0=[3+0i, 1+i], col1=[sentinel, 5+0i]
+    var a_buf = [_]T{
+        .{ .re = 3, .im = 0 },   .{ .re = 1, .im = 1 },
+        .{ .re = 99, .im = 99 }, .{ .re = 5, .im = 0 },
+    };
+    const A = NamedArray(IJ, T){
+        .idx = .{
+            .shape = .{ .i = 2, .j = 2 },
+            .strides = .{ .i = 1, .j = 2 },
+        },
+        .buf = &a_buf,
+    };
+
+    const x_buf = [_]T{
+        .{ .re = 1, .im = 0 },
+        .{ .re = 1, .im = 1 },
+    };
+    const x = NamedArrayConst(J, T){
+        .idx = NamedIndex(J).initContiguous(.{ .j = 2 }),
+        .buf = &x_buf,
+    };
+
+    // alpha = 1 (real, default)
+    // x*x^H = [[|1|^2, 1*conj(1+i)], [(1+i)*conj(1), |1+i|^2]]
+    //       = [[1, 1-i], [1+i, 2]]
+    // Lower part: [[1, _], [1+i, 2]]
+    // A_new lower = [[3+1, _], [1+i+1+i, 5+2]] = [[4+0i, _], [2+2i, 7+0i]]
+    // Column-major buffer: [4+0i, 2+2i, sentinel, 7+0i]
+    blas.her(f64, IJ, J, .i, A, x, .{});
+
+    const eps = 1e-10;
+    try std.testing.expectApproxEqAbs(@as(f64, 4), a_buf[0].re, eps);
+    try std.testing.expectApproxEqAbs(@as(f64, 0), a_buf[0].im, eps);
+    try std.testing.expectApproxEqAbs(@as(f64, 2), a_buf[1].re, eps);
+    try std.testing.expectApproxEqAbs(@as(f64, 2), a_buf[1].im, eps);
+    // sentinel untouched
+    try std.testing.expectEqual(@as(f64, 99), a_buf[2].re);
+    try std.testing.expectEqual(@as(f64, 99), a_buf[2].im);
+    try std.testing.expectApproxEqAbs(@as(f64, 7), a_buf[3].re, eps);
+    try std.testing.expectApproxEqAbs(@as(f64, 0), a_buf[3].im, eps);
 }
 
 test "syr2 real (triangle = second axis)" {
@@ -3309,6 +3708,51 @@ test "syr2 real nontrivial strides" {
     try std.testing.expectEqual(@as(f32, 99), a_buf[1]); // sentinel untouched
     try std.testing.expectApproxEqAbs(@as(f32, 23), a_buf[2], eps);
     try std.testing.expectApproxEqAbs(@as(f32, 23), a_buf[3], eps);
+}
+
+test "syr2 column-major matrix" {
+    const IJ = enum { i, j };
+    const I = enum { i };
+    const J = enum { j };
+    const T = f64;
+
+    // Symmetric 2x2, lower triangle stored (triangle = .i, data where i >= j).
+    // A_init = [[1, _], [2, 5]]
+    // Column-major buffer: col0=[1, 2], col1=[sentinel, 5]
+    var a_buf = [_]T{ 1, 2, 99, 5 };
+    const A = NamedArray(IJ, T){
+        .idx = .{
+            .shape = .{ .i = 2, .j = 2 },
+            .strides = .{ .i = 1, .j = 2 },
+        },
+        .buf = &a_buf,
+    };
+
+    const x_buf = [_]T{ 1, 2 };
+    const x = NamedArrayConst(I, T){
+        .idx = NamedIndex(I).initContiguous(.{ .i = 2 }),
+        .buf = &x_buf,
+    };
+
+    const y_buf = [_]T{ 3, 4 };
+    const y = NamedArrayConst(J, T){
+        .idx = NamedIndex(J).initContiguous(.{ .j = 2 }),
+        .buf = &y_buf,
+    };
+
+    // alpha = 1 (default)
+    // x*y^T = [[3,4],[6,8]], y*x^T = [[3,6],[4,8]]
+    // x*y^T + y*x^T = [[6,10],[10,16]]
+    // Lower part: [[6,_],[10,16]]
+    // A_new lower = [[1+6,_],[2+10,5+16]] = [[7,_],[12,21]]
+    // Column-major buffer: [7, 12, sentinel, 21]
+    blas.syr2(T, IJ, I, J, .i, A, x, y, .{});
+
+    const eps = 1e-10;
+    try std.testing.expectApproxEqAbs(@as(T, 7), a_buf[0], eps);
+    try std.testing.expectApproxEqAbs(@as(T, 12), a_buf[1], eps);
+    try std.testing.expectEqual(@as(T, 99), a_buf[2]); // sentinel untouched
+    try std.testing.expectApproxEqAbs(@as(T, 21), a_buf[3], eps);
 }
 
 test "her2 complex (triangle = second axis)" {
@@ -3468,6 +3912,79 @@ test "her2 complex nontrivial strides" {
     try std.testing.expectApproxEqAbs(@as(f32, 1), a_buf[2].im, eps);
     try std.testing.expectApproxEqAbs(@as(f32, 9), a_buf[3].re, eps);
     try std.testing.expectApproxEqAbs(@as(f32, 0), a_buf[3].im, eps);
+}
+
+test "her2 column-major matrix" {
+    const IJ = enum { i, j };
+    const I = enum { i };
+    const J = enum { j };
+    const T = Complex(f64);
+
+    // Hermitian 2x2, lower triangle stored (triangle = .i, data where i >= j).
+    // A_init = [[2+0i, _], [1-i, 4+0i]]
+    // Column-major buffer: col0=[2+0i, 1-i], col1=[sentinel, 4+0i]
+    var a_buf = [_]T{
+        .{ .re = 2, .im = 0 },   .{ .re = 1, .im = -1 },
+        .{ .re = 99, .im = 99 }, .{ .re = 4, .im = 0 },
+    };
+    const A = NamedArray(IJ, T){
+        .idx = .{
+            .shape = .{ .i = 2, .j = 2 },
+            .strides = .{ .i = 1, .j = 2 },
+        },
+        .buf = &a_buf,
+    };
+
+    const x_buf = [_]T{
+        .{ .re = 1, .im = 0 },
+        .{ .re = 0, .im = 1 },
+    };
+    const x = NamedArrayConst(I, T){
+        .idx = NamedIndex(I).initContiguous(.{ .i = 2 }),
+        .buf = &x_buf,
+    };
+
+    const y_buf = [_]T{
+        .{ .re = 1, .im = 0 },
+        .{ .re = 1, .im = 1 },
+    };
+    const y = NamedArrayConst(J, T){
+        .idx = NamedIndex(J).initContiguous(.{ .j = 2 }),
+        .buf = &y_buf,
+    };
+
+    // alpha = 1+0i (default)
+    // x = [1, i], y = [1, 1+i]
+    // x*y^H:
+    //   (0,0) = 1*conj(1) = 1
+    //   (1,0) = i*conj(1) = i
+    //   (0,1) = 1*conj(1+i) = 1-i
+    //   (1,1) = i*conj(1+i) = i*(1-i) = i+1 = 1+i
+    // conj(alpha)*y*x^H = y*x^H:
+    //   (0,0) = 1*conj(1) = 1
+    //   (1,0) = (1+i)*conj(1) = 1+i
+    //   (0,1) = 1*conj(i) = -i
+    //   (1,1) = (1+i)*conj(i) = (1+i)*(-i) = -i+1 = 1-i
+    // x*y^H + y*x^H:
+    //   (0,0) = 1+1 = 2       (real, as expected for Hermitian diagonal)
+    //   (1,0) = i + 1+i = 1+2i
+    //   (0,1) = 1-i + (-i) = 1-2i  (conjugate of (1,0) ✓)
+    //   (1,1) = 1+i + 1-i = 2      (real ✓)
+    // Lower part: [[2, _], [1+2i, 2]]
+    // A_new lower = [[2+2, _], [1-i+1+2i, 4+2]] = [[4+0i, _], [2+i, 6+0i]]
+    // Column-major buffer: [4+0i, 2+i, sentinel, 6+0i]
+    blas.her2(T, IJ, I, J, .i, A, x, y, .{});
+
+    const eps = 1e-10;
+    try std.testing.expectApproxEqAbs(@as(f64, 4), a_buf[0].re, eps);
+    try std.testing.expectApproxEqAbs(@as(f64, 0), a_buf[0].im, eps);
+    try std.testing.expectApproxEqAbs(@as(f64, 2), a_buf[1].re, eps);
+    try std.testing.expectApproxEqAbs(@as(f64, 1), a_buf[1].im, eps);
+    // sentinel untouched
+    try std.testing.expectEqual(@as(f64, 99), a_buf[2].re);
+    try std.testing.expectEqual(@as(f64, 99), a_buf[2].im);
+    try std.testing.expectApproxEqAbs(@as(f64, 6), a_buf[3].re, eps);
+    try std.testing.expectApproxEqAbs(@as(f64, 0), a_buf[3].im, eps);
 }
 
 // TODO: Figure this out. See blas.rot_complex above.

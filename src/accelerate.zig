@@ -197,7 +197,7 @@ pub const blas = struct {
         const y_blas = Blas1dMut(Scalar).init(Axis, y);
         assert(x_blas.len == y_blas.len);
 
-        const alpha_blas = if (Scalar == Complex(f32) or Scalar == Complex(f64)) &alpha else alpha;
+        const alpha_blas = if (comptime isComplex(Scalar)) &alpha else alpha;
         f(x_blas.len, alpha_blas, x_blas.ptr, x_blas.inc, y_blas.ptr, y_blas.inc);
     }
 
@@ -422,18 +422,7 @@ pub const blas = struct {
         scalars: struct { alpha: Scalar = one(Scalar), beta: Scalar = one(Scalar) },
     ) void {
         const a_names = comptime meta.fieldNames(AxisA);
-        const x_axis_idx = comptime blk: {
-            assert(meta.fields(AxisA).len == 2);
-            assert(meta.fields(AxisX).len == 1);
-            assert(meta.fields(AxisY).len == 1);
-            const x_name = meta.fields(AxisX)[0].name;
-            const y_name = meta.fields(AxisY)[0].name;
-            // x and y must match different axes of A
-            assert(!std.mem.eql(u8, x_name, y_name));
-            assert(std.mem.eql(u8, a_names[0], x_name) or std.mem.eql(u8, a_names[1], x_name));
-            assert(std.mem.eql(u8, a_names[0], y_name) or std.mem.eql(u8, a_names[1], y_name));
-            break :blk if (std.mem.eql(u8, a_names[0], x_name)) @as(usize, 0) else @as(usize, 1);
-        };
+        const x_axis_idx = comptime matchingAxisIdx(AxisA, AxisX, AxisY);
         const f = switch (Scalar) {
             f32 => acc.cblas_sgemv,
             f64 => acc.cblas_dgemv,
@@ -441,7 +430,6 @@ pub const blas = struct {
             Complex(f64) => acc.cblas_zgemv,
             else => @compileError("gemv is incompatible with given Scalar type."),
         };
-        const AlphaType = if (Scalar == Complex(f32) or Scalar == Complex(f64)) *const Scalar else Scalar;
 
         _ = named_index.resolveDimensions(.{ A.idx.shape, x.idx.shape, y.idx.shape }) catch
             @panic("gemv: dimension mismatch");
@@ -454,8 +442,8 @@ pub const blas = struct {
         const A_blas = Blas2d(Scalar).init(A_ij);
         const x_blas = Blas1d(Scalar).init(AxisX, x);
         const y_blas = Blas1dMut(Scalar).init(AxisY, y);
-        const alpha_blas: AlphaType = if (Scalar == Complex(f32) or Scalar == Complex(f64)) &scalars.alpha else scalars.alpha;
-        const beta_blas: AlphaType = if (Scalar == Complex(f32) or Scalar == Complex(f64)) &scalars.beta else scalars.beta;
+        const alpha_blas = if (comptime isComplex(Scalar)) &scalars.alpha else scalars.alpha;
+        const beta_blas = if (comptime isComplex(Scalar)) &scalars.beta else scalars.beta;
         f(
             A_blas.layout,
             acc.CblasNoTrans,
@@ -489,16 +477,7 @@ pub const blas = struct {
         scalars: struct { alpha: Scalar = one(Scalar), beta: Scalar = one(Scalar) },
     ) void {
         const a_names = comptime meta.fieldNames(AxisA);
-        comptime {
-            assert(meta.fields(AxisA).len == 2);
-            assert(meta.fields(AxisX).len == 1);
-            assert(meta.fields(AxisY).len == 1);
-            const x_name = meta.fields(AxisX)[0].name;
-            const y_name = meta.fields(AxisY)[0].name;
-            assert(!std.mem.eql(u8, x_name, y_name));
-            assert(std.mem.eql(u8, a_names[0], x_name) or std.mem.eql(u8, a_names[1], x_name));
-            assert(std.mem.eql(u8, a_names[0], y_name) or std.mem.eql(u8, a_names[1], y_name));
-        }
+        _ = comptime matchingAxisIdx(AxisA, AxisX, AxisY);
         const f = switch (Scalar) {
             Complex(f32) => acc.cblas_chemv,
             Complex(f64) => acc.cblas_zhemv,
@@ -519,17 +498,9 @@ pub const blas = struct {
         const x_blas = Blas1d(Scalar).init(AxisX, x);
         const y_blas = Blas1dMut(Scalar).init(AxisY, y);
 
-        // first axis → rows (i), second axis → cols (j)
-        // triangle == second axis → data at j >= i → Upper
-        // triangle == first axis  → data at i >= j → Lower
-        const uplo_blas: acc.CBLAS_UPLO = if (@intFromEnum(triangle) == 1)
-            @intCast(acc.CblasUpper)
-        else
-            @intCast(acc.CblasLower);
-
         f(
             A_blas.layout,
-            uplo_blas,
+            uploBlas(AxisA, triangle),
             A_blas.rows, // N
             &scalars.alpha,
             A_blas.ptr,
@@ -559,16 +530,7 @@ pub const blas = struct {
         scalars: struct { alpha: Scalar = one(Scalar), beta: Scalar = one(Scalar) },
     ) void {
         const a_names = comptime meta.fieldNames(AxisA);
-        comptime {
-            assert(meta.fields(AxisA).len == 2);
-            assert(meta.fields(AxisX).len == 1);
-            assert(meta.fields(AxisY).len == 1);
-            const x_name = meta.fields(AxisX)[0].name;
-            const y_name = meta.fields(AxisY)[0].name;
-            assert(!std.mem.eql(u8, x_name, y_name));
-            assert(std.mem.eql(u8, a_names[0], x_name) or std.mem.eql(u8, a_names[1], x_name));
-            assert(std.mem.eql(u8, a_names[0], y_name) or std.mem.eql(u8, a_names[1], y_name));
-        }
+        _ = comptime matchingAxisIdx(AxisA, AxisX, AxisY);
         const f = switch (Scalar) {
             f32 => acc.cblas_ssymv,
             f64 => acc.cblas_dsymv,
@@ -589,17 +551,9 @@ pub const blas = struct {
         const x_blas = Blas1d(Scalar).init(AxisX, x);
         const y_blas = Blas1dMut(Scalar).init(AxisY, y);
 
-        // first axis → rows (i), second axis → cols (j)
-        // triangle == second axis → data at j >= i → Upper
-        // triangle == first axis  → data at i >= j → Lower
-        const uplo_blas: acc.CBLAS_UPLO = if (@intFromEnum(triangle) == 1)
-            @intCast(acc.CblasUpper)
-        else
-            @intCast(acc.CblasLower);
-
         f(
             A_blas.layout,
-            uplo_blas,
+            uploBlas(AxisA, triangle),
             A_blas.rows, // N
             scalars.alpha,
             A_blas.ptr,
@@ -626,12 +580,7 @@ pub const blas = struct {
         x: NamedArray(AxisX, Scalar),
     ) void {
         const a_names = comptime meta.fieldNames(AxisA);
-        comptime {
-            assert(meta.fields(AxisA).len == 2);
-            assert(meta.fields(AxisX).len == 1);
-            const x_name = meta.fields(AxisX)[0].name;
-            assert(std.mem.eql(u8, a_names[0], x_name) or std.mem.eql(u8, a_names[1], x_name));
-        }
+        comptime assertMatchingAxis(AxisA, AxisX);
         const f = switch (Scalar) {
             f32 => acc.cblas_strmv,
             f64 => acc.cblas_dtrmv,
@@ -653,14 +602,6 @@ pub const blas = struct {
 
         const x_blas = Blas1dMut(Scalar).init(AxisX, x);
 
-        // first axis → rows (i), second axis → cols (j)
-        // triangle == second axis → data at j >= i → Upper
-        // triangle == first axis  → data at i >= j → Lower
-        const uplo_blas: acc.CBLAS_UPLO = if (@intFromEnum(triangle) == 1)
-            @intCast(acc.CblasUpper)
-        else
-            @intCast(acc.CblasLower);
-
         const diag_blas: acc.CBLAS_DIAG = switch (diag) {
             .unit => @intCast(acc.CblasUnit),
             .non_unit => @intCast(acc.CblasNonUnit),
@@ -668,7 +609,7 @@ pub const blas = struct {
 
         f(
             A_blas.layout,
-            uplo_blas,
+            uploBlas(AxisA, triangle),
             @intCast(acc.CblasNoTrans),
             diag_blas,
             A_blas.rows, // N
@@ -694,12 +635,7 @@ pub const blas = struct {
         x: NamedArray(AxisX, Scalar),
     ) void {
         const a_names = comptime meta.fieldNames(AxisA);
-        comptime {
-            assert(meta.fields(AxisA).len == 2);
-            assert(meta.fields(AxisX).len == 1);
-            const x_name = meta.fields(AxisX)[0].name;
-            assert(std.mem.eql(u8, a_names[0], x_name) or std.mem.eql(u8, a_names[1], x_name));
-        }
+        comptime assertMatchingAxis(AxisA, AxisX);
         const f = switch (Scalar) {
             f32 => acc.cblas_strsv,
             f64 => acc.cblas_dtrsv,
@@ -721,14 +657,6 @@ pub const blas = struct {
 
         const x_blas = Blas1dMut(Scalar).init(AxisX, x);
 
-        // first axis → rows (i), second axis → cols (j)
-        // triangle == second axis → data at j >= i → Upper
-        // triangle == first axis  → data at i >= j → Lower
-        const uplo_blas: acc.CBLAS_UPLO = if (@intFromEnum(triangle) == 1)
-            @intCast(acc.CblasUpper)
-        else
-            @intCast(acc.CblasLower);
-
         const diag_blas: acc.CBLAS_DIAG = switch (diag) {
             .unit => @intCast(acc.CblasUnit),
             .non_unit => @intCast(acc.CblasNonUnit),
@@ -736,7 +664,7 @@ pub const blas = struct {
 
         f(
             A_blas.layout,
-            uplo_blas,
+            uploBlas(AxisA, triangle),
             @intCast(acc.CblasNoTrans),
             diag_blas,
             A_blas.rows, // N
@@ -762,17 +690,7 @@ pub const blas = struct {
         scalars: struct { alpha: Scalar = one(Scalar) },
     ) void {
         const a_names = comptime meta.fieldNames(AxisA);
-        const x_axis_idx = comptime blk: {
-            assert(meta.fields(AxisA).len == 2);
-            assert(meta.fields(AxisX).len == 1);
-            assert(meta.fields(AxisY).len == 1);
-            const x_name = meta.fields(AxisX)[0].name;
-            const y_name = meta.fields(AxisY)[0].name;
-            assert(!std.mem.eql(u8, x_name, y_name));
-            assert(std.mem.eql(u8, a_names[0], x_name) or std.mem.eql(u8, a_names[1], x_name));
-            assert(std.mem.eql(u8, a_names[0], y_name) or std.mem.eql(u8, a_names[1], y_name));
-            break :blk if (std.mem.eql(u8, a_names[0], x_name)) @as(usize, 0) else @as(usize, 1);
-        };
+        const x_axis_idx = comptime matchingAxisIdx(AxisA, AxisX, AxisY);
         const f = switch (Scalar) {
             f32 => acc.cblas_sger,
             f64 => acc.cblas_dger,
@@ -819,48 +737,7 @@ pub const blas = struct {
         y: NamedArrayConst(AxisY, Scalar),
         scalars: struct { alpha: Scalar = one(Scalar) },
     ) void {
-        const a_names = comptime meta.fieldNames(AxisA);
-        const x_axis_idx = comptime blk: {
-            assert(meta.fields(AxisA).len == 2);
-            assert(meta.fields(AxisX).len == 1);
-            assert(meta.fields(AxisY).len == 1);
-            const x_name = meta.fields(AxisX)[0].name;
-            const y_name = meta.fields(AxisY)[0].name;
-            assert(!std.mem.eql(u8, x_name, y_name));
-            assert(std.mem.eql(u8, a_names[0], x_name) or std.mem.eql(u8, a_names[1], x_name));
-            assert(std.mem.eql(u8, a_names[0], y_name) or std.mem.eql(u8, a_names[1], y_name));
-            break :blk if (std.mem.eql(u8, a_names[0], x_name)) @as(usize, 0) else @as(usize, 1);
-        };
-        const f = switch (Scalar) {
-            Complex(f32) => acc.cblas_cgeru,
-            Complex(f64) => acc.cblas_zgeru,
-            else => @compileError("geru requires Complex(f32) or Complex(f64)."),
-        };
-
-        _ = named_index.resolveDimensions(.{ A.idx.shape, x.idx.shape, y.idx.shape }) catch
-            @panic("geru: dimension mismatch");
-
-        const a_ij_idx = A.idx.rename(IJ, &.{
-            .{ .old = a_names[x_axis_idx], .new = "i" },
-            .{ .old = a_names[1 - x_axis_idx], .new = "j" },
-        });
-        const A_ij: NamedArray(IJ, Scalar) = .{ .idx = a_ij_idx, .buf = A.buf };
-        const A_blas = Blas2dMut(Scalar).init(A_ij);
-        const x_blas = Blas1d(Scalar).init(AxisX, x);
-        const y_blas = Blas1d(Scalar).init(AxisY, y);
-
-        f(
-            A_blas.layout,
-            A_blas.rows, // M
-            A_blas.cols, // N
-            &scalars.alpha,
-            x_blas.ptr,
-            x_blas.inc,
-            y_blas.ptr,
-            y_blas.inc,
-            A_blas.ptr,
-            A_blas.leading,
-        );
+        geruc(Scalar, AxisA, AxisX, AxisY, false, A, x, y, scalars.alpha);
     }
 
     /// `cgerc` and `zgerc` in BLAS.
@@ -877,26 +754,30 @@ pub const blas = struct {
         y: NamedArrayConst(AxisY, Scalar),
         scalars: struct { alpha: Scalar = one(Scalar) },
     ) void {
+        geruc(Scalar, AxisA, AxisX, AxisY, true, A, x, y, scalars.alpha);
+    }
+
+    fn geruc(
+        comptime Scalar: type,
+        comptime AxisA: type,
+        comptime AxisX: type,
+        comptime AxisY: type,
+        comptime conjugated: bool,
+        A: NamedArray(AxisA, Scalar),
+        x: NamedArrayConst(AxisX, Scalar),
+        y: NamedArrayConst(AxisY, Scalar),
+        alpha: Scalar,
+    ) void {
         const a_names = comptime meta.fieldNames(AxisA);
-        const x_axis_idx = comptime blk: {
-            assert(meta.fields(AxisA).len == 2);
-            assert(meta.fields(AxisX).len == 1);
-            assert(meta.fields(AxisY).len == 1);
-            const x_name = meta.fields(AxisX)[0].name;
-            const y_name = meta.fields(AxisY)[0].name;
-            assert(!std.mem.eql(u8, x_name, y_name));
-            assert(std.mem.eql(u8, a_names[0], x_name) or std.mem.eql(u8, a_names[1], x_name));
-            assert(std.mem.eql(u8, a_names[0], y_name) or std.mem.eql(u8, a_names[1], y_name));
-            break :blk if (std.mem.eql(u8, a_names[0], x_name)) @as(usize, 0) else @as(usize, 1);
-        };
+        const x_axis_idx = comptime matchingAxisIdx(AxisA, AxisX, AxisY);
         const f = switch (Scalar) {
-            Complex(f32) => acc.cblas_cgerc,
-            Complex(f64) => acc.cblas_zgerc,
-            else => @compileError("gerc requires Complex(f32) or Complex(f64)."),
+            Complex(f32) => if (conjugated) acc.cblas_cgerc else acc.cblas_cgeru,
+            Complex(f64) => if (conjugated) acc.cblas_zgerc else acc.cblas_zgeru,
+            else => @compileError("geru/gerc requires Complex(f32) or Complex(f64)."),
         };
 
         _ = named_index.resolveDimensions(.{ A.idx.shape, x.idx.shape, y.idx.shape }) catch
-            @panic("gerc: dimension mismatch");
+            @panic(if (conjugated) "gerc: dimension mismatch" else "geru: dimension mismatch");
 
         const a_ij_idx = A.idx.rename(IJ, &.{
             .{ .old = a_names[x_axis_idx], .new = "i" },
@@ -911,7 +792,7 @@ pub const blas = struct {
             A_blas.layout,
             A_blas.rows, // M
             A_blas.cols, // N
-            &scalars.alpha,
+            &alpha,
             x_blas.ptr,
             x_blas.inc,
             y_blas.ptr,
@@ -936,12 +817,7 @@ pub const blas = struct {
         scalars: struct { alpha: Scalar = one(Scalar) },
     ) void {
         const a_names = comptime meta.fieldNames(AxisA);
-        comptime {
-            assert(meta.fields(AxisA).len == 2);
-            assert(meta.fields(AxisX).len == 1);
-            const x_name = meta.fields(AxisX)[0].name;
-            assert(std.mem.eql(u8, a_names[0], x_name) or std.mem.eql(u8, a_names[1], x_name));
-        }
+        comptime assertMatchingAxis(AxisA, AxisX);
         const f = switch (Scalar) {
             f32 => acc.cblas_ssyr,
             f64 => acc.cblas_dsyr,
@@ -961,17 +837,9 @@ pub const blas = struct {
 
         const x_blas = Blas1d(Scalar).init(AxisX, x);
 
-        // first axis → rows (i), second axis → cols (j)
-        // triangle == second axis → data at j >= i → Upper
-        // triangle == first axis  → data at i >= j → Lower
-        const uplo_blas: acc.CBLAS_UPLO = if (@intFromEnum(triangle) == 1)
-            @intCast(acc.CblasUpper)
-        else
-            @intCast(acc.CblasLower);
-
         f(
             A_blas.layout,
-            uplo_blas,
+            uploBlas(AxisA, triangle),
             A_blas.rows, // N
             scalars.alpha,
             x_blas.ptr,
@@ -997,12 +865,7 @@ pub const blas = struct {
     ) void {
         const Scalar = Complex(RealScalar);
         const a_names = comptime meta.fieldNames(AxisA);
-        comptime {
-            assert(meta.fields(AxisA).len == 2);
-            assert(meta.fields(AxisX).len == 1);
-            const x_name = meta.fields(AxisX)[0].name;
-            assert(std.mem.eql(u8, a_names[0], x_name) or std.mem.eql(u8, a_names[1], x_name));
-        }
+        comptime assertMatchingAxis(AxisA, AxisX);
         const f = switch (RealScalar) {
             f32 => acc.cblas_cher,
             f64 => acc.cblas_zher,
@@ -1022,17 +885,9 @@ pub const blas = struct {
 
         const x_blas = Blas1d(Scalar).init(AxisX, x);
 
-        // first axis → rows (i), second axis → cols (j)
-        // triangle == second axis → data at j >= i → Upper
-        // triangle == first axis  → data at i >= j → Lower
-        const uplo_blas: acc.CBLAS_UPLO = if (@intFromEnum(triangle) == 1)
-            @intCast(acc.CblasUpper)
-        else
-            @intCast(acc.CblasLower);
-
         f(
             A_blas.layout,
-            uplo_blas,
+            uploBlas(AxisA, triangle),
             A_blas.rows, // N
             scalars.alpha,
             x_blas.ptr,
@@ -1059,16 +914,7 @@ pub const blas = struct {
         scalars: struct { alpha: Scalar = one(Scalar) },
     ) void {
         const a_names = comptime meta.fieldNames(AxisA);
-        comptime {
-            assert(meta.fields(AxisA).len == 2);
-            assert(meta.fields(AxisX).len == 1);
-            assert(meta.fields(AxisY).len == 1);
-            const x_name = meta.fields(AxisX)[0].name;
-            const y_name = meta.fields(AxisY)[0].name;
-            assert(!std.mem.eql(u8, x_name, y_name));
-            assert(std.mem.eql(u8, a_names[0], x_name) or std.mem.eql(u8, a_names[1], x_name));
-            assert(std.mem.eql(u8, a_names[0], y_name) or std.mem.eql(u8, a_names[1], y_name));
-        }
+        _ = comptime matchingAxisIdx(AxisA, AxisX, AxisY);
         const f = switch (Scalar) {
             f32 => acc.cblas_ssyr2,
             f64 => acc.cblas_dsyr2,
@@ -1089,17 +935,9 @@ pub const blas = struct {
         const x_blas = Blas1d(Scalar).init(AxisX, x);
         const y_blas = Blas1d(Scalar).init(AxisY, y);
 
-        // first axis → rows (i), second axis → cols (j)
-        // triangle == second axis → data at j >= i → Upper
-        // triangle == first axis  → data at i >= j → Lower
-        const uplo_blas: acc.CBLAS_UPLO = if (@intFromEnum(triangle) == 1)
-            @intCast(acc.CblasUpper)
-        else
-            @intCast(acc.CblasLower);
-
         f(
             A_blas.layout,
-            uplo_blas,
+            uploBlas(AxisA, triangle),
             A_blas.rows, // N
             scalars.alpha,
             x_blas.ptr,
@@ -1128,16 +966,7 @@ pub const blas = struct {
         scalars: struct { alpha: Scalar = one(Scalar) },
     ) void {
         const a_names = comptime meta.fieldNames(AxisA);
-        comptime {
-            assert(meta.fields(AxisA).len == 2);
-            assert(meta.fields(AxisX).len == 1);
-            assert(meta.fields(AxisY).len == 1);
-            const x_name = meta.fields(AxisX)[0].name;
-            const y_name = meta.fields(AxisY)[0].name;
-            assert(!std.mem.eql(u8, x_name, y_name));
-            assert(std.mem.eql(u8, a_names[0], x_name) or std.mem.eql(u8, a_names[1], x_name));
-            assert(std.mem.eql(u8, a_names[0], y_name) or std.mem.eql(u8, a_names[1], y_name));
-        }
+        _ = comptime matchingAxisIdx(AxisA, AxisX, AxisY);
         const f = switch (Scalar) {
             Complex(f32) => acc.cblas_cher2,
             Complex(f64) => acc.cblas_zher2,
@@ -1158,17 +987,9 @@ pub const blas = struct {
         const x_blas = Blas1d(Scalar).init(AxisX, x);
         const y_blas = Blas1d(Scalar).init(AxisY, y);
 
-        // first axis → rows (i), second axis → cols (j)
-        // triangle == second axis → data at j >= i → Upper
-        // triangle == first axis  → data at i >= j → Lower
-        const uplo_blas: acc.CBLAS_UPLO = if (@intFromEnum(triangle) == 1)
-            @intCast(acc.CblasUpper)
-        else
-            @intCast(acc.CblasLower);
-
         f(
             A_blas.layout,
-            uplo_blas,
+            uploBlas(AxisA, triangle),
             A_blas.rows, // N
             &scalars.alpha,
             x_blas.ptr,
@@ -1235,6 +1056,44 @@ pub const blas = struct {
             Complex(f32), Complex(f64) => .{ .re = 1.0, .im = 0.0 },
             else => @compileError("one: T must be f32, f64 or Complex(...)"),
         };
+    }
+
+    fn isComplex(comptime T: type) bool {
+        return T == Complex(f32) or T == Complex(f64);
+    }
+
+    /// Maps a triangle axis value to the corresponding CBLAS UPLO constant.
+    /// Second axis (enum ordinal 1) → Upper; first axis (ordinal 0) → Lower.
+    fn uploBlas(comptime AxisA: type, triangle: AxisA) acc.CBLAS_UPLO {
+        return if (@intFromEnum(triangle) == 1)
+            @intCast(acc.CblasUpper)
+        else
+            @intCast(acc.CblasLower);
+    }
+
+    /// Validates that AxisA is 2D, AxisX and AxisY are each 1D with distinct names,
+    /// and each matches a different axis of AxisA.
+    /// Returns the index (0 or 1) of the AxisA field that matches AxisX.
+    fn matchingAxisIdx(comptime AxisA: type, comptime AxisX: type, comptime AxisY: type) usize {
+        const a_names = meta.fieldNames(AxisA);
+        assert(a_names.len == 2);
+        assert(meta.fields(AxisX).len == 1);
+        assert(meta.fields(AxisY).len == 1);
+        const x_name = meta.fields(AxisX)[0].name;
+        const y_name = meta.fields(AxisY)[0].name;
+        assert(!std.mem.eql(u8, x_name, y_name));
+        assert(std.mem.eql(u8, x_name, a_names[0]) or std.mem.eql(u8, x_name, a_names[1]));
+        assert(std.mem.eql(u8, y_name, a_names[0]) or std.mem.eql(u8, y_name, a_names[1]));
+        return if (std.mem.eql(u8, x_name, a_names[0])) 0 else 1;
+    }
+
+    /// Validates that AxisA is 2D, AxisX is 1D, and AxisX's name matches one axis of AxisA.
+    fn assertMatchingAxis(comptime AxisA: type, comptime AxisX: type) void {
+        const a_names = meta.fieldNames(AxisA);
+        assert(a_names.len == 2);
+        assert(meta.fields(AxisX).len == 1);
+        const x_name = meta.fields(AxisX)[0].name;
+        assert(std.mem.eql(u8, x_name, a_names[0]) or std.mem.eql(u8, x_name, a_names[1]));
     }
 
     fn Blas1d(comptime Scalar: type) type {

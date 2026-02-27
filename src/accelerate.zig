@@ -407,24 +407,32 @@ pub const blas = struct {
     }
 
     /// `sgemv`, `dgemv`, `cgemv` and `zgemv` in BLAS.
+    /// Computes `y = alpha * A * x + beta * y`.
+    /// `x`'s axis must match one axis of `A` (the contracted dimension)
+    /// and `y`'s axis must match the other axis of `A` (the output dimension).
     /// The scalars `alpha` and `beta` are optional and default to 1.
-    /// The major dimension of `A` is inferred from the axis names of `A` and `x`, which must share one axis name.
     pub fn gemv(
         comptime Scalar: type,
         comptime AxisA: type,
-        comptime AxisXY: type,
+        comptime AxisX: type,
+        comptime AxisY: type,
         A: NamedArrayConst(AxisA, Scalar),
-        x: NamedArrayConst(AxisXY, Scalar),
-        y: NamedArray(AxisXY, Scalar),
+        x: NamedArrayConst(AxisX, Scalar),
+        y: NamedArray(AxisY, Scalar),
         scalars: struct { alpha: Scalar = one(Scalar), beta: Scalar = one(Scalar) },
     ) void {
         const a_names = comptime meta.fieldNames(AxisA);
-        const shared_axis = comptime blk: {
+        const x_axis_idx = comptime blk: {
             assert(meta.fields(AxisA).len == 2);
-            assert(meta.fields(AxisXY).len == 1);
-            const xy_name = meta.fields(AxisXY)[0].name;
-            assert(std.mem.eql(u8, a_names[0], xy_name) or std.mem.eql(u8, a_names[1], xy_name));
-            break :blk if (std.mem.eql(u8, a_names[0], xy_name)) @as(usize, 0) else @as(usize, 1);
+            assert(meta.fields(AxisX).len == 1);
+            assert(meta.fields(AxisY).len == 1);
+            const x_name = meta.fields(AxisX)[0].name;
+            const y_name = meta.fields(AxisY)[0].name;
+            // x and y must match different axes of A
+            assert(!std.mem.eql(u8, x_name, y_name));
+            assert(std.mem.eql(u8, a_names[0], x_name) or std.mem.eql(u8, a_names[1], x_name));
+            assert(std.mem.eql(u8, a_names[0], y_name) or std.mem.eql(u8, a_names[1], y_name));
+            break :blk if (std.mem.eql(u8, a_names[0], x_name)) @as(usize, 0) else @as(usize, 1);
         };
         const f = switch (Scalar) {
             f32 => acc.cblas_sgemv,
@@ -439,13 +447,13 @@ pub const blas = struct {
             @panic("gemv: dimension mismatch");
 
         const a_ij_idx = A.idx.rename(IJ, &.{
-            .{ .old = a_names[shared_axis], .new = "j" },
-            .{ .old = a_names[1 - shared_axis], .new = "i" },
+            .{ .old = a_names[x_axis_idx], .new = "j" },
+            .{ .old = a_names[1 - x_axis_idx], .new = "i" },
         });
         const A_ij: NamedArrayConst(IJ, Scalar) = .{ .idx = a_ij_idx, .buf = A.buf };
         const A_blas = Blas2d(Scalar).init(A_ij);
-        const x_blas = Blas1d(Scalar).init(AxisXY, x);
-        const y_blas = Blas1dMut(Scalar).init(AxisXY, y);
+        const x_blas = Blas1d(Scalar).init(AxisX, x);
+        const y_blas = Blas1dMut(Scalar).init(AxisY, y);
         const alpha_blas: AlphaType = if (Scalar == Complex(f32) or Scalar == Complex(f64)) &scalars.alpha else scalars.alpha;
         const beta_blas: AlphaType = if (Scalar == Complex(f32) or Scalar == Complex(f64)) &scalars.beta else scalars.beta;
         f(
@@ -467,24 +475,29 @@ pub const blas = struct {
     /// `chemv` and `zhemv` in BLAS.
     /// Computes `y = alpha * A * x + beta * y` where `A` is a Hermitian matrix.
     /// Only the triangle of `A` where `triangle >= the other axis` is read.
+    /// `x`'s axis must match one axis of `A` and `y`'s axis must match the other.
     /// The scalars `alpha` and `beta` are optional and default to 1.
-    /// `A` must have one axis in common with `x` and `y`.
     pub fn hemv(
         comptime Scalar: type,
         comptime AxisA: type,
-        comptime AxisXY: type,
+        comptime AxisX: type,
+        comptime AxisY: type,
         triangle: AxisA,
         A: NamedArrayConst(AxisA, Scalar),
-        x: NamedArrayConst(AxisXY, Scalar),
-        y: NamedArray(AxisXY, Scalar),
+        x: NamedArrayConst(AxisX, Scalar),
+        y: NamedArray(AxisY, Scalar),
         scalars: struct { alpha: Scalar = one(Scalar), beta: Scalar = one(Scalar) },
     ) void {
         const a_names = comptime meta.fieldNames(AxisA);
         comptime {
             assert(meta.fields(AxisA).len == 2);
-            assert(meta.fields(AxisXY).len == 1);
-            const xy_name = meta.fields(AxisXY)[0].name;
-            assert(std.mem.eql(u8, a_names[0], xy_name) or std.mem.eql(u8, a_names[1], xy_name));
+            assert(meta.fields(AxisX).len == 1);
+            assert(meta.fields(AxisY).len == 1);
+            const x_name = meta.fields(AxisX)[0].name;
+            const y_name = meta.fields(AxisY)[0].name;
+            assert(!std.mem.eql(u8, x_name, y_name));
+            assert(std.mem.eql(u8, a_names[0], x_name) or std.mem.eql(u8, a_names[1], x_name));
+            assert(std.mem.eql(u8, a_names[0], y_name) or std.mem.eql(u8, a_names[1], y_name));
         }
         const f = switch (Scalar) {
             Complex(f32) => acc.cblas_chemv,
@@ -503,8 +516,8 @@ pub const blas = struct {
         const A_blas = Blas2d(Scalar).init(A_ij);
         assert(A_blas.rows == A_blas.cols);
 
-        const x_blas = Blas1d(Scalar).init(AxisXY, x);
-        const y_blas = Blas1dMut(Scalar).init(AxisXY, y);
+        const x_blas = Blas1d(Scalar).init(AxisX, x);
+        const y_blas = Blas1dMut(Scalar).init(AxisY, y);
 
         // first axis → rows (i), second axis → cols (j)
         // triangle == second axis → data at j >= i → Upper
@@ -532,23 +545,29 @@ pub const blas = struct {
     /// `ssymv` and `dsymv` in BLAS.
     /// Computes `y = alpha * A * x + beta * y` where `A` is a real symmetric matrix.
     /// Only the triangle of `A` where `triangle >= the other axis` is read.
+    /// `x`'s axis must match one axis of `A` and `y`'s axis must match the other.
     /// The scalars `alpha` and `beta` are optional and default to 1.
     pub fn symv(
         comptime Scalar: type,
         comptime AxisA: type,
-        comptime AxisXY: type,
+        comptime AxisX: type,
+        comptime AxisY: type,
         triangle: AxisA,
         A: NamedArrayConst(AxisA, Scalar),
-        x: NamedArrayConst(AxisXY, Scalar),
-        y: NamedArray(AxisXY, Scalar),
+        x: NamedArrayConst(AxisX, Scalar),
+        y: NamedArray(AxisY, Scalar),
         scalars: struct { alpha: Scalar = one(Scalar), beta: Scalar = one(Scalar) },
     ) void {
         const a_names = comptime meta.fieldNames(AxisA);
         comptime {
             assert(meta.fields(AxisA).len == 2);
-            assert(meta.fields(AxisXY).len == 1);
-            const xy_name = meta.fields(AxisXY)[0].name;
-            assert(std.mem.eql(u8, a_names[0], xy_name) or std.mem.eql(u8, a_names[1], xy_name));
+            assert(meta.fields(AxisX).len == 1);
+            assert(meta.fields(AxisY).len == 1);
+            const x_name = meta.fields(AxisX)[0].name;
+            const y_name = meta.fields(AxisY)[0].name;
+            assert(!std.mem.eql(u8, x_name, y_name));
+            assert(std.mem.eql(u8, a_names[0], x_name) or std.mem.eql(u8, a_names[1], x_name));
+            assert(std.mem.eql(u8, a_names[0], y_name) or std.mem.eql(u8, a_names[1], y_name));
         }
         const f = switch (Scalar) {
             f32 => acc.cblas_ssymv,
@@ -567,8 +586,8 @@ pub const blas = struct {
         const A_blas = Blas2d(Scalar).init(A_ij);
         assert(A_blas.rows == A_blas.cols);
 
-        const x_blas = Blas1d(Scalar).init(AxisXY, x);
-        const y_blas = Blas1dMut(Scalar).init(AxisXY, y);
+        const x_blas = Blas1d(Scalar).init(AxisX, x);
+        const y_blas = Blas1dMut(Scalar).init(AxisY, y);
 
         // first axis → rows (i), second axis → cols (j)
         // triangle == second axis → data at j >= i → Upper
@@ -1445,6 +1464,7 @@ test "rotm" {
 
 test "gemv real" {
     const MK = enum { m, k };
+    const M = enum { m };
     const K = enum { k };
     const T = f64;
 
@@ -1462,13 +1482,13 @@ test "gemv real" {
     };
 
     var y_buf = [_]T{ 0, 0, 0 };
-    const y = NamedArray(K, T){
-        .idx = NamedIndex(K).initContiguous(.{ .k = 3 }),
+    const y = NamedArray(M, T){
+        .idx = NamedIndex(M).initContiguous(.{ .m = 3 }),
         .buf = &y_buf,
     };
 
     // y = 1 * A * x + 0 * y = A * x = [14, 32, 50]
-    blas.gemv(T, MK, K, A, x, y, .{ .alpha = 1.0, .beta = 0.0 });
+    blas.gemv(T, MK, K, M, A, x, y, .{ .alpha = 1.0, .beta = 0.0 });
 
     const expected = [_]T{ 14.0, 32.0, 50.0 };
     for (0..3) |i| {
@@ -1476,8 +1496,43 @@ test "gemv real" {
     }
 }
 
+test "gemv real rectangular" {
+    const MK = enum { m, k };
+    const M = enum { m };
+    const K = enum { k };
+    const T = f64;
+
+    // A = [[1, 2], [3, 4], [5, 6]] (3x2, m=3, k=2)
+    const a_buf = [_]T{ 1, 2, 3, 4, 5, 6 };
+    const A = NamedArrayConst(MK, T){
+        .idx = NamedIndex(MK).initContiguous(.{ .m = 3, .k = 2 }),
+        .buf = &a_buf,
+    };
+
+    const x_buf = [_]T{ 1, 2 };
+    const x = NamedArrayConst(K, T){
+        .idx = NamedIndex(K).initContiguous(.{ .k = 2 }),
+        .buf = &x_buf,
+    };
+
+    var y_buf = [_]T{ 0, 0, 0 };
+    const y = NamedArray(M, T){
+        .idx = NamedIndex(M).initContiguous(.{ .m = 3 }),
+        .buf = &y_buf,
+    };
+
+    // y = A * x = [1*1+2*2, 3*1+4*2, 5*1+6*2] = [5, 11, 17]
+    blas.gemv(T, MK, K, M, A, x, y, .{ .alpha = 1.0, .beta = 0.0 });
+
+    const expected = [_]T{ 5.0, 11.0, 17.0 };
+    for (0..3) |i| {
+        try std.testing.expectApproxEqAbs(expected[i], y_buf[i], math.floatEpsAt(T, expected[i]));
+    }
+}
+
 test "gemv real nontrivial scalars and strides" {
     const MK = enum { m, k };
+    const M = enum { m };
     const K = enum { k };
     const T = f64;
 
@@ -1499,12 +1554,12 @@ test "gemv real nontrivial scalars and strides" {
 
     // y with stride 2: positions 0, 2, 4 in buffer
     var y_buf = [_]T{ 10, 99, 20, 99, 30 };
-    const y_idx: NamedIndex(K) = .{
-        .shape = .{ .k = 3 },
-        .strides = .{ .k = 2 },
+    const y_idx: NamedIndex(M) = .{
+        .shape = .{ .m = 3 },
+        .strides = .{ .m = 2 },
         .offset = 0,
     };
-    const y = NamedArray(K, T){
+    const y = NamedArray(M, T){
         .idx = y_idx,
         .buf = &y_buf,
     };
@@ -1513,7 +1568,7 @@ test "gemv real nontrivial scalars and strides" {
     // A * x_logical = A * [3,2,1]:
     //   [1*3+2*2+3*1, 4*3+5*2+6*1, 7*3+8*2+9*1] = [10, 28, 46]
     // y = 2 * [10, 28, 46] + (-1) * [10, 20, 30] = [10, 36, 62]
-    blas.gemv(T, MK, K, A, x, y, .{ .alpha = 2.0, .beta = -1.0 });
+    blas.gemv(T, MK, K, M, A, x, y, .{ .alpha = 2.0, .beta = -1.0 });
 
     const expected = [_]T{ 10.0, 36.0, 62.0 };
     try std.testing.expectApproxEqAbs(expected[0], y_buf[0], math.floatEpsAt(T, expected[0]));
@@ -1527,6 +1582,7 @@ test "gemv real nontrivial scalars and strides" {
 test "gemv real column-major matrix" {
     // Use enum { i, j } with column-major strides to exercise CblasColMajor path
     const IJ = enum { i, j };
+    const I = enum { i };
     const J = enum { j };
     const T = f32;
 
@@ -1542,7 +1598,7 @@ test "gemv real column-major matrix" {
     };
 
     // x = [5, 6], y = [0, 0]
-    // Shared axis is j (second name in IJ matches J).
+    // x axis is j (contracted), y axis is i (output).
     // After rename: j→j (cols), i→i (rows) → NoTrans
     // y = A*x = [1*5+3*6, 2*5+4*6] = [23, 34]
     const x_buf = [_]T{ 5, 6 };
@@ -1552,12 +1608,12 @@ test "gemv real column-major matrix" {
     };
 
     var y_buf = [_]T{ 0, 0 };
-    const y = NamedArray(J, T){
-        .idx = NamedIndex(J).initContiguous(.{ .j = 2 }),
+    const y = NamedArray(I, T){
+        .idx = NamedIndex(I).initContiguous(.{ .i = 2 }),
         .buf = &y_buf,
     };
 
-    blas.gemv(T, IJ, J, A, x, y, .{ .alpha = 1.0, .beta = 0.0 });
+    blas.gemv(T, IJ, J, I, A, x, y, .{ .alpha = 1.0, .beta = 0.0 });
 
     const expected = [_]T{ 23.0, 34.0 };
     for (0..2) |i| {
@@ -1567,6 +1623,7 @@ test "gemv real column-major matrix" {
 
 test "gemv complex" {
     const MK = enum { m, k };
+    const M = enum { m };
     const K = enum { k };
     const T = Complex(f64);
 
@@ -1600,8 +1657,8 @@ test "gemv complex" {
         .{ .re = 0, .im = 0 },
         .{ .re = 0, .im = 0 },
     };
-    const y = NamedArray(K, T){
-        .idx = NamedIndex(K).initContiguous(.{ .k = 3 }),
+    const y = NamedArray(M, T){
+        .idx = NamedIndex(M).initContiguous(.{ .m = 3 }),
         .buf = &y_buf,
     };
 
@@ -1616,7 +1673,7 @@ test "gemv complex" {
     //   (2+i)(4i)   = 8i+4i² = -4+8i
     //   (2+i)(1+5i) = 2+10i+i+5i² = -3+11i
     //   (2+i)(2i)   = 4i+2i² = -2+4i
-    blas.gemv(T, MK, K, A, x, y, .{
+    blas.gemv(T, MK, K, M, A, x, y, .{
         .alpha = .{ .re = 2, .im = 1 },
         .beta = .{ .re = 0, .im = 0 },
     });
@@ -1635,6 +1692,7 @@ test "gemv complex" {
 
 test "gemv complex nontrivial scalars and strides" {
     const AB = enum { a, b };
+    const A_ = enum { a };
     const B = enum { b };
     const T = Complex(f32);
 
@@ -1666,12 +1724,12 @@ test "gemv complex nontrivial scalars and strides" {
         .{ .re = 99, .im = 99 }, // sentinel
         .{ .re = 2, .im = 0 },
     };
-    const y_idx: NamedIndex(B) = .{
-        .shape = .{ .b = 2 },
-        .strides = .{ .b = 2 },
+    const y_idx: NamedIndex(A_) = .{
+        .shape = .{ .a = 2 },
+        .strides = .{ .a = 2 },
         .offset = 0,
     };
-    const y = NamedArray(B, T){
+    const y = NamedArray(A_, T){
         .idx = y_idx,
         .buf = &y_buf,
     };
@@ -1685,7 +1743,7 @@ test "gemv complex nontrivial scalars and strides" {
     // y = (1+i)*[1, 5i] + 2*[1, 2]:
     //   (1+i)(1) + 2  = 1+i+2 = 3+i
     //   (1+i)(5i) + 4 = 5i+5i²+4 = -5+5i+4 = -1+5i
-    blas.gemv(T, AB, B, A, x, y, .{
+    blas.gemv(T, AB, B, A_, A, x, y, .{
         .alpha = .{ .re = 1, .im = 1 },
         .beta = .{ .re = 2, .im = 0 },
     });
@@ -1702,6 +1760,7 @@ test "gemv complex nontrivial scalars and strides" {
 
 test "hemv upper (triangle = second axis)" {
     const MK = enum { m, k };
+    const M = enum { m };
     const K = enum { k };
     const T = Complex(f64);
 
@@ -1735,8 +1794,8 @@ test "hemv upper (triangle = second axis)" {
         .{ .re = 0, .im = 0 },
         .{ .re = 0, .im = 0 },
     };
-    const y = NamedArray(K, T){
-        .idx = NamedIndex(K).initContiguous(.{ .k = 3 }),
+    const y = NamedArray(M, T){
+        .idx = NamedIndex(M).initContiguous(.{ .m = 3 }),
         .buf = &y_buf,
     };
 
@@ -1744,7 +1803,7 @@ test "hemv upper (triangle = second axis)" {
     //   y[0] = 2*(1) + (1-i)*(i) + (3+2i)*(1) = 2 + i+1 + 3+2i = 6+3i
     //   y[1] = (1+i)*(1) + 5*(i) + (2-i)*(1) = 1+i + 5i + 2-i = 3+5i
     //   y[2] = (3-2i)*(1) + (2+i)*(i) + 4*(1) = 3-2i + 2i-1 + 4 = 6+0i
-    blas.hemv(T, MK, K, .k, A, x, y, .{
+    blas.hemv(T, MK, K, M, .k, A, x, y, .{
         .alpha = .{ .re = 1, .im = 0 },
         .beta = .{ .re = 0, .im = 0 },
     });
@@ -1763,6 +1822,7 @@ test "hemv upper (triangle = second axis)" {
 
 test "hemv lower (triangle = first axis)" {
     const MK = enum { m, k };
+    const M = enum { m };
     const K = enum { k };
     const T = Complex(f64);
 
@@ -1796,13 +1856,13 @@ test "hemv lower (triangle = first axis)" {
         .{ .re = 0, .im = 0 },
         .{ .re = 0, .im = 0 },
     };
-    const y = NamedArray(K, T){
-        .idx = NamedIndex(K).initContiguous(.{ .k = 3 }),
+    const y = NamedArray(M, T){
+        .idx = NamedIndex(M).initContiguous(.{ .m = 3 }),
         .buf = &y_buf,
     };
 
     // Same result as the upper test: y = [6+3i, 3+5i, 6+0i]
-    blas.hemv(T, MK, K, .m, A, x, y, .{
+    blas.hemv(T, MK, K, M, .m, A, x, y, .{
         .alpha = .{ .re = 1, .im = 0 },
         .beta = .{ .re = 0, .im = 0 },
     });
@@ -1821,6 +1881,7 @@ test "hemv lower (triangle = first axis)" {
 
 test "hemv nontrivial scalars and strides" {
     const AB = enum { a, b };
+    const A_ = enum { a };
     const B = enum { b };
     const T = Complex(f32);
 
@@ -1853,12 +1914,12 @@ test "hemv nontrivial scalars and strides" {
         .{ .re = 99, .im = 99 }, // sentinel
         .{ .re = 2, .im = 1 },
     };
-    const y_idx: NamedIndex(B) = .{
-        .shape = .{ .b = 2 },
-        .strides = .{ .b = 2 },
+    const y_idx: NamedIndex(A_) = .{
+        .shape = .{ .a = 2 },
+        .strides = .{ .a = 2 },
         .offset = 0,
     };
-    const y = NamedArray(B, T){
+    const y = NamedArray(A_, T){
         .idx = y_idx,
         .buf = &y_buf,
     };
@@ -1874,7 +1935,7 @@ test "hemv nontrivial scalars and strides" {
     //   (1+i)(7+i)  = 7+i+7i+i²   = 6+8i
     //   y[0] = 2+8i + 2   = 4+8i
     //   y[1] = 6+8i + 4+2i = 10+10i
-    blas.hemv(T, AB, B, .b, A, x, y, .{
+    blas.hemv(T, AB, B, A_, .b, A, x, y, .{
         .alpha = .{ .re = 1, .im = 1 },
         .beta = .{ .re = 2, .im = 0 },
     });
@@ -1891,6 +1952,7 @@ test "hemv nontrivial scalars and strides" {
 
 test "symv upper (triangle = second axis)" {
     const MK = enum { m, k };
+    const M = enum { m };
     const K = enum { k };
     const T = f64;
 
@@ -1916,8 +1978,8 @@ test "symv upper (triangle = second axis)" {
     };
 
     var y_buf = [_]T{ 0, 0, 0 };
-    const y = NamedArray(K, T){
-        .idx = NamedIndex(K).initContiguous(.{ .k = 3 }),
+    const y = NamedArray(M, T){
+        .idx = NamedIndex(M).initContiguous(.{ .m = 3 }),
         .buf = &y_buf,
     };
 
@@ -1925,7 +1987,7 @@ test "symv upper (triangle = second axis)" {
     //   y[0] = 2*1 + 3*2 + 5*3  = 2 + 6 + 15  = 23
     //   y[1] = 3*1 + 7*2 + 11*3 = 3 + 14 + 33 = 50
     //   y[2] = 5*1 + 11*2 + 13*3 = 5 + 22 + 39 = 66
-    blas.symv(T, MK, K, .k, A, x, y, .{ .alpha = 1.0, .beta = 0.0 });
+    blas.symv(T, MK, K, M, .k, A, x, y, .{ .alpha = 1.0, .beta = 0.0 });
 
     const expected = [_]T{ 23.0, 50.0, 66.0 };
     for (0..3) |i| {
@@ -1935,6 +1997,7 @@ test "symv upper (triangle = second axis)" {
 
 test "symv lower (triangle = first axis)" {
     const MK = enum { m, k };
+    const M = enum { m };
     const K = enum { k };
     const T = f64;
 
@@ -1960,13 +2023,13 @@ test "symv lower (triangle = first axis)" {
     };
 
     var y_buf = [_]T{ 0, 0, 0 };
-    const y = NamedArray(K, T){
-        .idx = NamedIndex(K).initContiguous(.{ .k = 3 }),
+    const y = NamedArray(M, T){
+        .idx = NamedIndex(M).initContiguous(.{ .m = 3 }),
         .buf = &y_buf,
     };
 
     // Same result as the upper test: y = [23, 50, 66]
-    blas.symv(T, MK, K, .m, A, x, y, .{ .alpha = 1.0, .beta = 0.0 });
+    blas.symv(T, MK, K, M, .m, A, x, y, .{ .alpha = 1.0, .beta = 0.0 });
 
     const expected = [_]T{ 23.0, 50.0, 66.0 };
     for (0..3) |i| {
@@ -1976,6 +2039,7 @@ test "symv lower (triangle = first axis)" {
 
 test "symv nontrivial scalars and strides" {
     const AB = enum { a, b };
+    const A_ = enum { a };
     const B = enum { b };
     const T = f32;
 
@@ -1998,12 +2062,12 @@ test "symv nontrivial scalars and strides" {
 
     // y with stride 2; y_init = [10, 20]
     var y_buf = [_]T{ 10, 99, 20 };
-    const y_idx: NamedIndex(B) = .{
-        .shape = .{ .b = 2 },
-        .strides = .{ .b = 2 },
+    const y_idx: NamedIndex(A_) = .{
+        .shape = .{ .a = 2 },
+        .strides = .{ .a = 2 },
         .offset = 0,
     };
-    const y = NamedArray(B, T){
+    const y = NamedArray(A_, T){
         .idx = y_idx,
         .buf = &y_buf,
     };
@@ -2015,7 +2079,7 @@ test "symv nontrivial scalars and strides" {
     //   row1: 3*2 + 7*1 = 13
     //
     // y = 2.5 * [11, 13] + (-1) * [10, 20] = [27.5-10, 32.5-20] = [17.5, 12.5]
-    blas.symv(T, AB, B, .b, A, x, y, .{ .alpha = 2.5, .beta = -1.0 });
+    blas.symv(T, AB, B, A_, .b, A, x, y, .{ .alpha = 2.5, .beta = -1.0 });
 
     const eps: f32 = 1e-5;
     try std.testing.expectApproxEqAbs(@as(f32, 17.5), y_buf[0], eps);

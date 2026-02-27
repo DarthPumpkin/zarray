@@ -987,14 +987,15 @@ pub const blas = struct {
     /// `x`'s axis must match one axis of `A`.
     /// The scalar `alpha` is real and optional, defaulting to 1.
     pub fn her(
-        comptime Scalar: type,
+        comptime RealScalar: type,
         comptime AxisA: type,
         comptime AxisX: type,
         triangle: AxisA,
-        A: NamedArray(AxisA, Scalar),
-        x: NamedArrayConst(AxisX, Scalar),
-        scalars: struct { alpha: RealOf(Scalar) = 1.0 },
+        A: NamedArray(AxisA, Complex(RealScalar)),
+        x: NamedArrayConst(AxisX, Complex(RealScalar)),
+        scalars: struct { alpha: RealScalar = 1.0 },
     ) void {
+        const Scalar = Complex(RealScalar);
         const a_names = comptime meta.fieldNames(AxisA);
         comptime {
             assert(meta.fields(AxisA).len == 2);
@@ -1002,10 +1003,10 @@ pub const blas = struct {
             const x_name = meta.fields(AxisX)[0].name;
             assert(std.mem.eql(u8, a_names[0], x_name) or std.mem.eql(u8, a_names[1], x_name));
         }
-        const f = switch (Scalar) {
-            Complex(f32) => acc.cblas_cher,
-            Complex(f64) => acc.cblas_zher,
-            else => @compileError("her requires Complex(f32) or Complex(f64)."),
+        const f = switch (RealScalar) {
+            f32 => acc.cblas_cher,
+            f64 => acc.cblas_zher,
+            else => @compileError("her requires f32 or f64 as RealScalar."),
         };
 
         _ = named_index.resolveDimensions(.{ A.idx.shape, x.idx.shape }) catch
@@ -1089,15 +1090,6 @@ pub const blas = struct {
 
     pub const IJ = enum { i, j };
     const I = enum { i };
-
-    fn RealOf(comptime Scalar: type) type {
-        return switch (Scalar) {
-            f32, f64 => Scalar,
-            Complex(f32) => f32,
-            Complex(f64) => f64,
-            else => @compileError("RealOf: unsupported scalar type"),
-        };
-    }
 
     fn one(comptime T: type) T {
         return switch (T) {
@@ -3120,7 +3112,7 @@ test "her complex (triangle = second axis)" {
     // Upper part: [[2, 2+2i], [_, 4]]
     // A_new upper = [[2, 2+2i], [_, 4]] + [[1, 2+i], [_, 3]]
     //            = [[3+0i, 4+3i], [_, 7+0i]]
-    blas.her(T, MK, K, .k, A, x, .{});
+    blas.her(f64, MK, K, .k, A, x, .{});
 
     const eps = 1e-10;
     try std.testing.expectApproxEqAbs(@as(f64, 3), a_buf[0].re, eps);
@@ -3173,7 +3165,7 @@ test "her complex nontrivial strides" {
     // A_new lower = 2*[[1,_],[1-i,2]] + [[5,_],[1-i,3]]
     //            = [[2,_],[2-2i,4]] + [[5,_],[1-i,3]]
     //            = [[7+0i, _], [3-3i, 7+0i]]
-    blas.her(T, AB, A_, .a, A, x, .{ .alpha = 2.0 });
+    blas.her(f32, AB, A_, .a, A, x, .{ .alpha = 2.0 });
 
     const eps: f32 = 1e-5;
     try std.testing.expectApproxEqAbs(@as(f32, 7), a_buf[0].re, eps);

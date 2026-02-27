@@ -660,6 +660,74 @@ pub const blas = struct {
         );
     }
 
+    /// `strsv`, `dtrsv`, `ctrsv` and `ztrsv` in BLAS.
+    /// Solves `A * x_new = x_old` in-place, i.e. computes `x := A⁻¹ * x`,
+    /// where `A` is a triangular matrix.
+    /// Only the triangle of `A` where `triangle >= the other axis` is read.
+    /// If `diag` is `.unit`, the diagonal of `A` is assumed to be all ones and is not read.
+    pub fn trsv(
+        comptime Scalar: type,
+        comptime AxisA: type,
+        comptime AxisX: type,
+        triangle: AxisA,
+        diag: Diag,
+        A: NamedArrayConst(AxisA, Scalar),
+        x: NamedArray(AxisX, Scalar),
+    ) void {
+        const a_names = comptime meta.fieldNames(AxisA);
+        comptime {
+            assert(meta.fields(AxisA).len == 2);
+            assert(meta.fields(AxisX).len == 1);
+            const x_name = meta.fields(AxisX)[0].name;
+            assert(std.mem.eql(u8, a_names[0], x_name) or std.mem.eql(u8, a_names[1], x_name));
+        }
+        const f = switch (Scalar) {
+            f32 => acc.cblas_strsv,
+            f64 => acc.cblas_dtrsv,
+            Complex(f32) => acc.cblas_ctrsv,
+            Complex(f64) => acc.cblas_ztrsv,
+            else => @compileError("trsv is incompatible with given Scalar type."),
+        };
+
+        _ = named_index.resolveDimensions(.{ A.idx.shape, x.idx.shape }) catch
+            @panic("trsv: dimension mismatch");
+
+        const a_ij_idx = A.idx.rename(IJ, &.{
+            .{ .old = a_names[0], .new = "i" },
+            .{ .old = a_names[1], .new = "j" },
+        });
+        const A_ij: NamedArrayConst(IJ, Scalar) = .{ .idx = a_ij_idx, .buf = A.buf };
+        const A_blas = Blas2d(Scalar).init(A_ij);
+        assert(A_blas.rows == A_blas.cols);
+
+        const x_blas = Blas1dMut(Scalar).init(AxisX, x);
+
+        // first axis → rows (i), second axis → cols (j)
+        // triangle == second axis → data at j >= i → Upper
+        // triangle == first axis  → data at i >= j → Lower
+        const uplo_blas: acc.CBLAS_UPLO = if (@intFromEnum(triangle) == 1)
+            @intCast(acc.CblasUpper)
+        else
+            @intCast(acc.CblasLower);
+
+        const diag_blas: acc.CBLAS_DIAG = switch (diag) {
+            .unit => @intCast(acc.CblasUnit),
+            .non_unit => @intCast(acc.CblasNonUnit),
+        };
+
+        f(
+            A_blas.layout,
+            uplo_blas,
+            @intCast(acc.CblasNoTrans),
+            diag_blas,
+            A_blas.rows, // N
+            A_blas.ptr,
+            A_blas.leading,
+            x_blas.ptr,
+            x_blas.inc,
+        );
+    }
+
     pub fn GivensRotationReal(comptime Scalar: type) type {
         return struct {
             c: Scalar,
@@ -2113,6 +2181,162 @@ test "trmv nontrivial strides" {
     try std.testing.expectApproxEqAbs(@as(f32, 3), x_buf[0].im, eps);
     try std.testing.expectApproxEqAbs(@as(f32, 9), x_buf[2].re, eps);
     try std.testing.expectApproxEqAbs(@as(f32, 3), x_buf[2].im, eps);
+    // sentinel untouched
+    try std.testing.expectEqual(@as(f32, 99), x_buf[1].re);
+    try std.testing.expectEqual(@as(f32, 99), x_buf[1].im);
+}
+
+test "trsv real" {
+    const MK = enum { m, k };
+    const K = enum { k };
+    const T = f64;
+
+    // Upper triangular 3x3 (triangle = .k, i.e. data where k >= m).
+    // Lower triangle positions hold sentinels.
+    //   [[2, 3, 5],
+    //    [_, 7, 11],
+    //    [_, _, 13]]
+    const a_buf = [_]T{
+        2,  3,  5,
+        99, 7,  11,
+        99, 99, 13,
+    };
+    const A = NamedArrayConst(MK, T){
+        .idx = NamedIndex(MK).initContiguous(.{ .m = 3, .k = 3 }),
+        .buf = &a_buf,
+    };
+
+    // x_init = A * [1,2,3] = [23, 47, 39]  (from trmv test)
+    // After trsv: x should be [1, 2, 3].
+    var x_buf = [_]T{ 23, 47, 39 };
+    const x = NamedArray(K, T){
+        .idx = NamedIndex(K).initContiguous(.{ .k = 3 }),
+        .buf = &x_buf,
+    };
+
+    blas.trsv(T, MK, K, .k, .non_unit, A, x);
+
+    const expected = [_]T{ 1.0, 2.0, 3.0 };
+    for (0..3) |i| {
+        try std.testing.expectApproxEqAbs(expected[i], x_buf[i], math.floatEpsAt(T, expected[i]));
+    }
+}
+
+test "trsv real unit diagonal" {
+    const MK = enum { m, k };
+    const K = enum { k };
+    const T = f64;
+
+    // Lower triangular 3x3 with unit diagonal (triangle = .m, i.e. data where m >= k).
+    // Diagonal and upper positions hold sentinels that BLAS must ignore.
+    //   [[1, _, _],       effective matrix (diag = 1)
+    //    [4, 1, _],
+    //    [5, 6, 1]]
+    const a_buf = [_]T{
+        99, 99, 99,
+        4,  99, 99,
+        5,  6,  99,
+    };
+    const A = NamedArrayConst(MK, T){
+        .idx = NamedIndex(MK).initContiguous(.{ .m = 3, .k = 3 }),
+        .buf = &a_buf,
+    };
+
+    // x_init = A * [1,2,3] = [1, 6, 20]  (from trmv unit diagonal test)
+    // After trsv: x should be [1, 2, 3].
+    var x_buf = [_]T{ 1, 6, 20 };
+    const x = NamedArray(K, T){
+        .idx = NamedIndex(K).initContiguous(.{ .k = 3 }),
+        .buf = &x_buf,
+    };
+
+    blas.trsv(T, MK, K, .m, .unit, A, x);
+
+    const expected = [_]T{ 1.0, 2.0, 3.0 };
+    for (0..3) |i| {
+        try std.testing.expectApproxEqAbs(expected[i], x_buf[i], math.floatEpsAt(T, expected[i]));
+    }
+}
+
+test "trsv complex" {
+    const MK = enum { m, k };
+    const K = enum { k };
+    const T = Complex(f64);
+
+    // Upper triangular 2x2 (triangle = .k):
+    //   [[1+i,  2+3i],
+    //    [ _,   4-i ]]
+    const a_buf = [_]T{
+        .{ .re = 1, .im = 1 },   .{ .re = 2, .im = 3 },
+        .{ .re = 99, .im = 99 }, .{ .re = 4, .im = -1 },
+    };
+    const A = NamedArrayConst(MK, T){
+        .idx = NamedIndex(MK).initContiguous(.{ .m = 2, .k = 2 }),
+        .buf = &a_buf,
+    };
+
+    // x_init = A * [1, i] = [-2+3i, 1+4i]  (from trmv complex test)
+    // After trsv: x should be [1, i].
+    var x_buf = [_]T{
+        .{ .re = -2, .im = 3 },
+        .{ .re = 1, .im = 4 },
+    };
+    const x = NamedArray(K, T){
+        .idx = NamedIndex(K).initContiguous(.{ .k = 2 }),
+        .buf = &x_buf,
+    };
+
+    blas.trsv(T, MK, K, .k, .non_unit, A, x);
+
+    const eps = 1e-10;
+    try std.testing.expectApproxEqAbs(@as(f64, 1), x_buf[0].re, eps);
+    try std.testing.expectApproxEqAbs(@as(f64, 0), x_buf[0].im, eps);
+    try std.testing.expectApproxEqAbs(@as(f64, 0), x_buf[1].re, eps);
+    try std.testing.expectApproxEqAbs(@as(f64, 1), x_buf[1].im, eps);
+}
+
+test "trsv nontrivial strides" {
+    const AB = enum { a, b };
+    const B = enum { b };
+    const T = Complex(f32);
+
+    // Lower triangular 2x2 (triangle = .a, i.e. data where a >= b):
+    //   [[3+0i,    _    ],
+    //    [1+2i,  5+0i   ]]
+    const a_buf = [_]T{
+        .{ .re = 3, .im = 0 }, .{ .re = 99, .im = 99 },
+        .{ .re = 1, .im = 2 }, .{ .re = 5, .im = 0 },
+    };
+    const A = NamedArrayConst(AB, T){
+        .idx = NamedIndex(AB).initContiguous(.{ .a = 2, .b = 2 }),
+        .buf = &a_buf,
+    };
+
+    // x_init = A * [1+i, 2] = [3+3i, 9+3i]  (from trmv nontrivial strides test, but stride=1 semantics)
+    // x with stride 2: positions 0, 2 in buffer
+    // After trsv: x should be [1+i, 2+0i].
+    var x_buf = [_]T{
+        .{ .re = 3, .im = 3 },
+        .{ .re = 99, .im = 99 }, // sentinel
+        .{ .re = 9, .im = 3 },
+    };
+    const x_idx: NamedIndex(B) = .{
+        .shape = .{ .b = 2 },
+        .strides = .{ .b = 2 },
+        .offset = 0,
+    };
+    const x = NamedArray(B, T){
+        .idx = x_idx,
+        .buf = &x_buf,
+    };
+
+    blas.trsv(T, AB, B, .a, .non_unit, A, x);
+
+    const eps: f32 = 1e-5;
+    try std.testing.expectApproxEqAbs(@as(f32, 1), x_buf[0].re, eps);
+    try std.testing.expectApproxEqAbs(@as(f32, 1), x_buf[0].im, eps);
+    try std.testing.expectApproxEqAbs(@as(f32, 2), x_buf[2].re, eps);
+    try std.testing.expectApproxEqAbs(@as(f32, 0), x_buf[2].im, eps);
     // sentinel untouched
     try std.testing.expectEqual(@as(f32, 99), x_buf[1].re);
     try std.testing.expectEqual(@as(f32, 99), x_buf[1].im);

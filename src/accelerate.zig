@@ -13,9 +13,13 @@ const NamedArrayConst = named_array.NamedArrayConst;
 const acc = @cImport(@cInclude("Accelerate/Accelerate.h"));
 
 pub const blas = struct {
+    /// `sdot` and `ddot` in BLAS (`sdsdot` and `dsdot` with `internal_double_precision`).
+    /// Computes the dot product `xᵀy = Σ x_i * y_i` for real scalars.
+    /// `x` and `y` must have the same axis and length.
+    /// If `internal_double_precision` is `true`, the accumulation is performed in double precision.
     pub fn dot(
-        comptime Axis: type,
         comptime Scalar: type,
+        comptime Axis: type,
         x: NamedArrayConst(Axis, Scalar),
         y: NamedArrayConst(Axis, Scalar),
         comptime config: struct { internal_double_precision: bool = false },
@@ -33,9 +37,12 @@ pub const blas = struct {
         return cblas_dot(x_blas.len, x_blas.ptr, x_blas.inc, y_blas.ptr, y_blas.inc);
     }
 
+    /// `cdotu` and `zdotu` in BLAS.
+    /// Computes the unconjugated dot product `xᵀy = Σ x_i * y_i` for complex scalars.
+    /// `x` and `y` must have the same axis and length.
     pub fn dotu(
-        comptime Axis: type,
         comptime Scalar: type,
+        comptime Axis: type,
         x: NamedArrayConst(Axis, Scalar),
         y: NamedArrayConst(Axis, Scalar),
     ) Scalar {
@@ -54,9 +61,12 @@ pub const blas = struct {
         return result;
     }
 
+    /// `cdotc` and `zdotc` in BLAS.
+    /// Computes the conjugated dot product `xᴴy = Σ conj(x_i) * y_i` for complex scalars.
+    /// `x` and `y` must have the same axis and length.
     pub fn dotc(
-        comptime Axis: type,
         comptime Scalar: type,
+        comptime Axis: type,
         x: NamedArrayConst(Axis, Scalar),
         y: NamedArrayConst(Axis, Scalar),
     ) Scalar {
@@ -75,9 +85,12 @@ pub const blas = struct {
         return result;
     }
 
+    /// `snrm2`, `dnrm2`, `scnrm2` and `dznrm2` in BLAS.
+    /// Computes the Euclidean norm `‖x‖₂ = √(Σ |x_i|²)`.
+    /// For complex vectors, returns a real scalar.
     pub fn nrm2(
-        comptime Axis: type,
         comptime Scalar: type,
+        comptime Axis: type,
         x: NamedArrayConst(Axis, Scalar),
     ) switch (Scalar) {
         f32 => f32,
@@ -97,9 +110,12 @@ pub const blas = struct {
         return f(x_blas.len, x_blas.ptr, x_blas.inc);
     }
 
+    /// `sasum`, `dasum`, `scasum` and `dzasum` in BLAS.
+    /// Computes the sum of absolute values `Σ |x_i|`.
+    /// For complex vectors, computes `Σ (|Re(x_i)| + |Im(x_i)|)` and returns a real scalar.
     pub fn asum(
-        comptime Axis: type,
         comptime Scalar: type,
+        comptime Axis: type,
         x: NamedArrayConst(Axis, Scalar),
     ) switch (Scalar) {
         f32 => f32,
@@ -119,9 +135,12 @@ pub const blas = struct {
         return f(x_blas.len, x_blas.ptr, x_blas.inc);
     }
 
+    /// `isamax`, `idamax`, `icamax` and `izamax` in BLAS.
+    /// Returns the index of the element with the largest absolute value.
+    /// For complex vectors, uses `|Re(x_i)| + |Im(x_i)|` as the magnitude.
     pub fn i_amax(
-        comptime Axis: type,
         comptime Scalar: type,
+        comptime Axis: type,
         x: NamedArrayConst(Axis, Scalar),
     ) usize {
         const x_blas = Blas1d(Scalar).init(Axis, x);
@@ -136,9 +155,12 @@ pub const blas = struct {
         return @intCast(idx);
     }
 
+    /// `sswap`, `dswap`, `cswap` and `zswap` in BLAS.
+    /// Swaps the elements of `x` and `y`.
+    /// `x` and `y` must have the same axis and length.
     pub fn swap(
-        comptime Axis: type,
         comptime Scalar: type,
+        comptime Axis: type,
         x: NamedArray(Axis, Scalar),
         y: NamedArray(Axis, Scalar),
     ) void {
@@ -157,9 +179,12 @@ pub const blas = struct {
         f(x_blas.len, x_blas.ptr, x_blas.inc, y_blas.ptr, y_blas.inc);
     }
 
+    /// `scopy`, `dcopy`, `ccopy` and `zcopy` in BLAS.
+    /// Copies the elements of `x` into `y`.
+    /// `x` and `y` must have the same axis and length.
     pub fn copy(
-        comptime Axis: type,
         comptime Scalar: type,
+        comptime Axis: type,
         x: NamedArrayConst(Axis, Scalar),
         y: NamedArray(Axis, Scalar),
     ) void {
@@ -178,9 +203,12 @@ pub const blas = struct {
         f(x_blas.len, x_blas.ptr, x_blas.inc, y_blas.ptr, y_blas.inc);
     }
 
+    /// `saxpy`, `daxpy`, `caxpy` and `zaxpy` in BLAS.
+    /// Computes `y := alpha * x + y`.
+    /// `x` and `y` must have the same axis and length.
     pub fn axpy(
-        comptime Axis: type,
         comptime Scalar: type,
+        comptime Axis: type,
         alpha: Scalar,
         x: NamedArrayConst(Axis, Scalar),
         y: NamedArray(Axis, Scalar),
@@ -201,10 +229,14 @@ pub const blas = struct {
         f(x_blas.len, alpha_blas, x_blas.ptr, x_blas.inc, y_blas.ptr, y_blas.inc);
     }
 
+    /// `sscal`, `dscal`, `cscal`, `zscal`, `csscal` and `zdscal` in BLAS.
+    /// Computes `x := alpha * x`, scaling every element of `x` in-place.
+    /// `AlphaScalar` may be the real component type of `VecScalar`,
+    /// allowing a complex vector to be scaled by a real scalar.
     pub fn scal(
-        comptime Axis: type,
         comptime VecScalar: type,
         comptime AlphaScalar: type,
+        comptime Axis: type,
         alpha: AlphaScalar,
         x: NamedArray(Axis, VecScalar),
     ) void {
@@ -1044,7 +1076,6 @@ pub const blas = struct {
 
     pub const MGRFlag = enum { Full, OffDiagonal, Diagonal, Identity };
 
-    pub const Uplo = enum { upper, lower };
     pub const Diag = enum { unit, non_unit };
 
     pub const IJ = enum { i, j };
@@ -1237,7 +1268,7 @@ test "dot" {
     };
 
     const expected: T = 235.0;
-    const actual = blas.dot(I, T, x, y, .{});
+    const actual = blas.dot(T, I, x, y, .{});
     try std.testing.expectApproxEqAbs(
         expected,
         actual,
@@ -1266,7 +1297,7 @@ test "dotu" {
     };
 
     const expected: T = .{ .re = -18.0, .im = 68.0 };
-    const actual = blas.dotu(I, T, x, y);
+    const actual = blas.dotu(T, I, x, y);
     try std.testing.expectApproxEqAbs(
         expected.re,
         actual.re,
@@ -1300,7 +1331,7 @@ test "dotc" {
     };
 
     const expected: T = .{ .re = 70.0, .im = -8.0 };
-    const actual = blas.dotc(I, T, x, y);
+    const actual = blas.dotc(T, I, x, y);
     try std.testing.expectApproxEqAbs(
         expected.re,
         actual.re,
@@ -1324,7 +1355,7 @@ test "nrm2 real" {
     };
 
     const expected: T = 5.0;
-    const actual = blas.nrm2(I, T, x);
+    const actual = blas.nrm2(T, I, x);
     try std.testing.expectApproxEqAbs(
         expected,
         actual,
@@ -1346,7 +1377,7 @@ test "nrm2 complex" {
     };
 
     const expected: f32 = math.sqrt(@as(f32, 30.0));
-    const actual = blas.nrm2(I, T, x);
+    const actual = blas.nrm2(T, I, x);
     try std.testing.expectApproxEqAbs(
         expected,
         actual,
@@ -1365,7 +1396,7 @@ test "asum real" {
     };
 
     const expected: T = 10.0;
-    const actual = blas.asum(I, T, x);
+    const actual = blas.asum(T, I, x);
     try std.testing.expectApproxEqAbs(
         expected,
         actual,
@@ -1387,7 +1418,7 @@ test "asum complex" {
     };
 
     const expected: f32 = 10.0; // |1|+|2| + |−3|+|4|
-    const actual = blas.asum(I, T, x);
+    const actual = blas.asum(T, I, x);
     try std.testing.expectApproxEqAbs(
         expected,
         actual,
@@ -1405,7 +1436,7 @@ test "i_amax real" {
         .buf = &[_]T{ 2.0, -3.0, 5.0 },
     };
 
-    const actual = blas.i_amax(I, T, x);
+    const actual = blas.i_amax(T, I, x);
     try std.testing.expectEqual(@as(usize, 2), actual);
 }
 
@@ -1423,7 +1454,7 @@ test "i_amax complex" {
         },
     };
 
-    const actual = blas.i_amax(I, T, x);
+    const actual = blas.i_amax(T, I, x);
     try std.testing.expectEqual(@as(usize, 2), actual);
 }
 
@@ -1443,7 +1474,7 @@ test "swap real" {
         .buf = &y_buf,
     };
 
-    blas.swap(I, T, x, y);
+    blas.swap(T, I, x, y);
     try std.testing.expectEqualSlices(T, &[_]T{ 4.0, 5.0, 6.0 }, x.buf);
     try std.testing.expectEqualSlices(T, &[_]T{ 1.0, 2.0, 3.0 }, y.buf);
 }
@@ -1470,7 +1501,7 @@ test "copy complex" {
         .buf = &y_buf,
     };
 
-    blas.copy(I, T, x, y);
+    blas.copy(T, I, x, y);
     try std.testing.expectEqualDeep(x.buf[0], y.buf[0]);
     try std.testing.expectEqualDeep(x.buf[1], y.buf[1]);
 }
@@ -1493,7 +1524,7 @@ test "axpy real" {
     };
 
     const alpha: T = 2.0;
-    blas.axpy(I, T, alpha, x, y);
+    blas.axpy(T, I, alpha, x, y);
     try std.testing.expectEqualSlices(T, &[_]T{ 12.0, 16.0, 36.0 }, y.buf);
 }
 
@@ -1520,7 +1551,7 @@ test "axpy complex" {
     };
 
     const alpha: T = .{ .re = 2.0, .im = -1.0 };
-    blas.axpy(I, T, alpha, x, y);
+    blas.axpy(T, I, alpha, x, y);
     // Manually compute expected:
     // y0 + alpha*x0 = (5+6i) + (2-i)*(1+2i) = (5+6i) + (2+4i - i -2i^2) = (5+6i) + (4 + 3i) = (9 + 9i)
     // y1 + alpha*x1 = (7+8i) + (2-i)*(-3+4i) = (7+8i) + (-6+8i +3i -4i^2) = (7+8i) + (-2 +11i) = (5 + 19i)
@@ -1542,7 +1573,7 @@ test "scal real" {
     };
 
     const alpha: T = 2.5;
-    blas.scal(I, T, T, alpha, x);
+    blas.scal(T, T, I, alpha, x);
 
     const expected: [4]T = .{ 2.5, -5.0, 7.5, -10.0 };
     try std.testing.expectEqualSlices(T, expected[0..], x.buf);
@@ -1565,7 +1596,7 @@ test "scal complex with real alpha" {
 
     const alpha: f32 = 2.0;
     // Use csscal path: complex vector scaled by real alpha
-    blas.scal(I, T, f32, alpha, x);
+    blas.scal(T, f32, I, alpha, x);
 
     // Expected: element-wise 2 * x
     try std.testing.expectApproxEqAbs(2.0, x.buf[0].re, math.floatEpsAt(f32, 2.0));
@@ -1592,7 +1623,7 @@ test "scal complex" {
     };
 
     const alpha: T = .{ .re = 2.0, .im = -1.0 };
-    blas.scal(I, T, T, alpha, x);
+    blas.scal(T, T, I, alpha, x);
 
     // Expected: element-wise (2 - i) * x
     // e0: (2 - i)*(1 + 2i) = 2 + 4i - i - 2i^2 = (4 + 3i)

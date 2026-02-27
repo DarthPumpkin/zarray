@@ -747,6 +747,180 @@ pub const blas = struct {
         );
     }
 
+    /// `sger` and `dger` in BLAS.
+    /// Computes `A := alpha * x * yᵀ + A` (rank-1 update) for real scalars.
+    /// `x`'s axis must match one axis of `A` and `y`'s axis must match the other.
+    /// The scalar `alpha` is optional and defaults to 1.
+    pub fn ger(
+        comptime Scalar: type,
+        comptime AxisA: type,
+        comptime AxisX: type,
+        comptime AxisY: type,
+        A: NamedArray(AxisA, Scalar),
+        x: NamedArrayConst(AxisX, Scalar),
+        y: NamedArrayConst(AxisY, Scalar),
+        scalars: struct { alpha: Scalar = one(Scalar) },
+    ) void {
+        const a_names = comptime meta.fieldNames(AxisA);
+        const x_axis_idx = comptime blk: {
+            assert(meta.fields(AxisA).len == 2);
+            assert(meta.fields(AxisX).len == 1);
+            assert(meta.fields(AxisY).len == 1);
+            const x_name = meta.fields(AxisX)[0].name;
+            const y_name = meta.fields(AxisY)[0].name;
+            assert(!std.mem.eql(u8, x_name, y_name));
+            assert(std.mem.eql(u8, a_names[0], x_name) or std.mem.eql(u8, a_names[1], x_name));
+            assert(std.mem.eql(u8, a_names[0], y_name) or std.mem.eql(u8, a_names[1], y_name));
+            break :blk if (std.mem.eql(u8, a_names[0], x_name)) @as(usize, 0) else @as(usize, 1);
+        };
+        const f = switch (Scalar) {
+            f32 => acc.cblas_sger,
+            f64 => acc.cblas_dger,
+            else => @compileError("ger requires f32 or f64."),
+        };
+
+        _ = named_index.resolveDimensions(.{ A.idx.shape, x.idx.shape, y.idx.shape }) catch
+            @panic("ger: dimension mismatch");
+
+        const a_ij_idx = A.idx.rename(IJ, &.{
+            .{ .old = a_names[x_axis_idx], .new = "i" },
+            .{ .old = a_names[1 - x_axis_idx], .new = "j" },
+        });
+        const A_ij: NamedArray(IJ, Scalar) = .{ .idx = a_ij_idx, .buf = A.buf };
+        const A_blas = Blas2dMut(Scalar).init(A_ij);
+        const x_blas = Blas1d(Scalar).init(AxisX, x);
+        const y_blas = Blas1d(Scalar).init(AxisY, y);
+
+        f(
+            A_blas.layout,
+            A_blas.rows, // M
+            A_blas.cols, // N
+            scalars.alpha,
+            x_blas.ptr,
+            x_blas.inc,
+            y_blas.ptr,
+            y_blas.inc,
+            A_blas.ptr,
+            A_blas.leading,
+        );
+    }
+
+    /// `cgeru` and `zgeru` in BLAS.
+    /// Computes `A := alpha * x * yᵀ + A` (rank-1 update, unconjugated) for complex scalars.
+    /// `x`'s axis must match one axis of `A` and `y`'s axis must match the other.
+    /// The scalar `alpha` is optional and defaults to 1.
+    pub fn geru(
+        comptime Scalar: type,
+        comptime AxisA: type,
+        comptime AxisX: type,
+        comptime AxisY: type,
+        A: NamedArray(AxisA, Scalar),
+        x: NamedArrayConst(AxisX, Scalar),
+        y: NamedArrayConst(AxisY, Scalar),
+        scalars: struct { alpha: Scalar = one(Scalar) },
+    ) void {
+        const a_names = comptime meta.fieldNames(AxisA);
+        const x_axis_idx = comptime blk: {
+            assert(meta.fields(AxisA).len == 2);
+            assert(meta.fields(AxisX).len == 1);
+            assert(meta.fields(AxisY).len == 1);
+            const x_name = meta.fields(AxisX)[0].name;
+            const y_name = meta.fields(AxisY)[0].name;
+            assert(!std.mem.eql(u8, x_name, y_name));
+            assert(std.mem.eql(u8, a_names[0], x_name) or std.mem.eql(u8, a_names[1], x_name));
+            assert(std.mem.eql(u8, a_names[0], y_name) or std.mem.eql(u8, a_names[1], y_name));
+            break :blk if (std.mem.eql(u8, a_names[0], x_name)) @as(usize, 0) else @as(usize, 1);
+        };
+        const f = switch (Scalar) {
+            Complex(f32) => acc.cblas_cgeru,
+            Complex(f64) => acc.cblas_zgeru,
+            else => @compileError("geru requires Complex(f32) or Complex(f64)."),
+        };
+
+        _ = named_index.resolveDimensions(.{ A.idx.shape, x.idx.shape, y.idx.shape }) catch
+            @panic("geru: dimension mismatch");
+
+        const a_ij_idx = A.idx.rename(IJ, &.{
+            .{ .old = a_names[x_axis_idx], .new = "i" },
+            .{ .old = a_names[1 - x_axis_idx], .new = "j" },
+        });
+        const A_ij: NamedArray(IJ, Scalar) = .{ .idx = a_ij_idx, .buf = A.buf };
+        const A_blas = Blas2dMut(Scalar).init(A_ij);
+        const x_blas = Blas1d(Scalar).init(AxisX, x);
+        const y_blas = Blas1d(Scalar).init(AxisY, y);
+
+        f(
+            A_blas.layout,
+            A_blas.rows, // M
+            A_blas.cols, // N
+            &scalars.alpha,
+            x_blas.ptr,
+            x_blas.inc,
+            y_blas.ptr,
+            y_blas.inc,
+            A_blas.ptr,
+            A_blas.leading,
+        );
+    }
+
+    /// `cgerc` and `zgerc` in BLAS.
+    /// Computes `A := alpha * x * yᴴ + A` (rank-1 update, conjugated) for complex scalars.
+    /// `x`'s axis must match one axis of `A` and `y`'s axis must match the other.
+    /// The scalar `alpha` is optional and defaults to 1.
+    pub fn gerc(
+        comptime Scalar: type,
+        comptime AxisA: type,
+        comptime AxisX: type,
+        comptime AxisY: type,
+        A: NamedArray(AxisA, Scalar),
+        x: NamedArrayConst(AxisX, Scalar),
+        y: NamedArrayConst(AxisY, Scalar),
+        scalars: struct { alpha: Scalar = one(Scalar) },
+    ) void {
+        const a_names = comptime meta.fieldNames(AxisA);
+        const x_axis_idx = comptime blk: {
+            assert(meta.fields(AxisA).len == 2);
+            assert(meta.fields(AxisX).len == 1);
+            assert(meta.fields(AxisY).len == 1);
+            const x_name = meta.fields(AxisX)[0].name;
+            const y_name = meta.fields(AxisY)[0].name;
+            assert(!std.mem.eql(u8, x_name, y_name));
+            assert(std.mem.eql(u8, a_names[0], x_name) or std.mem.eql(u8, a_names[1], x_name));
+            assert(std.mem.eql(u8, a_names[0], y_name) or std.mem.eql(u8, a_names[1], y_name));
+            break :blk if (std.mem.eql(u8, a_names[0], x_name)) @as(usize, 0) else @as(usize, 1);
+        };
+        const f = switch (Scalar) {
+            Complex(f32) => acc.cblas_cgerc,
+            Complex(f64) => acc.cblas_zgerc,
+            else => @compileError("gerc requires Complex(f32) or Complex(f64)."),
+        };
+
+        _ = named_index.resolveDimensions(.{ A.idx.shape, x.idx.shape, y.idx.shape }) catch
+            @panic("gerc: dimension mismatch");
+
+        const a_ij_idx = A.idx.rename(IJ, &.{
+            .{ .old = a_names[x_axis_idx], .new = "i" },
+            .{ .old = a_names[1 - x_axis_idx], .new = "j" },
+        });
+        const A_ij: NamedArray(IJ, Scalar) = .{ .idx = a_ij_idx, .buf = A.buf };
+        const A_blas = Blas2dMut(Scalar).init(A_ij);
+        const x_blas = Blas1d(Scalar).init(AxisX, x);
+        const y_blas = Blas1d(Scalar).init(AxisY, y);
+
+        f(
+            A_blas.layout,
+            A_blas.rows, // M
+            A_blas.cols, // N
+            &scalars.alpha,
+            x_blas.ptr,
+            x_blas.inc,
+            y_blas.ptr,
+            y_blas.inc,
+            A_blas.ptr,
+            A_blas.leading,
+        );
+    }
+
     pub fn GivensRotationReal(comptime Scalar: type) type {
         return struct {
             c: Scalar,
@@ -868,6 +1042,38 @@ pub const blas = struct {
             ptr: *const Scalar,
 
             fn init(arr: NamedArrayConst(IJ, Scalar)) @This() {
+                assert(arr.idx.isContiguous());
+                assert(arr.idx.strides.i > 0);
+                assert(arr.idx.strides.j > 0);
+                const order = arr.idx.axisOrder();
+                const layout: acc.CBLAS_ORDER = switch (order[0]) {
+                    .i => @intCast(acc.CblasRowMajor),
+                    .j => @intCast(acc.CblasColMajor),
+                };
+                const leading = switch (order[0]) {
+                    .i => arr.idx.shape.j,
+                    .j => arr.idx.shape.i,
+                };
+                return .{
+                    .layout = layout,
+                    .rows = @intCast(arr.idx.shape.i),
+                    .cols = @intCast(arr.idx.shape.j),
+                    .leading = @intCast(leading),
+                    .ptr = @ptrCast(arr.buf.ptr),
+                };
+            }
+        };
+    }
+
+    fn Blas2dMut(comptime Scalar: type) type {
+        return struct {
+            layout: acc.CBLAS_ORDER,
+            rows: c_int,
+            cols: c_int,
+            leading: c_int,
+            ptr: *Scalar,
+
+            fn init(arr: NamedArray(IJ, Scalar)) @This() {
                 assert(arr.idx.isContiguous());
                 assert(arr.idx.strides.i > 0);
                 assert(arr.idx.strides.j > 0);
@@ -2404,6 +2610,266 @@ test "trsv nontrivial strides" {
     // sentinel untouched
     try std.testing.expectEqual(@as(f32, 99), x_buf[1].re);
     try std.testing.expectEqual(@as(f32, 99), x_buf[1].im);
+}
+
+test "ger real" {
+    const MK = enum { m, k };
+    const M = enum { m };
+    const K = enum { k };
+    const T = f64;
+
+    // A = zeros(3, 2), x = [1, 2, 3] (m-axis), y = [4, 5] (k-axis)
+    // A := 1 * x * y^T + A = [[4, 5], [8, 10], [12, 15]]
+    var a_buf = [_]T{ 0, 0, 0, 0, 0, 0 };
+    const A = NamedArray(MK, T){
+        .idx = NamedIndex(MK).initContiguous(.{ .m = 3, .k = 2 }),
+        .buf = &a_buf,
+    };
+
+    const x_buf = [_]T{ 1, 2, 3 };
+    const x = NamedArrayConst(M, T){
+        .idx = NamedIndex(M).initContiguous(.{ .m = 3 }),
+        .buf = &x_buf,
+    };
+
+    const y_buf = [_]T{ 4, 5 };
+    const y = NamedArrayConst(K, T){
+        .idx = NamedIndex(K).initContiguous(.{ .k = 2 }),
+        .buf = &y_buf,
+    };
+
+    blas.ger(T, MK, M, K, A, x, y, .{});
+
+    const expected = [_]T{ 4, 5, 8, 10, 12, 15 };
+    for (0..6) |i| {
+        try std.testing.expectApproxEqAbs(expected[i], a_buf[i], math.floatEpsAt(T, expected[i]));
+    }
+}
+
+test "ger real nontrivial strides" {
+    const AB = enum { a, b };
+    const A_ = enum { a };
+    const B = enum { b };
+    const T = f32;
+
+    // A_init = [[1, 2], [3, 4]]
+    var a_buf = [_]T{ 1, 2, 3, 4 };
+    const A = NamedArray(AB, T){
+        .idx = NamedIndex(AB).initContiguous(.{ .a = 2, .b = 2 }),
+        .buf = &a_buf,
+    };
+
+    // x physical = [1, 2]; stride -1 → logical x = [2, 1]
+    const x_buf = [_]T{ 1, 2 };
+    var x_idx = NamedIndex(A_).initContiguous(.{ .a = 2 });
+    x_idx = x_idx.stride(.{ .a = -1 });
+    const x = NamedArrayConst(A_, T){
+        .idx = x_idx,
+        .buf = &x_buf,
+    };
+
+    // y with stride 2: positions 0, 2 in buffer; logical y = [1, 2]
+    const y_buf = [_]T{ 1, 99, 2 };
+    const y_idx: NamedIndex(B) = .{
+        .shape = .{ .b = 2 },
+        .strides = .{ .b = 2 },
+        .offset = 0,
+    };
+    const y = NamedArrayConst(B, T){
+        .idx = y_idx,
+        .buf = &y_buf,
+    };
+
+    // alpha = 3
+    // A_new = 3 * outer([2,1], [1,2]) + [[1,2],[3,4]]
+    //       = 3 * [[2,4],[1,2]] + [[1,2],[3,4]]
+    //       = [[6,12],[3,6]] + [[1,2],[3,4]]
+    //       = [[7, 14], [6, 10]]
+    blas.ger(T, AB, A_, B, A, x, y, .{ .alpha = 3.0 });
+
+    const eps: f32 = 1e-5;
+    try std.testing.expectApproxEqAbs(@as(f32, 7), a_buf[0], eps);
+    try std.testing.expectApproxEqAbs(@as(f32, 14), a_buf[1], eps);
+    try std.testing.expectApproxEqAbs(@as(f32, 6), a_buf[2], eps);
+    try std.testing.expectApproxEqAbs(@as(f32, 10), a_buf[3], eps);
+}
+
+test "geru complex" {
+    const MK = enum { m, k };
+    const M = enum { m };
+    const K = enum { k };
+    const T = Complex(f64);
+
+    // A = zeros(2, 3), x = [1+i, 2] (m-axis), y = [1, i, 1+i] (k-axis)
+    // A := x * y^T (unconjugated):
+    //   [0,0] = (1+i)(1)   = 1+i
+    //   [0,1] = (1+i)(i)   = -1+i
+    //   [0,2] = (1+i)(1+i) = 2i
+    //   [1,0] = (2)(1)     = 2
+    //   [1,1] = (2)(i)     = 2i
+    //   [1,2] = (2)(1+i)   = 2+2i
+    var a_buf = [_]T{
+        .{ .re = 0, .im = 0 }, .{ .re = 0, .im = 0 }, .{ .re = 0, .im = 0 },
+        .{ .re = 0, .im = 0 }, .{ .re = 0, .im = 0 }, .{ .re = 0, .im = 0 },
+    };
+    const A = NamedArray(MK, T){
+        .idx = NamedIndex(MK).initContiguous(.{ .m = 2, .k = 3 }),
+        .buf = &a_buf,
+    };
+
+    const x_buf = [_]T{
+        .{ .re = 1, .im = 1 },
+        .{ .re = 2, .im = 0 },
+    };
+    const x = NamedArrayConst(M, T){
+        .idx = NamedIndex(M).initContiguous(.{ .m = 2 }),
+        .buf = &x_buf,
+    };
+
+    const y_buf = [_]T{
+        .{ .re = 1, .im = 0 },
+        .{ .re = 0, .im = 1 },
+        .{ .re = 1, .im = 1 },
+    };
+    const y = NamedArrayConst(K, T){
+        .idx = NamedIndex(K).initContiguous(.{ .k = 3 }),
+        .buf = &y_buf,
+    };
+
+    blas.geru(T, MK, M, K, A, x, y, .{});
+
+    const expected = [_]T{
+        .{ .re = 1, .im = 1 }, .{ .re = -1, .im = 1 }, .{ .re = 0, .im = 2 },
+        .{ .re = 2, .im = 0 }, .{ .re = 0, .im = 2 },  .{ .re = 2, .im = 2 },
+    };
+    const eps = 1e-10;
+    for (0..6) |i| {
+        try std.testing.expectApproxEqAbs(expected[i].re, a_buf[i].re, eps);
+        try std.testing.expectApproxEqAbs(expected[i].im, a_buf[i].im, eps);
+    }
+}
+
+test "gerc complex" {
+    const MK = enum { m, k };
+    const M = enum { m };
+    const K = enum { k };
+    const T = Complex(f64);
+
+    // Same x and y as geru test, but conjugated:
+    // A := x * y^H = x * conj(y)^T
+    // conj(y) = [1, -i, 1-i]
+    //   [0,0] = (1+i)(1)   = 1+i
+    //   [0,1] = (1+i)(-i)  = 1-i
+    //   [0,2] = (1+i)(1-i) = 2
+    //   [1,0] = (2)(1)     = 2
+    //   [1,1] = (2)(-i)    = -2i
+    //   [1,2] = (2)(1-i)   = 2-2i
+    var a_buf = [_]T{
+        .{ .re = 0, .im = 0 }, .{ .re = 0, .im = 0 }, .{ .re = 0, .im = 0 },
+        .{ .re = 0, .im = 0 }, .{ .re = 0, .im = 0 }, .{ .re = 0, .im = 0 },
+    };
+    const A = NamedArray(MK, T){
+        .idx = NamedIndex(MK).initContiguous(.{ .m = 2, .k = 3 }),
+        .buf = &a_buf,
+    };
+
+    const x_buf = [_]T{
+        .{ .re = 1, .im = 1 },
+        .{ .re = 2, .im = 0 },
+    };
+    const x = NamedArrayConst(M, T){
+        .idx = NamedIndex(M).initContiguous(.{ .m = 2 }),
+        .buf = &x_buf,
+    };
+
+    const y_buf = [_]T{
+        .{ .re = 1, .im = 0 },
+        .{ .re = 0, .im = 1 },
+        .{ .re = 1, .im = 1 },
+    };
+    const y = NamedArrayConst(K, T){
+        .idx = NamedIndex(K).initContiguous(.{ .k = 3 }),
+        .buf = &y_buf,
+    };
+
+    blas.gerc(T, MK, M, K, A, x, y, .{});
+
+    const expected = [_]T{
+        .{ .re = 1, .im = 1 }, .{ .re = 1, .im = -1 }, .{ .re = 2, .im = 0 },
+        .{ .re = 2, .im = 0 }, .{ .re = 0, .im = -2 }, .{ .re = 2, .im = -2 },
+    };
+    const eps = 1e-10;
+    for (0..6) |i| {
+        try std.testing.expectApproxEqAbs(expected[i].re, a_buf[i].re, eps);
+        try std.testing.expectApproxEqAbs(expected[i].im, a_buf[i].im, eps);
+    }
+}
+
+test "gerc nontrivial strides" {
+    const AB = enum { a, b };
+    const A_ = enum { a };
+    const B = enum { b };
+    const T = Complex(f32);
+
+    // A_init = [[1+0i, 2+i], [0+i, 3+0i]]
+    var a_buf = [_]T{
+        .{ .re = 1, .im = 0 }, .{ .re = 2, .im = 1 },
+        .{ .re = 0, .im = 1 }, .{ .re = 3, .im = 0 },
+    };
+    const A = NamedArray(AB, T){
+        .idx = NamedIndex(AB).initContiguous(.{ .a = 2, .b = 2 }),
+        .buf = &a_buf,
+    };
+
+    // x physical = [1+i, 2+0i]; stride -1 → logical x = [2, 1+i]
+    const x_buf = [_]T{
+        .{ .re = 1, .im = 1 },
+        .{ .re = 2, .im = 0 },
+    };
+    var x_idx = NamedIndex(A_).initContiguous(.{ .a = 2 });
+    x_idx = x_idx.stride(.{ .a = -1 });
+    const x = NamedArrayConst(A_, T){
+        .idx = x_idx,
+        .buf = &x_buf,
+    };
+
+    // y with stride 2: physical [1+0i, 99, 0+i], logical y = [1, i]
+    const y_buf = [_]T{
+        .{ .re = 1, .im = 0 },
+        .{ .re = 99, .im = 99 },
+        .{ .re = 0, .im = 1 },
+    };
+    const y_idx: NamedIndex(B) = .{
+        .shape = .{ .b = 2 },
+        .strides = .{ .b = 2 },
+        .offset = 0,
+    };
+    const y = NamedArrayConst(B, T){
+        .idx = y_idx,
+        .buf = &y_buf,
+    };
+
+    // alpha = 1+i
+    // conj(y) = [1, -i]
+    // outer(x_logical, conj(y)) = outer([2, 1+i], [1, -i])
+    //   = [[2, -2i], [1+i, 1-i]]
+    // (1+i) * [[2, -2i], [1+i, 1-i]]
+    //   = [[2+2i, 2-2i], [2i, 2]]
+    // A_new = [[2+2i, 2-2i], [2i, 2]] + [[1, 2+i], [i, 3]]
+    //       = [[3+2i, 4-i], [3i, 5]]
+    blas.gerc(T, AB, A_, B, A, x, y, .{
+        .alpha = .{ .re = 1, .im = 1 },
+    });
+
+    const eps: f32 = 1e-5;
+    try std.testing.expectApproxEqAbs(@as(f32, 3), a_buf[0].re, eps);
+    try std.testing.expectApproxEqAbs(@as(f32, 2), a_buf[0].im, eps);
+    try std.testing.expectApproxEqAbs(@as(f32, 4), a_buf[1].re, eps);
+    try std.testing.expectApproxEqAbs(@as(f32, -1), a_buf[1].im, eps);
+    try std.testing.expectApproxEqAbs(@as(f32, 0), a_buf[2].re, eps);
+    try std.testing.expectApproxEqAbs(@as(f32, 3), a_buf[2].im, eps);
+    try std.testing.expectApproxEqAbs(@as(f32, 5), a_buf[3].re, eps);
+    try std.testing.expectApproxEqAbs(@as(f32, 0), a_buf[3].im, eps);
 }
 
 // TODO: Figure this out. See blas.rot_complex above.

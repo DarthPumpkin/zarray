@@ -466,14 +466,14 @@ pub const blas = struct {
 
     /// `chemv` and `zhemv` in BLAS.
     /// Computes `y = alpha * A * x + beta * y` where `A` is a Hermitian matrix.
-    /// Only one triangle of `A` is read, selected by `uplo`.
+    /// Only the triangle of `A` where `triangle >= the other axis` is read.
     /// The scalars `alpha` and `beta` are optional and default to 1.
     /// `A` must have one axis in common with `x` and `y`.
     pub fn hemv(
         comptime Scalar: type,
         comptime AxisA: type,
         comptime AxisXY: type,
-        uplo: Uplo,
+        triangle: AxisA,
         A: NamedArrayConst(AxisA, Scalar),
         x: NamedArrayConst(AxisXY, Scalar),
         y: NamedArray(AxisXY, Scalar),
@@ -506,10 +506,13 @@ pub const blas = struct {
         const x_blas = Blas1d(Scalar).init(AxisXY, x);
         const y_blas = Blas1dMut(Scalar).init(AxisXY, y);
 
-        const uplo_blas: acc.CBLAS_UPLO = switch (uplo) {
-            .upper => @intCast(acc.CblasUpper),
-            .lower => @intCast(acc.CblasLower),
-        };
+        // first axis → rows (i), second axis → cols (j)
+        // triangle == second axis → data at j >= i → Upper
+        // triangle == first axis  → data at i >= j → Lower
+        const uplo_blas: acc.CBLAS_UPLO = if (@intFromEnum(triangle) == 1)
+            @intCast(acc.CblasUpper)
+        else
+            @intCast(acc.CblasLower);
 
         f(
             A_blas.layout,
@@ -528,13 +531,13 @@ pub const blas = struct {
 
     /// `ssymv` and `dsymv` in BLAS.
     /// Computes `y = alpha * A * x + beta * y` where `A` is a real symmetric matrix.
-    /// Only one triangle of `A` is read, selected by `uplo`.
+    /// Only the triangle of `A` where `triangle >= the other axis` is read.
     /// The scalars `alpha` and `beta` are optional and default to 1.
     pub fn symv(
         comptime Scalar: type,
         comptime AxisA: type,
         comptime AxisXY: type,
-        uplo: Uplo,
+        triangle: AxisA,
         A: NamedArrayConst(AxisA, Scalar),
         x: NamedArrayConst(AxisXY, Scalar),
         y: NamedArray(AxisXY, Scalar),
@@ -567,10 +570,13 @@ pub const blas = struct {
         const x_blas = Blas1d(Scalar).init(AxisXY, x);
         const y_blas = Blas1dMut(Scalar).init(AxisXY, y);
 
-        const uplo_blas: acc.CBLAS_UPLO = switch (uplo) {
-            .upper => @intCast(acc.CblasUpper),
-            .lower => @intCast(acc.CblasLower),
-        };
+        // first axis → rows (i), second axis → cols (j)
+        // triangle == second axis → data at j >= i → Upper
+        // triangle == first axis  → data at i >= j → Lower
+        const uplo_blas: acc.CBLAS_UPLO = if (@intFromEnum(triangle) == 1)
+            @intCast(acc.CblasUpper)
+        else
+            @intCast(acc.CblasLower);
 
         f(
             A_blas.layout,
@@ -1626,12 +1632,12 @@ test "gemv complex nontrivial scalars and strides" {
     try std.testing.expectEqual(@as(f32, 99), y_buf[1].im);
 }
 
-test "hemv upper" {
+test "hemv upper (triangle = second axis)" {
     const MK = enum { m, k };
     const K = enum { k };
     const T = Complex(f64);
 
-    // Hermitian 3x3 matrix (upper triangle stored):
+    // Hermitian 3x3 matrix (upper triangle stored, triangle = .k, i.e. data where k >= m):
     //   [[2,      1-i,   3+2i],
     //    [1+i,    5,     2-i ],
     //    [3-2i,   2+i,   4   ]]
@@ -1670,7 +1676,7 @@ test "hemv upper" {
     //   y[0] = 2*(1) + (1-i)*(i) + (3+2i)*(1) = 2 + i+1 + 3+2i = 6+3i
     //   y[1] = (1+i)*(1) + 5*(i) + (2-i)*(1) = 1+i + 5i + 2-i = 3+5i
     //   y[2] = (3-2i)*(1) + (2+i)*(i) + 4*(1) = 3-2i + 2i-1 + 4 = 6+0i
-    blas.hemv(T, MK, K, .upper, A, x, y, .{
+    blas.hemv(T, MK, K, .k, A, x, y, .{
         .alpha = .{ .re = 1, .im = 0 },
         .beta = .{ .re = 0, .im = 0 },
     });
@@ -1687,12 +1693,12 @@ test "hemv upper" {
     }
 }
 
-test "hemv lower" {
+test "hemv lower (triangle = first axis)" {
     const MK = enum { m, k };
     const K = enum { k };
     const T = Complex(f64);
 
-    // Same Hermitian matrix, but now the *lower* triangle is stored.
+    // Same Hermitian matrix, but now the *lower* triangle is stored (triangle = .m, i.e. data where m >= k).
     // Upper triangle positions hold sentinels that BLAS must ignore.
     //   [[2,      _,      _     ],
     //    [1+i,    5,      _     ],
@@ -1728,7 +1734,7 @@ test "hemv lower" {
     };
 
     // Same result as the upper test: y = [6+3i, 3+5i, 6+0i]
-    blas.hemv(T, MK, K, .lower, A, x, y, .{
+    blas.hemv(T, MK, K, .m, A, x, y, .{
         .alpha = .{ .re = 1, .im = 0 },
         .beta = .{ .re = 0, .im = 0 },
     });
@@ -1751,7 +1757,7 @@ test "hemv nontrivial scalars and strides" {
     const T = Complex(f32);
 
     // Hermitian 2x2: [[3, 1+2i], [1-2i, 5]]
-    // Upper triangle stored; lower positions hold sentinels.
+    // Upper triangle stored (triangle = .b, i.e. data where b >= a); lower positions hold sentinels.
     const a_buf = [_]T{
         .{ .re = 3, .im = 0 },   .{ .re = 1, .im = 2 },
         .{ .re = 99, .im = 99 }, .{ .re = 5, .im = 0 },
@@ -1800,7 +1806,7 @@ test "hemv nontrivial scalars and strides" {
     //   (1+i)(7+i)  = 7+i+7i+i²   = 6+8i
     //   y[0] = 2+8i + 2   = 4+8i
     //   y[1] = 6+8i + 4+2i = 10+10i
-    blas.hemv(T, AB, B, .upper, A, x, y, .{
+    blas.hemv(T, AB, B, .b, A, x, y, .{
         .alpha = .{ .re = 1, .im = 1 },
         .beta = .{ .re = 2, .im = 0 },
     });
@@ -1815,12 +1821,12 @@ test "hemv nontrivial scalars and strides" {
     try std.testing.expectEqual(@as(f32, 99), y_buf[1].im);
 }
 
-test "symv upper" {
+test "symv upper (triangle = second axis)" {
     const MK = enum { m, k };
     const K = enum { k };
     const T = f64;
 
-    // Symmetric 3x3 matrix (upper triangle stored):
+    // Symmetric 3x3 matrix (upper triangle stored, triangle = .k, i.e. data where k >= m):
     //   [[2, 3, 5],
     //    [3, 7, 11],
     //    [5, 11, 13]]
@@ -1851,7 +1857,7 @@ test "symv upper" {
     //   y[0] = 2*1 + 3*2 + 5*3  = 2 + 6 + 15  = 23
     //   y[1] = 3*1 + 7*2 + 11*3 = 3 + 14 + 33 = 50
     //   y[2] = 5*1 + 11*2 + 13*3 = 5 + 22 + 39 = 66
-    blas.symv(T, MK, K, .upper, A, x, y, .{ .alpha = 1.0, .beta = 0.0 });
+    blas.symv(T, MK, K, .k, A, x, y, .{ .alpha = 1.0, .beta = 0.0 });
 
     const expected = [_]T{ 23.0, 50.0, 66.0 };
     for (0..3) |i| {
@@ -1859,12 +1865,12 @@ test "symv upper" {
     }
 }
 
-test "symv lower" {
+test "symv lower (triangle = first axis)" {
     const MK = enum { m, k };
     const K = enum { k };
     const T = f64;
 
-    // Same symmetric matrix, but now the *lower* triangle is stored.
+    // Same symmetric matrix, but now the *lower* triangle is stored (triangle = .m, i.e. data where m >= k).
     // Upper triangle positions hold sentinels that BLAS must ignore.
     //   [[2,  _,  _ ],
     //    [3,  7,  _ ],
@@ -1892,7 +1898,7 @@ test "symv lower" {
     };
 
     // Same result as the upper test: y = [23, 50, 66]
-    blas.symv(T, MK, K, .lower, A, x, y, .{ .alpha = 1.0, .beta = 0.0 });
+    blas.symv(T, MK, K, .m, A, x, y, .{ .alpha = 1.0, .beta = 0.0 });
 
     const expected = [_]T{ 23.0, 50.0, 66.0 };
     for (0..3) |i| {
@@ -1906,7 +1912,7 @@ test "symv nontrivial scalars and strides" {
     const T = f32;
 
     // Symmetric 2x2: [[4, 3], [3, 7]]
-    // Upper triangle stored; lower position holds sentinel.
+    // Upper triangle stored (triangle = .b, i.e. data where b >= a); lower position holds sentinel.
     const a_buf = [_]T{ 4, 3, 99, 7 };
     const A = NamedArrayConst(AB, T){
         .idx = NamedIndex(AB).initContiguous(.{ .a = 2, .b = 2 }),
@@ -1941,7 +1947,7 @@ test "symv nontrivial scalars and strides" {
     //   row1: 3*2 + 7*1 = 13
     //
     // y = 2.5 * [11, 13] + (-1) * [10, 20] = [27.5-10, 32.5-20] = [17.5, 12.5]
-    blas.symv(T, AB, B, .upper, A, x, y, .{ .alpha = 2.5, .beta = -1.0 });
+    blas.symv(T, AB, B, .b, A, x, y, .{ .alpha = 2.5, .beta = -1.0 });
 
     const eps: f32 = 1e-5;
     try std.testing.expectApproxEqAbs(@as(f32, 17.5), y_buf[0], eps);

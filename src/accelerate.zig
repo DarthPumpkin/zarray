@@ -1088,6 +1088,204 @@ pub const blas = struct {
         );
     }
 
+    /// `sspmv` and `dspmv` in BLAS.
+    /// Computes `y = alpha * A * x + beta * y` where `A` is an N×N real symmetric matrix
+    /// stored in packed format.
+    /// `AxisA` is the 2D conceptual axis type of `A`; `triangle` selects which triangle
+    /// is stored (second axis → upper, first axis → lower), using the same convention
+    /// as `symv`. `x`'s axis must match one axis of `AxisA` and `y`'s axis the other.
+    /// The scalars `alpha` and `beta` are optional and default to 1.
+    ///
+    /// **Storage requirement**: `AP` must be a contiguous slice of exactly
+    /// `N * (N + 1) / 2` elements in column-major packed order.
+    pub fn spmv(
+        comptime Scalar: type,
+        comptime AxisA: type,
+        comptime AxisX: type,
+        comptime AxisY: type,
+        triangle: AxisA,
+        AP: []const Scalar,
+        x: NamedArrayConst(AxisX, Scalar),
+        y: NamedArray(AxisY, Scalar),
+        scalars: struct { alpha: Scalar = one(Scalar), beta: Scalar = one(Scalar) },
+    ) void {
+        _ = comptime matchingAxisIdx(AxisA, AxisX, AxisY);
+        const f = switch (Scalar) {
+            f32 => acc.cblas_sspmv,
+            f64 => acc.cblas_dspmv,
+            else => @compileError("spmv requires f32 or f64."),
+        };
+
+        const x_blas = Blas1d(Scalar).init(AxisX, x);
+        const y_blas = Blas1dMut(Scalar).init(AxisY, y);
+        const n: usize = @intCast(x_blas.len);
+
+        assert(x_blas.len == y_blas.len); // Square matrix: x and y dimensions must match
+        assert(AP.len == n * (n + 1) / 2); // Packed storage size must be N*(N+1)/2
+
+        f(
+            @intCast(acc.CblasColMajor),
+            uploBlas(AxisA, triangle),
+            x_blas.len, // N
+            scalars.alpha,
+            AP.ptr,
+            x_blas.ptr,
+            x_blas.inc,
+            scalars.beta,
+            y_blas.ptr,
+            y_blas.inc,
+        );
+    }
+
+    /// `chpmv` and `zhpmv` in BLAS.
+    /// Computes `y = alpha * A * x + beta * y` where `A` is an N×N Hermitian matrix
+    /// stored in packed format.
+    /// `AxisA` is the 2D conceptual axis type of `A`; `triangle` selects which triangle
+    /// is stored (second axis → upper, first axis → lower), using the same convention
+    /// as `hemv`. `x`'s axis must match one axis of `AxisA` and `y`'s axis the other.
+    /// The scalars `alpha` and `beta` are optional and default to 1.
+    ///
+    /// **Storage requirement**: `AP` must be a contiguous slice of exactly
+    /// `N * (N + 1) / 2` elements in column-major packed order.
+    pub fn hpmv(
+        comptime Scalar: type,
+        comptime AxisA: type,
+        comptime AxisX: type,
+        comptime AxisY: type,
+        triangle: AxisA,
+        AP: []const Scalar,
+        x: NamedArrayConst(AxisX, Scalar),
+        y: NamedArray(AxisY, Scalar),
+        scalars: struct { alpha: Scalar = one(Scalar), beta: Scalar = one(Scalar) },
+    ) void {
+        _ = comptime matchingAxisIdx(AxisA, AxisX, AxisY);
+        const f = switch (Scalar) {
+            Complex(f32) => acc.cblas_chpmv,
+            Complex(f64) => acc.cblas_zhpmv,
+            else => @compileError("hpmv requires Complex(f32) or Complex(f64)."),
+        };
+
+        const x_blas = Blas1d(Scalar).init(AxisX, x);
+        const y_blas = Blas1dMut(Scalar).init(AxisY, y);
+        const n: usize = @intCast(x_blas.len);
+
+        assert(x_blas.len == y_blas.len); // Square matrix: x and y dimensions must match
+        assert(AP.len == n * (n + 1) / 2); // Packed storage size must be N*(N+1)/2
+
+        f(
+            @intCast(acc.CblasColMajor),
+            uploBlas(AxisA, triangle),
+            x_blas.len, // N
+            &scalars.alpha,
+            AP.ptr,
+            x_blas.ptr,
+            x_blas.inc,
+            &scalars.beta,
+            y_blas.ptr,
+            y_blas.inc,
+        );
+    }
+
+    /// `stpmv`, `dtpmv`, `ctpmv` and `ztpmv` in BLAS.
+    /// Computes `x = A * x` in-place where `A` is an N×N triangular matrix
+    /// stored in packed format.
+    /// `AxisA` is the 2D conceptual axis type of `A`; `triangle` selects which triangle
+    /// is stored (second axis → upper, first axis → lower), using the same convention
+    /// as `trmv`. `x`'s axis must match one axis of `AxisA`.
+    /// If `diag` is `.unit`, the diagonal of `A` is assumed to be all ones and is not read.
+    ///
+    /// **Storage requirement**: `AP` must be a contiguous slice of exactly
+    /// `N * (N + 1) / 2` elements in column-major packed order.
+    pub fn tpmv(
+        comptime Scalar: type,
+        comptime AxisA: type,
+        comptime AxisX: type,
+        triangle: AxisA,
+        diag: Diag,
+        AP: []const Scalar,
+        x: NamedArray(AxisX, Scalar),
+    ) void {
+        comptime assertMatchingAxis(AxisA, AxisX);
+        const f = switch (Scalar) {
+            f32 => acc.cblas_stpmv,
+            f64 => acc.cblas_dtpmv,
+            Complex(f32) => acc.cblas_ctpmv,
+            Complex(f64) => acc.cblas_ztpmv,
+            else => @compileError("tpmv is incompatible with given Scalar type."),
+        };
+
+        const x_blas = Blas1dMut(Scalar).init(AxisX, x);
+        const n: usize = @intCast(x_blas.len);
+
+        assert(AP.len == n * (n + 1) / 2); // Packed storage size must be N*(N+1)/2
+
+        const diag_blas: acc.CBLAS_DIAG = switch (diag) {
+            .unit => @intCast(acc.CblasUnit),
+            .non_unit => @intCast(acc.CblasNonUnit),
+        };
+
+        f(
+            @intCast(acc.CblasColMajor),
+            uploBlas(AxisA, triangle),
+            @intCast(acc.CblasNoTrans),
+            diag_blas,
+            x_blas.len, // N
+            AP.ptr,
+            x_blas.ptr,
+            x_blas.inc,
+        );
+    }
+
+    /// `stpsv`, `dtpsv`, `ctpsv` and `ztpsv` in BLAS.
+    /// Solves `A * x_new = x_old` in-place, i.e. computes `x := A⁻¹ * x`,
+    /// where `A` is an N×N triangular matrix stored in packed format.
+    /// `AxisA` is the 2D conceptual axis type of `A`; `triangle` selects which triangle
+    /// is stored (second axis → upper, first axis → lower), using the same convention
+    /// as `trsv`. `x`'s axis must match one axis of `AxisA`.
+    /// If `diag` is `.unit`, the diagonal of `A` is assumed to be all ones and is not read.
+    ///
+    /// **Storage requirement**: `AP` must be a contiguous slice of exactly
+    /// `N * (N + 1) / 2` elements in column-major packed order.
+    pub fn tpsv(
+        comptime Scalar: type,
+        comptime AxisA: type,
+        comptime AxisX: type,
+        triangle: AxisA,
+        diag: Diag,
+        AP: []const Scalar,
+        x: NamedArray(AxisX, Scalar),
+    ) void {
+        comptime assertMatchingAxis(AxisA, AxisX);
+        const f = switch (Scalar) {
+            f32 => acc.cblas_stpsv,
+            f64 => acc.cblas_dtpsv,
+            Complex(f32) => acc.cblas_ctpsv,
+            Complex(f64) => acc.cblas_ztpsv,
+            else => @compileError("tpsv is incompatible with given Scalar type."),
+        };
+
+        const x_blas = Blas1dMut(Scalar).init(AxisX, x);
+        const n: usize = @intCast(x_blas.len);
+
+        assert(AP.len == n * (n + 1) / 2); // Packed storage size must be N*(N+1)/2
+
+        const diag_blas: acc.CBLAS_DIAG = switch (diag) {
+            .unit => @intCast(acc.CblasUnit),
+            .non_unit => @intCast(acc.CblasNonUnit),
+        };
+
+        f(
+            @intCast(acc.CblasColMajor),
+            uploBlas(AxisA, triangle),
+            @intCast(acc.CblasNoTrans),
+            diag_blas,
+            x_blas.len, // N
+            AP.ptr,
+            x_blas.ptr,
+            x_blas.inc,
+        );
+    }
+
     /// `sger` and `dger` in BLAS.
     /// Computes `A := alpha * x * yᵀ + A` (rank-1 update) for real scalars.
     /// `x`'s axis must match one axis of `A` and `y`'s axis must match the other.
@@ -3891,6 +4089,474 @@ test "tbsv column-major matrix" {
     const expected = [_]T{ 1.0, 2.0, 3.0, 4.0 };
     for (0..4) |i| {
         try std.testing.expectApproxEqAbs(expected[i], x_buf[i], math.floatEpsAt(T, expected[i]));
+    }
+}
+
+// ============================================================
+// Packed matrix operation tests
+// ============================================================
+
+test "spmv real upper" {
+    // 3×3 symmetric matrix, upper packed storage:
+    // A = [1 2 3]    x = [1]    y = A*x = [14]
+    //     [2 5 6]        [2]               [30]
+    //     [3 6 9]        [3]               [42]
+    //
+    // Upper packed (col-major): col0=[1], col1=[2,5], col2=[3,6,9]
+    const MK = enum { m, k };
+    const K = enum { k };
+    const M = enum { m };
+    const T = f64;
+
+    const ap = [_]T{ 1, 2, 5, 3, 6, 9 };
+
+    const x_buf = [_]T{ 1, 2, 3 };
+    const x = NamedArrayConst(K, T){
+        .idx = NamedIndex(K).initContiguous(.{ .k = 3 }),
+        .buf = &x_buf,
+    };
+
+    var y_buf = [_]T{ 0, 0, 0 };
+    const y = NamedArray(M, T){
+        .idx = NamedIndex(M).initContiguous(.{ .m = 3 }),
+        .buf = &y_buf,
+    };
+
+    // triangle = .k (second axis) → Upper
+    blas.spmv(T, MK, K, M, .k, &ap, x, y, .{ .alpha = 1.0, .beta = 0.0 });
+
+    const expected = [_]T{ 14.0, 30.0, 42.0 };
+    for (0..3) |i| {
+        try std.testing.expectApproxEqAbs(expected[i], y_buf[i], math.floatEpsAt(T, expected[i]));
+    }
+}
+
+test "spmv real lower" {
+    // Same 3×3 symmetric matrix, lower packed storage:
+    // Lower packed (col-major): col0=[1,2,3], col1=[5,6], col2=[9]
+    const MK = enum { m, k };
+    const K = enum { k };
+    const M = enum { m };
+    const T = f64;
+
+    const ap = [_]T{ 1, 2, 3, 5, 6, 9 };
+
+    const x_buf = [_]T{ 1, 2, 3 };
+    const x = NamedArrayConst(K, T){
+        .idx = NamedIndex(K).initContiguous(.{ .k = 3 }),
+        .buf = &x_buf,
+    };
+
+    var y_buf = [_]T{ 0, 0, 0 };
+    const y = NamedArray(M, T){
+        .idx = NamedIndex(M).initContiguous(.{ .m = 3 }),
+        .buf = &y_buf,
+    };
+
+    // triangle = .m (first axis) → Lower
+    blas.spmv(T, MK, K, M, .m, &ap, x, y, .{ .alpha = 1.0, .beta = 0.0 });
+
+    const expected = [_]T{ 14.0, 30.0, 42.0 };
+    for (0..3) |i| {
+        try std.testing.expectApproxEqAbs(expected[i], y_buf[i], math.floatEpsAt(T, expected[i]));
+    }
+}
+
+test "spmv real nontrivial scalars and strides" {
+    // Same matrix, alpha=2, beta=1, x stride=2, y stride=2
+    const MK = enum { m, k };
+    const K = enum { k };
+    const M = enum { m };
+    const T = f64;
+
+    const ap = [_]T{ 1, 2, 5, 3, 6, 9 };
+
+    // x = [1, 2, 3] stored with stride 2
+    const x_buf = [_]T{ 1, 0, 2, 0, 3 };
+    const x = NamedArrayConst(K, T){
+        .idx = .{ .shape = .{ .k = 3 }, .strides = .{ .k = 2 } },
+        .buf = &x_buf,
+    };
+
+    // y = [1, 1, 1] stored with stride 2, expect y = 2*A*x + y = [29, 61, 85]
+    var y_buf = [_]T{ 1, 0, 1, 0, 1 };
+    const y = NamedArray(M, T){
+        .idx = .{ .shape = .{ .m = 3 }, .strides = .{ .m = 2 } },
+        .buf = &y_buf,
+    };
+
+    blas.spmv(T, MK, K, M, .k, &ap, x, y, .{ .alpha = 2.0, .beta = 1.0 });
+
+    const expected = [_]T{ 29.0, 61.0, 85.0 };
+    for (0..3) |i| {
+        try std.testing.expectApproxEqAbs(expected[i], y_buf[i * 2], math.floatEpsAt(T, expected[i]));
+    }
+}
+
+test "hpmv complex upper" {
+    // 3×3 Hermitian matrix, upper packed storage:
+    // A = [2      1+i    3    ]    x = [1]    y = A*x = [6+i ]
+    //     [1-i    4      2+i  ]        [1]               [7   ]
+    //     [3      2-i    6    ]        [1]               [11-i]
+    //
+    // Upper packed (col-major): col0=[2], col1=[1+i, 4], col2=[3, 2+i, 6]
+    const MK = enum { m, k };
+    const K = enum { k };
+    const M = enum { m };
+    const T = Complex(f64);
+
+    const ap = [_]T{
+        .{ .re = 2, .im = 0 },
+        .{ .re = 1, .im = 1 },
+        .{ .re = 4, .im = 0 },
+        .{ .re = 3, .im = 0 },
+        .{ .re = 2, .im = 1 },
+        .{ .re = 6, .im = 0 },
+    };
+
+    const x_buf = [_]T{
+        .{ .re = 1, .im = 0 },
+        .{ .re = 1, .im = 0 },
+        .{ .re = 1, .im = 0 },
+    };
+    const x = NamedArrayConst(K, T){
+        .idx = NamedIndex(K).initContiguous(.{ .k = 3 }),
+        .buf = &x_buf,
+    };
+
+    var y_buf = [_]T{
+        .{ .re = 0, .im = 0 },
+        .{ .re = 0, .im = 0 },
+        .{ .re = 0, .im = 0 },
+    };
+    const y = NamedArray(M, T){
+        .idx = NamedIndex(M).initContiguous(.{ .m = 3 }),
+        .buf = &y_buf,
+    };
+
+    blas.hpmv(T, MK, K, M, .k, &ap, x, y, .{
+        .alpha = .{ .re = 1, .im = 0 },
+        .beta = .{ .re = 0, .im = 0 },
+    });
+
+    const expected = [_]T{
+        .{ .re = 6, .im = 1 },
+        .{ .re = 7, .im = 0 },
+        .{ .re = 11, .im = -1 },
+    };
+    const eps = 1e-10;
+    for (0..3) |i| {
+        try std.testing.expectApproxEqAbs(expected[i].re, y_buf[i].re, eps);
+        try std.testing.expectApproxEqAbs(expected[i].im, y_buf[i].im, eps);
+    }
+}
+
+test "hpmv complex lower" {
+    // Same Hermitian matrix, lower packed storage:
+    // Lower packed (col-major): col0=[2, 1-i, 3], col1=[4, 2-i], col2=[6]
+    const MK = enum { m, k };
+    const K = enum { k };
+    const M = enum { m };
+    const T = Complex(f64);
+
+    const ap = [_]T{
+        .{ .re = 2, .im = 0 },
+        .{ .re = 1, .im = -1 },
+        .{ .re = 3, .im = 0 },
+        .{ .re = 4, .im = 0 },
+        .{ .re = 2, .im = -1 },
+        .{ .re = 6, .im = 0 },
+    };
+
+    const x_buf = [_]T{
+        .{ .re = 1, .im = 0 },
+        .{ .re = 1, .im = 0 },
+        .{ .re = 1, .im = 0 },
+    };
+    const x = NamedArrayConst(K, T){
+        .idx = NamedIndex(K).initContiguous(.{ .k = 3 }),
+        .buf = &x_buf,
+    };
+
+    var y_buf = [_]T{
+        .{ .re = 0, .im = 0 },
+        .{ .re = 0, .im = 0 },
+        .{ .re = 0, .im = 0 },
+    };
+    const y = NamedArray(M, T){
+        .idx = NamedIndex(M).initContiguous(.{ .m = 3 }),
+        .buf = &y_buf,
+    };
+
+    // triangle = .m (first axis) → Lower
+    blas.hpmv(T, MK, K, M, .m, &ap, x, y, .{
+        .alpha = .{ .re = 1, .im = 0 },
+        .beta = .{ .re = 0, .im = 0 },
+    });
+
+    const expected = [_]T{
+        .{ .re = 6, .im = 1 },
+        .{ .re = 7, .im = 0 },
+        .{ .re = 11, .im = -1 },
+    };
+    const eps = 1e-10;
+    for (0..3) |i| {
+        try std.testing.expectApproxEqAbs(expected[i].re, y_buf[i].re, eps);
+        try std.testing.expectApproxEqAbs(expected[i].im, y_buf[i].im, eps);
+    }
+}
+
+test "tpmv real upper" {
+    // 3×3 upper triangular, packed storage:
+    // A = [2 1 3]    x = [1]    A*x = [13]
+    //     [0 4 2]        [2]          [14]
+    //     [0 0 5]        [3]          [15]
+    //
+    // Upper packed (col-major): col0=[2], col1=[1,4], col2=[3,2,5]
+    const MK = enum { m, k };
+    const K = enum { k };
+    const T = f64;
+
+    const ap = [_]T{ 2, 1, 4, 3, 2, 5 };
+
+    var x_buf = [_]T{ 1, 2, 3 };
+    const x = NamedArray(K, T){
+        .idx = NamedIndex(K).initContiguous(.{ .k = 3 }),
+        .buf = &x_buf,
+    };
+
+    // triangle = .k (second axis) → Upper
+    blas.tpmv(T, MK, K, .k, .non_unit, &ap, x);
+
+    const expected = [_]T{ 13.0, 14.0, 15.0 };
+    for (0..3) |i| {
+        try std.testing.expectApproxEqAbs(expected[i], x_buf[i], math.floatEpsAt(T, expected[i]));
+    }
+}
+
+test "tpmv real lower" {
+    // 3×3 lower triangular, packed storage:
+    // A = [2 0 0]    x = [1]    A*x = [ 2]
+    //     [1 4 0]        [2]          [ 9]
+    //     [3 2 5]        [3]          [22]
+    //
+    // Lower packed (col-major): col0=[2,1,3], col1=[4,2], col2=[5]
+    const MK = enum { m, k };
+    const K = enum { k };
+    const T = f64;
+
+    const ap = [_]T{ 2, 1, 3, 4, 2, 5 };
+
+    var x_buf = [_]T{ 1, 2, 3 };
+    const x = NamedArray(K, T){
+        .idx = NamedIndex(K).initContiguous(.{ .k = 3 }),
+        .buf = &x_buf,
+    };
+
+    // triangle = .m (first axis) → Lower
+    blas.tpmv(T, MK, K, .m, .non_unit, &ap, x);
+
+    const expected = [_]T{ 2.0, 9.0, 22.0 };
+    for (0..3) |i| {
+        try std.testing.expectApproxEqAbs(expected[i], x_buf[i], math.floatEpsAt(T, expected[i]));
+    }
+}
+
+test "tpmv real unit diagonal" {
+    // 3×3 upper triangular with unit diagonal:
+    // A = [1 2 3]    x = [1]    A*x = [14]
+    //     [0 1 1]        [2]          [ 5]
+    //     [0 0 1]        [3]          [ 3]
+    //
+    // Upper packed: [*, 2, *, 3, 1, *] — diagonal entries are not read.
+    const MK = enum { m, k };
+    const K = enum { k };
+    const T = f64;
+
+    const ap = [_]T{ 0, 2, 0, 3, 1, 0 }; // diagonal positions contain 0 (ignored)
+
+    var x_buf = [_]T{ 1, 2, 3 };
+    const x = NamedArray(K, T){
+        .idx = NamedIndex(K).initContiguous(.{ .k = 3 }),
+        .buf = &x_buf,
+    };
+
+    blas.tpmv(T, MK, K, .k, .unit, &ap, x);
+
+    const expected = [_]T{ 14.0, 5.0, 3.0 };
+    for (0..3) |i| {
+        try std.testing.expectApproxEqAbs(expected[i], x_buf[i], math.floatEpsAt(T, expected[i]));
+    }
+}
+
+test "tpmv complex upper" {
+    // 3×3 upper triangular complex:
+    // A = [2    1+i  3  ]    x = [1]    A*x = [2+2+2i+9]   = [13+2i]
+    //     [0    4    2-i]        [2]          [0+8+6-3i]     [14-3i]
+    //     [0    0    5  ]        [3]          [0+0+15]       [15   ]
+    //
+    // Upper packed: [2, 1+i, 4, 3, 2-i, 5]
+    const MK = enum { m, k };
+    const K = enum { k };
+    const T = Complex(f64);
+
+    const ap = [_]T{
+        .{ .re = 2, .im = 0 },
+        .{ .re = 1, .im = 1 },
+        .{ .re = 4, .im = 0 },
+        .{ .re = 3, .im = 0 },
+        .{ .re = 2, .im = -1 },
+        .{ .re = 5, .im = 0 },
+    };
+
+    var x_buf = [_]T{
+        .{ .re = 1, .im = 0 },
+        .{ .re = 2, .im = 0 },
+        .{ .re = 3, .im = 0 },
+    };
+    const x = NamedArray(K, T){
+        .idx = NamedIndex(K).initContiguous(.{ .k = 3 }),
+        .buf = &x_buf,
+    };
+
+    blas.tpmv(T, MK, K, .k, .non_unit, &ap, x);
+
+    const expected = [_]T{
+        .{ .re = 13, .im = 2 },
+        .{ .re = 14, .im = -3 },
+        .{ .re = 15, .im = 0 },
+    };
+    const eps = 1e-10;
+    for (0..3) |i| {
+        try std.testing.expectApproxEqAbs(expected[i].re, x_buf[i].re, eps);
+        try std.testing.expectApproxEqAbs(expected[i].im, x_buf[i].im, eps);
+    }
+}
+
+test "tpmv nontrivial strides" {
+    // Upper triangular, x with stride 2
+    const AB = enum { a, b };
+    const B = enum { b };
+    const T = f64;
+
+    const ap = [_]T{ 2, 1, 4, 3, 2, 5 };
+
+    // x = [1, 2, 3] stored with stride 2
+    var x_buf = [_]T{ 1, 0, 2, 0, 3 };
+    const x = NamedArray(B, T){
+        .idx = .{ .shape = .{ .b = 3 }, .strides = .{ .b = 2 } },
+        .buf = &x_buf,
+    };
+
+    blas.tpmv(T, AB, B, .b, .non_unit, &ap, x);
+
+    const expected = [_]T{ 13.0, 14.0, 15.0 };
+    for (0..3) |i| {
+        try std.testing.expectApproxEqAbs(expected[i], x_buf[i * 2], math.floatEpsAt(T, expected[i]));
+    }
+}
+
+test "tpsv real upper" {
+    // Solve A*x = b where A is 3×3 upper triangular:
+    // A = [2 1 3]    b = [13]    x = A⁻¹*b = [1]
+    //     [0 4 2]        [14]                 [2]
+    //     [0 0 5]        [15]                 [3]
+    //
+    // Upper packed: [2, 1, 4, 3, 2, 5]
+    const MK = enum { m, k };
+    const K = enum { k };
+    const T = f64;
+
+    const ap = [_]T{ 2, 1, 4, 3, 2, 5 };
+
+    var x_buf = [_]T{ 13, 14, 15 };
+    const x = NamedArray(K, T){
+        .idx = NamedIndex(K).initContiguous(.{ .k = 3 }),
+        .buf = &x_buf,
+    };
+
+    blas.tpsv(T, MK, K, .k, .non_unit, &ap, x);
+
+    const expected = [_]T{ 1.0, 2.0, 3.0 };
+    for (0..3) |i| {
+        try std.testing.expectApproxEqAbs(expected[i], x_buf[i], math.floatEpsAt(T, expected[i]));
+    }
+}
+
+test "tpsv real lower" {
+    // Solve A*x = b where A is 3×3 lower triangular:
+    // A = [2 0 0]    b = [ 2]    x = A⁻¹*b = [1]
+    //     [1 4 0]        [ 9]                 [2]
+    //     [3 2 5]        [22]                 [3]
+    //
+    // Lower packed: [2, 1, 3, 4, 2, 5]
+    const MK = enum { m, k };
+    const K = enum { k };
+    const T = f64;
+
+    const ap = [_]T{ 2, 1, 3, 4, 2, 5 };
+
+    var x_buf = [_]T{ 2, 9, 22 };
+    const x = NamedArray(K, T){
+        .idx = NamedIndex(K).initContiguous(.{ .k = 3 }),
+        .buf = &x_buf,
+    };
+
+    blas.tpsv(T, MK, K, .m, .non_unit, &ap, x);
+
+    const expected = [_]T{ 1.0, 2.0, 3.0 };
+    for (0..3) |i| {
+        try std.testing.expectApproxEqAbs(expected[i], x_buf[i], math.floatEpsAt(T, expected[i]));
+    }
+}
+
+test "tpsv real unit diagonal" {
+    // Solve A*x = b where A is 3×3 upper triangular with unit diagonal:
+    // A = [1 2 3]    b = [14]    x = A⁻¹*b = [1]
+    //     [0 1 1]        [ 5]                 [2]
+    //     [0 0 1]        [ 3]                 [3]
+    //
+    // Upper packed: [*, 2, *, 3, 1, *]
+    const MK = enum { m, k };
+    const K = enum { k };
+    const T = f64;
+
+    const ap = [_]T{ 0, 2, 0, 3, 1, 0 };
+
+    var x_buf = [_]T{ 14, 5, 3 };
+    const x = NamedArray(K, T){
+        .idx = NamedIndex(K).initContiguous(.{ .k = 3 }),
+        .buf = &x_buf,
+    };
+
+    blas.tpsv(T, MK, K, .k, .unit, &ap, x);
+
+    const expected = [_]T{ 1.0, 2.0, 3.0 };
+    for (0..3) |i| {
+        try std.testing.expectApproxEqAbs(expected[i], x_buf[i], math.floatEpsAt(T, expected[i]));
+    }
+}
+
+test "tpsv nontrivial strides" {
+    // Upper triangular solve, x with stride 2
+    const AB = enum { a, b };
+    const B = enum { b };
+    const T = f64;
+
+    const ap = [_]T{ 2, 1, 4, 3, 2, 5 };
+
+    // b = [13, 14, 15] stored with stride 2
+    var x_buf = [_]T{ 13, 0, 14, 0, 15 };
+    const x = NamedArray(B, T){
+        .idx = .{ .shape = .{ .b = 3 }, .strides = .{ .b = 2 } },
+        .buf = &x_buf,
+    };
+
+    blas.tpsv(T, AB, B, .b, .non_unit, &ap, x);
+
+    const expected = [_]T{ 1.0, 2.0, 3.0 };
+    for (0..3) |i| {
+        try std.testing.expectApproxEqAbs(expected[i], x_buf[i * 2], math.floatEpsAt(T, expected[i]));
     }
 }
 

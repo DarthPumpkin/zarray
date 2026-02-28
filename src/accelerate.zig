@@ -732,6 +732,362 @@ pub const blas = struct {
         );
     }
 
+    /// `sgbmv`, `dgbmv`, `cgbmv` and `zgbmv` in BLAS.
+    /// Computes `y = alpha * A * x + beta * y` where `A` is an M×N general band matrix
+    /// with `kl` sub-diagonals and `ku` super-diagonals, stored in BLAS band format.
+    /// `A` is a 2D array with a band axis (size `kl + ku + 1`) and a vector axis
+    /// matching `x`'s axis (size N). `y`'s axis provides M.
+    /// The scalars `alpha` and `beta` are optional and default to 1.
+    ///
+    /// **Storage requirement**: The band axis of `A` must be contiguous (stride 1)
+    /// and the vector axis stride must be at least `kl + ku + 1`. This is the
+    /// standard BLAS band storage layout where each column's band entries are
+    /// adjacent in memory.
+    pub fn gbmv(
+        comptime Scalar: type,
+        comptime AxisA: type,
+        comptime AxisX: type,
+        comptime AxisY: type,
+        A: NamedArrayConst(AxisA, Scalar),
+        x: NamedArrayConst(AxisX, Scalar),
+        y: NamedArray(AxisY, Scalar),
+        scalars: struct { alpha: Scalar = one(Scalar), beta: Scalar = one(Scalar) },
+        comptime band: struct { kl: usize, ku: usize },
+    ) void {
+        const a_names = comptime meta.fieldNames(AxisA);
+        comptime assertMatchingAxis(AxisA, AxisX);
+        comptime assert(meta.fields(AxisY).len == 1);
+        const x_axis_idx = comptime blk: {
+            const x_name = meta.fields(AxisX)[0].name;
+            break :blk if (std.mem.eql(u8, x_name, a_names[0])) @as(usize, 0) else @as(usize, 1);
+        };
+        const f = switch (Scalar) {
+            f32 => acc.cblas_sgbmv,
+            f64 => acc.cblas_dgbmv,
+            Complex(f32) => acc.cblas_cgbmv,
+            Complex(f64) => acc.cblas_zgbmv,
+            else => @compileError("gbmv is incompatible with given Scalar type."),
+        };
+
+        _ = named_index.resolveDimensions(.{ A.idx.shape, x.idx.shape, y.idx.shape }) catch
+            @panic("gbmv: dimension mismatch");
+
+        // Band storage: the band axis must be contiguous (stride 1) per BLAS convention.
+        // The vector axis stride serves as LDA and must be at least the band size.
+        const band_name = a_names[1 - x_axis_idx];
+        const n_name = a_names[x_axis_idx];
+        const band_stride = @field(A.idx.strides, band_name);
+        const n_stride = @field(A.idx.strides, n_name);
+        const band_size: usize = @field(A.idx.shape, band_name);
+
+        assert(band_stride == 1); // Band axis must be contiguous (stride 1)
+        assert(n_stride >= band_size); // LDA >= KL+KU+1
+        assert(band_size == band.kl + band.ku + 1);
+
+        const x_blas = Blas1d(Scalar).init(AxisX, x);
+        const y_blas = Blas1dMut(Scalar).init(AxisY, y);
+
+        const alpha_blas = if (comptime isComplex(Scalar)) &scalars.alpha else scalars.alpha;
+        const beta_blas = if (comptime isComplex(Scalar)) &scalars.beta else scalars.beta;
+
+        f(
+            @intCast(acc.CblasColMajor),
+            @intCast(acc.CblasNoTrans),
+            y_blas.len, // M
+            x_blas.len, // N
+            @intCast(band.kl),
+            @intCast(band.ku),
+            alpha_blas,
+            @ptrCast(A.buf.ptr),
+            @intCast(n_stride), // LDA = stride of N axis
+            x_blas.ptr,
+            x_blas.inc,
+            beta_blas,
+            y_blas.ptr,
+            y_blas.inc,
+        );
+    }
+
+    /// `ssbmv` and `dsbmv` in BLAS.
+    /// Computes `y = alpha * A * x + beta * y` where `A` is an N×N real symmetric band matrix
+    /// with bandwidth `K`, stored in BLAS band format.
+    /// `A` is a 2D array with a band axis (size `K + 1`) and a vector axis
+    /// matching `x`'s axis (size N). `K` is inferred from the band axis size.
+    /// `triangle` selects the stored triangle (second axis → upper, first axis → lower).
+    /// The scalars `alpha` and `beta` are optional and default to 1.
+    ///
+    /// **Storage requirement**: The band axis of `A` must be contiguous (stride 1)
+    /// and the vector axis stride must be at least `K + 1`. This is the standard
+    /// BLAS band storage layout where each column's band entries are adjacent in memory.
+    pub fn sbmv(
+        comptime Scalar: type,
+        comptime AxisA: type,
+        comptime AxisX: type,
+        triangle: AxisA,
+        A: NamedArrayConst(AxisA, Scalar),
+        x: NamedArrayConst(AxisX, Scalar),
+        y: NamedArray(AxisX, Scalar),
+        scalars: struct { alpha: Scalar = one(Scalar), beta: Scalar = one(Scalar) },
+    ) void {
+        const a_names = comptime meta.fieldNames(AxisA);
+        comptime assertMatchingAxis(AxisA, AxisX);
+        const x_axis_idx = comptime blk: {
+            const x_name = meta.fields(AxisX)[0].name;
+            break :blk if (std.mem.eql(u8, x_name, a_names[0])) @as(usize, 0) else @as(usize, 1);
+        };
+        const f = switch (Scalar) {
+            f32 => acc.cblas_ssbmv,
+            f64 => acc.cblas_dsbmv,
+            else => @compileError("sbmv requires f32 or f64."),
+        };
+
+        _ = named_index.resolveDimensions(.{ A.idx.shape, x.idx.shape, y.idx.shape }) catch
+            @panic("sbmv: dimension mismatch");
+
+        // Band storage: the band axis must be contiguous (stride 1) per BLAS convention.
+        // The vector axis stride serves as LDA and must be at least the band size.
+        const band_name = a_names[1 - x_axis_idx];
+        const n_name = a_names[x_axis_idx];
+        const band_stride = @field(A.idx.strides, band_name);
+        const n_stride = @field(A.idx.strides, n_name);
+        const band_size: usize = @field(A.idx.shape, band_name);
+        const n: usize = @field(A.idx.shape, n_name);
+
+        assert(band_stride == 1); // Band axis must be contiguous (stride 1)
+        assert(n_stride >= band_size); // LDA >= K+1
+
+        const x_blas = Blas1d(Scalar).init(AxisX, x);
+        const y_blas = Blas1dMut(Scalar).init(AxisX, y);
+
+        const k = band_size - 1;
+
+        f(
+            @intCast(acc.CblasColMajor),
+            uploBlas(AxisA, triangle),
+            @intCast(n), // N
+            @intCast(k),
+            scalars.alpha,
+            @ptrCast(A.buf.ptr),
+            @intCast(n_stride), // LDA = stride of N axis
+            x_blas.ptr,
+            x_blas.inc,
+            scalars.beta,
+            y_blas.ptr,
+            y_blas.inc,
+        );
+    }
+
+    /// `chbmv` and `zhbmv` in BLAS.
+    /// Computes `y = alpha * A * x + beta * y` where `A` is an N×N Hermitian band matrix
+    /// with bandwidth `K`, stored in BLAS band format.
+    /// `A` is a 2D array with a band axis (size `K + 1`) and a vector axis
+    /// matching `x`'s axis (size N). `K` is inferred from the band axis size.
+    /// `triangle` selects the stored triangle (second axis → upper, first axis → lower).
+    /// The scalars `alpha` and `beta` are optional and default to 1.
+    ///
+    /// **Storage requirement**: The band axis of `A` must be contiguous (stride 1)
+    /// and the vector axis stride must be at least `K + 1`. This is the standard
+    /// BLAS band storage layout where each column's band entries are adjacent in memory.
+    pub fn hbmv(
+        comptime Scalar: type,
+        comptime AxisA: type,
+        comptime AxisX: type,
+        triangle: AxisA,
+        A: NamedArrayConst(AxisA, Scalar),
+        x: NamedArrayConst(AxisX, Scalar),
+        y: NamedArray(AxisX, Scalar),
+        scalars: struct { alpha: Scalar = one(Scalar), beta: Scalar = one(Scalar) },
+    ) void {
+        const a_names = comptime meta.fieldNames(AxisA);
+        comptime assertMatchingAxis(AxisA, AxisX);
+        const x_axis_idx = comptime blk: {
+            const x_name = meta.fields(AxisX)[0].name;
+            break :blk if (std.mem.eql(u8, x_name, a_names[0])) @as(usize, 0) else @as(usize, 1);
+        };
+        const f = switch (Scalar) {
+            Complex(f32) => acc.cblas_chbmv,
+            Complex(f64) => acc.cblas_zhbmv,
+            else => @compileError("hbmv requires Complex(f32) or Complex(f64)."),
+        };
+
+        _ = named_index.resolveDimensions(.{ A.idx.shape, x.idx.shape, y.idx.shape }) catch
+            @panic("hbmv: dimension mismatch");
+
+        // Band storage: the band axis must be contiguous (stride 1) per BLAS convention.
+        // The vector axis stride serves as LDA and must be at least the band size.
+        const band_name = a_names[1 - x_axis_idx];
+        const n_name = a_names[x_axis_idx];
+        const band_stride = @field(A.idx.strides, band_name);
+        const n_stride = @field(A.idx.strides, n_name);
+        const band_size: usize = @field(A.idx.shape, band_name);
+        const n: usize = @field(A.idx.shape, n_name);
+
+        assert(band_stride == 1); // Band axis must be contiguous (stride 1)
+        assert(n_stride >= band_size); // LDA >= K+1
+
+        const x_blas = Blas1d(Scalar).init(AxisX, x);
+        const y_blas = Blas1dMut(Scalar).init(AxisX, y);
+
+        const k = band_size - 1;
+
+        f(
+            @intCast(acc.CblasColMajor),
+            uploBlas(AxisA, triangle),
+            @intCast(n), // N
+            @intCast(k),
+            &scalars.alpha,
+            @ptrCast(A.buf.ptr),
+            @intCast(n_stride), // LDA = stride of N axis
+            x_blas.ptr,
+            x_blas.inc,
+            &scalars.beta,
+            y_blas.ptr,
+            y_blas.inc,
+        );
+    }
+
+    /// `stbmv`, `dtbmv`, `ctbmv` and `ztbmv` in BLAS.
+    /// Computes `x = A * x` in-place where `A` is a triangular band matrix
+    /// with bandwidth `K`, stored in BLAS band format.
+    /// `A` is a 2D array with a band axis (size `K + 1`) and a vector axis
+    /// matching `x`'s axis (size N). `K` is inferred from the band axis size.
+    /// `triangle` selects the stored triangle (second axis → upper, first axis → lower).
+    /// If `diag` is `.unit`, the diagonal of `A` is assumed to be all ones and is not read.
+    ///
+    /// **Storage requirement**: The band axis of `A` must be contiguous (stride 1)
+    /// and the vector axis stride must be at least `K + 1`. This is the standard
+    /// BLAS band storage layout where each column's band entries are adjacent in memory.
+    pub fn tbmv(
+        comptime Scalar: type,
+        comptime AxisA: type,
+        comptime AxisX: type,
+        triangle: AxisA,
+        diag: Diag,
+        A: NamedArrayConst(AxisA, Scalar),
+        x: NamedArray(AxisX, Scalar),
+    ) void {
+        const a_names = comptime meta.fieldNames(AxisA);
+        comptime assertMatchingAxis(AxisA, AxisX);
+        const x_axis_idx = comptime blk: {
+            const x_name = meta.fields(AxisX)[0].name;
+            break :blk if (std.mem.eql(u8, x_name, a_names[0])) @as(usize, 0) else @as(usize, 1);
+        };
+        const f = switch (Scalar) {
+            f32 => acc.cblas_stbmv,
+            f64 => acc.cblas_dtbmv,
+            Complex(f32) => acc.cblas_ctbmv,
+            Complex(f64) => acc.cblas_ztbmv,
+            else => @compileError("tbmv is incompatible with given Scalar type."),
+        };
+
+        _ = named_index.resolveDimensions(.{ A.idx.shape, x.idx.shape }) catch
+            @panic("tbmv: dimension mismatch");
+
+        // Band storage: the band axis must be contiguous (stride 1) per BLAS convention.
+        // The vector axis stride serves as LDA and must be at least the band size.
+        const band_name = a_names[1 - x_axis_idx];
+        const n_name = a_names[x_axis_idx];
+        const band_stride = @field(A.idx.strides, band_name);
+        const n_stride = @field(A.idx.strides, n_name);
+        const band_size: usize = @field(A.idx.shape, band_name);
+        const n: usize = @field(A.idx.shape, n_name);
+
+        assert(band_stride == 1); // Band axis must be contiguous (stride 1)
+        assert(n_stride >= band_size); // LDA >= K+1
+
+        const x_blas = Blas1dMut(Scalar).init(AxisX, x);
+
+        const k = band_size - 1;
+        const diag_blas: acc.CBLAS_DIAG = switch (diag) {
+            .unit => @intCast(acc.CblasUnit),
+            .non_unit => @intCast(acc.CblasNonUnit),
+        };
+
+        f(
+            @intCast(acc.CblasColMajor),
+            uploBlas(AxisA, triangle),
+            @intCast(acc.CblasNoTrans),
+            diag_blas,
+            @intCast(n), // N
+            @intCast(k),
+            @ptrCast(A.buf.ptr),
+            @intCast(n_stride), // LDA = stride of N axis
+            x_blas.ptr,
+            x_blas.inc,
+        );
+    }
+
+    /// `stbsv`, `dtbsv`, `ctbsv` and `ztbsv` in BLAS.
+    /// Solves `A * x_new = x_old` in-place, i.e. computes `x := A⁻¹ * x`,
+    /// where `A` is a triangular band matrix with bandwidth `K`, stored in BLAS band format.
+    /// `A` is a 2D array with a band axis (size `K + 1`) and a vector axis
+    /// matching `x`'s axis (size N). `K` is inferred from the band axis size.
+    /// `triangle` selects the stored triangle (second axis → upper, first axis → lower).
+    /// If `diag` is `.unit`, the diagonal of `A` is assumed to be all ones and is not read.
+    ///
+    /// **Storage requirement**: The band axis of `A` must be contiguous (stride 1)
+    /// and the vector axis stride must be at least `K + 1`. This is the standard
+    /// BLAS band storage layout where each column's band entries are adjacent in memory.
+    pub fn tbsv(
+        comptime Scalar: type,
+        comptime AxisA: type,
+        comptime AxisX: type,
+        triangle: AxisA,
+        diag: Diag,
+        A: NamedArrayConst(AxisA, Scalar),
+        x: NamedArray(AxisX, Scalar),
+    ) void {
+        const a_names = comptime meta.fieldNames(AxisA);
+        comptime assertMatchingAxis(AxisA, AxisX);
+        const x_axis_idx = comptime blk: {
+            const x_name = meta.fields(AxisX)[0].name;
+            break :blk if (std.mem.eql(u8, x_name, a_names[0])) @as(usize, 0) else @as(usize, 1);
+        };
+        const f = switch (Scalar) {
+            f32 => acc.cblas_stbsv,
+            f64 => acc.cblas_dtbsv,
+            Complex(f32) => acc.cblas_ctbsv,
+            Complex(f64) => acc.cblas_ztbsv,
+            else => @compileError("tbsv is incompatible with given Scalar type."),
+        };
+
+        _ = named_index.resolveDimensions(.{ A.idx.shape, x.idx.shape }) catch
+            @panic("tbsv: dimension mismatch");
+
+        // Band storage: the band axis must be contiguous (stride 1) per BLAS convention.
+        // The vector axis stride serves as LDA and must be at least the band size.
+        const band_name = a_names[1 - x_axis_idx];
+        const n_name = a_names[x_axis_idx];
+        const band_stride = @field(A.idx.strides, band_name);
+        const n_stride = @field(A.idx.strides, n_name);
+        const band_size: usize = @field(A.idx.shape, band_name);
+        const n: usize = @field(A.idx.shape, n_name);
+
+        assert(band_stride == 1); // Band axis must be contiguous (stride 1)
+        assert(n_stride >= band_size); // LDA >= K+1
+
+        const x_blas = Blas1dMut(Scalar).init(AxisX, x);
+
+        const k = band_size - 1;
+        const diag_blas: acc.CBLAS_DIAG = switch (diag) {
+            .unit => @intCast(acc.CblasUnit),
+            .non_unit => @intCast(acc.CblasNonUnit),
+        };
+
+        f(
+            @intCast(acc.CblasColMajor),
+            uploBlas(AxisA, triangle),
+            @intCast(acc.CblasNoTrans),
+            diag_blas,
+            @intCast(n), // N
+            @intCast(k),
+            @ptrCast(A.buf.ptr),
+            @intCast(n_stride), // LDA = stride of N axis
+            x_blas.ptr,
+            x_blas.inc,
+        );
+    }
+
     /// `sger` and `dger` in BLAS.
     /// Computes `A := alpha * x * yᵀ + A` (rank-1 update) for real scalars.
     /// `x`'s axis must match one axis of `A` and `y`'s axis must match the other.
@@ -3027,6 +3383,513 @@ test "trsv column-major matrix" {
 
     const expected = [_]T{ 1.0, 2.0 };
     for (0..2) |i| {
+        try std.testing.expectApproxEqAbs(expected[i], x_buf[i], math.floatEpsAt(T, expected[i]));
+    }
+}
+
+// ============================================================
+// Band matrix operation tests
+// ============================================================
+
+test "gbmv real" {
+    // 4×4 tridiagonal matrix (KL=1, KU=1):
+    // A = [2 1 0 0]    x = [1]    y = A*x = [ 4]
+    //     [1 2 1 0]        [2]               [ 8]
+    //     [0 1 2 1]        [3]               [12]
+    //     [0 0 1 2]        [4]               [11]
+    const BK = enum { band, k };
+    const K = enum { k };
+    const M = enum { m };
+    const T = f64;
+
+    // Band storage with band axis contiguous (stride 1), as required by BLAS.
+    // Each group of 3 is one column: [superdiag, diag, subdiag]
+    // Col 0: [0, 2, 1], Col 1: [1, 2, 1], Col 2: [1, 2, 1], Col 3: [1, 2, 0]
+    const ab_buf = [_]T{
+        0, 2, 1,
+        1, 2, 1,
+        1, 2, 1,
+        1, 2, 0,
+    };
+    const AB = NamedArrayConst(BK, T){
+        .idx = .{
+            .shape = .{ .band = 3, .k = 4 },
+            .strides = .{ .band = 1, .k = 3 },
+        },
+        .buf = &ab_buf,
+    };
+
+    const x_buf = [_]T{ 1, 2, 3, 4 };
+    const x = NamedArrayConst(K, T){
+        .idx = NamedIndex(K).initContiguous(.{ .k = 4 }),
+        .buf = &x_buf,
+    };
+
+    var y_buf = [_]T{ 0, 0, 0, 0 };
+    const y = NamedArray(M, T){
+        .idx = NamedIndex(M).initContiguous(.{ .m = 4 }),
+        .buf = &y_buf,
+    };
+
+    blas.gbmv(T, BK, K, M, AB, x, y, .{ .alpha = 1.0, .beta = 0.0 }, .{ .kl = 1, .ku = 1 });
+
+    const expected = [_]T{ 4.0, 8.0, 12.0, 11.0 };
+    for (0..4) |i| {
+        try std.testing.expectApproxEqAbs(expected[i], y_buf[i], math.floatEpsAt(T, expected[i]));
+    }
+}
+
+test "gbmv real rectangular" {
+    // 3×4 matrix (M=3, N=4, KL=1, KU=1):
+    // A = [2 1 0 0]    x = [1]    y = A*x = [ 4]
+    //     [1 2 1 0]        [2]               [ 8]
+    //     [0 1 2 1]        [3]               [12]
+    //                      [4]
+    const BK = enum { band, k };
+    const K = enum { k };
+    const M = enum { m };
+    const T = f64;
+
+    // Band storage with band axis contiguous (stride 1), same data as square case but M=3
+    // Col 0: [0, 2, 1], Col 1: [1, 2, 1], Col 2: [1, 2, 1], Col 3: [1, 2, 0]
+    const ab_buf = [_]T{
+        0, 2, 1,
+        1, 2, 1,
+        1, 2, 1,
+        1, 2, 0,
+    };
+    const AB = NamedArrayConst(BK, T){
+        .idx = .{
+            .shape = .{ .band = 3, .k = 4 },
+            .strides = .{ .band = 1, .k = 3 },
+        },
+        .buf = &ab_buf,
+    };
+
+    const x_buf = [_]T{ 1, 2, 3, 4 };
+    const x = NamedArrayConst(K, T){
+        .idx = NamedIndex(K).initContiguous(.{ .k = 4 }),
+        .buf = &x_buf,
+    };
+
+    var y_buf = [_]T{ 0, 0, 0 };
+    const y = NamedArray(M, T){
+        .idx = NamedIndex(M).initContiguous(.{ .m = 3 }),
+        .buf = &y_buf,
+    };
+
+    blas.gbmv(T, BK, K, M, AB, x, y, .{ .alpha = 1.0, .beta = 0.0 }, .{ .kl = 1, .ku = 1 });
+
+    const expected = [_]T{ 4.0, 8.0, 12.0 };
+    for (0..3) |i| {
+        try std.testing.expectApproxEqAbs(expected[i], y_buf[i], math.floatEpsAt(T, expected[i]));
+    }
+}
+
+test "gbmv column-major matrix" {
+    // Same 4×4 tridiagonal matrix, column-major band storage
+    const BK = enum { band, k };
+    const K = enum { k };
+    const M = enum { m };
+    const T = f64;
+
+    // Column-major band storage (3 band rows × 4 cols):
+    // Col 0: [0, 2, 1], Col 1: [1, 2, 1], Col 2: [1, 2, 1], Col 3: [1, 2, 0]
+    const ab_buf = [_]T{
+        0, 2, 1,
+        1, 2, 1,
+        1, 2, 1,
+        1, 2, 0,
+    };
+    const AB = NamedArrayConst(BK, T){
+        .idx = .{
+            .shape = .{ .band = 3, .k = 4 },
+            .strides = .{ .band = 1, .k = 3 },
+        },
+        .buf = &ab_buf,
+    };
+
+    const x_buf = [_]T{ 1, 2, 3, 4 };
+    const x = NamedArrayConst(K, T){
+        .idx = NamedIndex(K).initContiguous(.{ .k = 4 }),
+        .buf = &x_buf,
+    };
+
+    var y_buf = [_]T{ 0, 0, 0, 0 };
+    const y = NamedArray(M, T){
+        .idx = NamedIndex(M).initContiguous(.{ .m = 4 }),
+        .buf = &y_buf,
+    };
+
+    blas.gbmv(T, BK, K, M, AB, x, y, .{ .alpha = 1.0, .beta = 0.0 }, .{ .kl = 1, .ku = 1 });
+
+    const expected = [_]T{ 4.0, 8.0, 12.0, 11.0 };
+    for (0..4) |i| {
+        try std.testing.expectApproxEqAbs(expected[i], y_buf[i], math.floatEpsAt(T, expected[i]));
+    }
+}
+
+test "sbmv real upper" {
+    // 4×4 symmetric tridiagonal (K=1), upper band storage:
+    // A = [2 1 0 0]    x = [1]    y = A*x = [ 4]
+    //     [1 2 1 0]        [2]               [ 8]
+    //     [0 1 2 1]        [3]               [12]
+    //     [0 0 1 2]        [4]               [11]
+    const BK = enum { band, k };
+    const K = enum { k };
+    const T = f64;
+
+    // Upper band storage (K+1=2 band rows × N=4 cols), band axis contiguous:
+    // Col 0: [0, 2], Col 1: [1, 2], Col 2: [1, 2], Col 3: [1, 2]
+    const ab_buf = [_]T{
+        0, 2,
+        1, 2,
+        1, 2,
+        1, 2,
+    };
+    const AB = NamedArrayConst(BK, T){
+        .idx = .{
+            .shape = .{ .band = 2, .k = 4 },
+            .strides = .{ .band = 1, .k = 2 },
+        },
+        .buf = &ab_buf,
+    };
+
+    const x_buf = [_]T{ 1, 2, 3, 4 };
+    const x = NamedArrayConst(K, T){
+        .idx = NamedIndex(K).initContiguous(.{ .k = 4 }),
+        .buf = &x_buf,
+    };
+
+    var y_buf = [_]T{ 0, 0, 0, 0 };
+    const y = NamedArray(K, T){
+        .idx = NamedIndex(K).initContiguous(.{ .k = 4 }),
+        .buf = &y_buf,
+    };
+
+    // triangle = .k (second axis, ordinal 1) → Upper
+    blas.sbmv(T, BK, K, .k, AB, x, y, .{ .alpha = 1.0, .beta = 0.0 });
+
+    const expected = [_]T{ 4.0, 8.0, 12.0, 11.0 };
+    for (0..4) |i| {
+        try std.testing.expectApproxEqAbs(expected[i], y_buf[i], math.floatEpsAt(T, expected[i]));
+    }
+}
+
+test "sbmv column-major matrix" {
+    // Same symmetric tridiagonal, column-major upper band storage
+    const BK = enum { band, k };
+    const K = enum { k };
+    const T = f64;
+
+    // Column-major: Col 0: [0, 2], Col 1: [1, 2], Col 2: [1, 2], Col 3: [1, 2]
+    const ab_buf = [_]T{
+        0, 2,
+        1, 2,
+        1, 2,
+        1, 2,
+    };
+    const AB = NamedArrayConst(BK, T){
+        .idx = .{
+            .shape = .{ .band = 2, .k = 4 },
+            .strides = .{ .band = 1, .k = 2 },
+        },
+        .buf = &ab_buf,
+    };
+
+    const x_buf = [_]T{ 1, 2, 3, 4 };
+    const x = NamedArrayConst(K, T){
+        .idx = NamedIndex(K).initContiguous(.{ .k = 4 }),
+        .buf = &x_buf,
+    };
+
+    var y_buf = [_]T{ 0, 0, 0, 0 };
+    const y = NamedArray(K, T){
+        .idx = NamedIndex(K).initContiguous(.{ .k = 4 }),
+        .buf = &y_buf,
+    };
+
+    blas.sbmv(T, BK, K, .k, AB, x, y, .{ .alpha = 1.0, .beta = 0.0 });
+
+    const expected = [_]T{ 4.0, 8.0, 12.0, 11.0 };
+    for (0..4) |i| {
+        try std.testing.expectApproxEqAbs(expected[i], y_buf[i], math.floatEpsAt(T, expected[i]));
+    }
+}
+
+test "hbmv complex upper" {
+    // 4×4 Hermitian tridiagonal (K=1), upper band storage:
+    // A = [2    1+i  0    0   ]    x = [1]    y = [3+i ]
+    //     [1-i  3    2+i  0   ]        [1]        [6   ]
+    //     [0    2-i  4    1+i ]        [1]        [7   ]
+    //     [0    0    1-i  5   ]        [1]        [6-i ]
+    const BK = enum { band, k };
+    const K = enum { k };
+    const T = Complex(f64);
+
+    // Upper band storage (K+1=2 band rows × N=4 cols), band axis contiguous:
+    // Col 0: [0, 2], Col 1: [1+i, 3], Col 2: [2+i, 4], Col 3: [1+i, 5]
+    const ab_buf = [_]T{
+        .{ .re = 0, .im = 0 }, .{ .re = 2, .im = 0 },
+        .{ .re = 1, .im = 1 }, .{ .re = 3, .im = 0 },
+        .{ .re = 2, .im = 1 }, .{ .re = 4, .im = 0 },
+        .{ .re = 1, .im = 1 }, .{ .re = 5, .im = 0 },
+    };
+    const AB = NamedArrayConst(BK, T){
+        .idx = .{
+            .shape = .{ .band = 2, .k = 4 },
+            .strides = .{ .band = 1, .k = 2 },
+        },
+        .buf = &ab_buf,
+    };
+
+    const x_buf = [_]T{
+        .{ .re = 1, .im = 0 },
+        .{ .re = 1, .im = 0 },
+        .{ .re = 1, .im = 0 },
+        .{ .re = 1, .im = 0 },
+    };
+    const x = NamedArrayConst(K, T){
+        .idx = NamedIndex(K).initContiguous(.{ .k = 4 }),
+        .buf = &x_buf,
+    };
+
+    var y_buf = [_]T{
+        .{ .re = 0, .im = 0 },
+        .{ .re = 0, .im = 0 },
+        .{ .re = 0, .im = 0 },
+        .{ .re = 0, .im = 0 },
+    };
+    const y = NamedArray(K, T){
+        .idx = NamedIndex(K).initContiguous(.{ .k = 4 }),
+        .buf = &y_buf,
+    };
+
+    blas.hbmv(T, BK, K, .k, AB, x, y, .{
+        .alpha = .{ .re = 1, .im = 0 },
+        .beta = .{ .re = 0, .im = 0 },
+    });
+
+    const expected = [_]T{
+        .{ .re = 3, .im = 1 },
+        .{ .re = 6, .im = 0 },
+        .{ .re = 7, .im = 0 },
+        .{ .re = 6, .im = -1 },
+    };
+    const eps = 1e-10;
+    for (0..4) |i| {
+        try std.testing.expectApproxEqAbs(expected[i].re, y_buf[i].re, eps);
+        try std.testing.expectApproxEqAbs(expected[i].im, y_buf[i].im, eps);
+    }
+}
+
+test "hbmv column-major matrix" {
+    // Same Hermitian tridiagonal, column-major upper band storage
+    const BK = enum { band, k };
+    const K = enum { k };
+    const T = Complex(f64);
+
+    // Column-major: Col 0: [0, 2], Col 1: [1+i, 3], Col 2: [2+i, 4], Col 3: [1+i, 5]
+    const ab_buf = [_]T{
+        .{ .re = 0, .im = 0 }, .{ .re = 2, .im = 0 },
+        .{ .re = 1, .im = 1 }, .{ .re = 3, .im = 0 },
+        .{ .re = 2, .im = 1 }, .{ .re = 4, .im = 0 },
+        .{ .re = 1, .im = 1 }, .{ .re = 5, .im = 0 },
+    };
+    const AB = NamedArrayConst(BK, T){
+        .idx = .{
+            .shape = .{ .band = 2, .k = 4 },
+            .strides = .{ .band = 1, .k = 2 },
+        },
+        .buf = &ab_buf,
+    };
+
+    const x_buf = [_]T{
+        .{ .re = 1, .im = 0 },
+        .{ .re = 1, .im = 0 },
+        .{ .re = 1, .im = 0 },
+        .{ .re = 1, .im = 0 },
+    };
+    const x = NamedArrayConst(K, T){
+        .idx = NamedIndex(K).initContiguous(.{ .k = 4 }),
+        .buf = &x_buf,
+    };
+
+    var y_buf = [_]T{
+        .{ .re = 0, .im = 0 },
+        .{ .re = 0, .im = 0 },
+        .{ .re = 0, .im = 0 },
+        .{ .re = 0, .im = 0 },
+    };
+    const y = NamedArray(K, T){
+        .idx = NamedIndex(K).initContiguous(.{ .k = 4 }),
+        .buf = &y_buf,
+    };
+
+    blas.hbmv(T, BK, K, .k, AB, x, y, .{
+        .alpha = .{ .re = 1, .im = 0 },
+        .beta = .{ .re = 0, .im = 0 },
+    });
+
+    const expected = [_]T{
+        .{ .re = 3, .im = 1 },
+        .{ .re = 6, .im = 0 },
+        .{ .re = 7, .im = 0 },
+        .{ .re = 6, .im = -1 },
+    };
+    const eps = 1e-10;
+    for (0..4) |i| {
+        try std.testing.expectApproxEqAbs(expected[i].re, y_buf[i].re, eps);
+        try std.testing.expectApproxEqAbs(expected[i].im, y_buf[i].im, eps);
+    }
+}
+
+test "tbmv real upper" {
+    // 4×4 upper triangular bidiagonal (K=1):
+    // A = [2 1 0 0]    x = [1]    x' = A*x = [ 4]
+    //     [0 3 1 0]        [2]                [ 9]
+    //     [0 0 4 1]        [3]                [16]
+    //     [0 0 0 5]        [4]                [20]
+    const BK = enum { band, k };
+    const K = enum { k };
+    const T = f64;
+
+    // Upper band storage (K+1=2 band rows × N=4 cols), band axis contiguous:
+    // Col 0: [0, 2], Col 1: [1, 3], Col 2: [1, 4], Col 3: [1, 5]
+    const ab_buf = [_]T{
+        0, 2,
+        1, 3,
+        1, 4,
+        1, 5,
+    };
+    const AB = NamedArrayConst(BK, T){
+        .idx = .{
+            .shape = .{ .band = 2, .k = 4 },
+            .strides = .{ .band = 1, .k = 2 },
+        },
+        .buf = &ab_buf,
+    };
+
+    var x_buf = [_]T{ 1, 2, 3, 4 };
+    const x = NamedArray(K, T){
+        .idx = NamedIndex(K).initContiguous(.{ .k = 4 }),
+        .buf = &x_buf,
+    };
+
+    // triangle = .k (second axis) → Upper
+    blas.tbmv(T, BK, K, .k, .non_unit, AB, x);
+
+    const expected = [_]T{ 4.0, 9.0, 16.0, 20.0 };
+    for (0..4) |i| {
+        try std.testing.expectApproxEqAbs(expected[i], x_buf[i], math.floatEpsAt(T, expected[i]));
+    }
+}
+
+test "tbmv column-major matrix" {
+    // Same upper triangular bidiagonal, column-major band storage
+    const BK = enum { band, k };
+    const K = enum { k };
+    const T = f64;
+
+    // Column-major: Col 0: [0, 2], Col 1: [1, 3], Col 2: [1, 4], Col 3: [1, 5]
+    const ab_buf = [_]T{
+        0, 2,
+        1, 3,
+        1, 4,
+        1, 5,
+    };
+    const AB = NamedArrayConst(BK, T){
+        .idx = .{
+            .shape = .{ .band = 2, .k = 4 },
+            .strides = .{ .band = 1, .k = 2 },
+        },
+        .buf = &ab_buf,
+    };
+
+    var x_buf = [_]T{ 1, 2, 3, 4 };
+    const x = NamedArray(K, T){
+        .idx = NamedIndex(K).initContiguous(.{ .k = 4 }),
+        .buf = &x_buf,
+    };
+
+    blas.tbmv(T, BK, K, .k, .non_unit, AB, x);
+
+    const expected = [_]T{ 4.0, 9.0, 16.0, 20.0 };
+    for (0..4) |i| {
+        try std.testing.expectApproxEqAbs(expected[i], x_buf[i], math.floatEpsAt(T, expected[i]));
+    }
+}
+
+test "tbsv real upper" {
+    // Solve A*x = b where A is the same 4×4 upper triangular bidiagonal:
+    // A = [2 1 0 0]    b = [4]    x = A⁻¹*b = [1]
+    //     [0 3 1 0]        [9]                  [2]
+    //     [0 0 4 1]        [16]                 [3]
+    //     [0 0 0 5]        [20]                 [4]
+    const BK = enum { band, k };
+    const K = enum { k };
+    const T = f64;
+
+    // Upper band storage, band axis contiguous:
+    // Col 0: [0, 2], Col 1: [1, 3], Col 2: [1, 4], Col 3: [1, 5]
+    const ab_buf = [_]T{
+        0, 2,
+        1, 3,
+        1, 4,
+        1, 5,
+    };
+    const AB = NamedArrayConst(BK, T){
+        .idx = .{
+            .shape = .{ .band = 2, .k = 4 },
+            .strides = .{ .band = 1, .k = 2 },
+        },
+        .buf = &ab_buf,
+    };
+
+    var x_buf = [_]T{ 4, 9, 16, 20 };
+    const x = NamedArray(K, T){
+        .idx = NamedIndex(K).initContiguous(.{ .k = 4 }),
+        .buf = &x_buf,
+    };
+
+    blas.tbsv(T, BK, K, .k, .non_unit, AB, x);
+
+    const expected = [_]T{ 1.0, 2.0, 3.0, 4.0 };
+    for (0..4) |i| {
+        try std.testing.expectApproxEqAbs(expected[i], x_buf[i], math.floatEpsAt(T, expected[i]));
+    }
+}
+
+test "tbsv column-major matrix" {
+    // Same solve, column-major band storage
+    const BK = enum { band, k };
+    const K = enum { k };
+    const T = f64;
+
+    const ab_buf = [_]T{
+        0, 2,
+        1, 3,
+        1, 4,
+        1, 5,
+    };
+    const AB = NamedArrayConst(BK, T){
+        .idx = .{
+            .shape = .{ .band = 2, .k = 4 },
+            .strides = .{ .band = 1, .k = 2 },
+        },
+        .buf = &ab_buf,
+    };
+
+    var x_buf = [_]T{ 4, 9, 16, 20 };
+    const x = NamedArray(K, T){
+        .idx = NamedIndex(K).initContiguous(.{ .k = 4 }),
+        .buf = &x_buf,
+    };
+
+    blas.tbsv(T, BK, K, .k, .non_unit, AB, x);
+
+    const expected = [_]T{ 1.0, 2.0, 3.0, 4.0 };
+    for (0..4) |i| {
         try std.testing.expectApproxEqAbs(expected[i], x_buf[i], math.floatEpsAt(T, expected[i]));
     }
 }

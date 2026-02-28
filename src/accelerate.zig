@@ -3585,981 +3585,6 @@ test "trsv column-major matrix" {
     }
 }
 
-// ============================================================
-// Band matrix operation tests
-// ============================================================
-
-test "gbmv real" {
-    // 4×4 tridiagonal matrix (KL=1, KU=1):
-    // A = [2 1 0 0]    x = [1]    y = A*x = [ 4]
-    //     [1 2 1 0]        [2]               [ 8]
-    //     [0 1 2 1]        [3]               [12]
-    //     [0 0 1 2]        [4]               [11]
-    const BK = enum { band, k };
-    const K = enum { k };
-    const M = enum { m };
-    const T = f64;
-
-    // Band storage with band axis contiguous (stride 1), as required by BLAS.
-    // Each group of 3 is one column: [superdiag, diag, subdiag]
-    // Col 0: [0, 2, 1], Col 1: [1, 2, 1], Col 2: [1, 2, 1], Col 3: [1, 2, 0]
-    const ab_buf = [_]T{
-        0, 2, 1,
-        1, 2, 1,
-        1, 2, 1,
-        1, 2, 0,
-    };
-    const AB = NamedArrayConst(BK, T){
-        .idx = .{
-            .shape = .{ .band = 3, .k = 4 },
-            .strides = .{ .band = 1, .k = 3 },
-        },
-        .buf = &ab_buf,
-    };
-
-    const x_buf = [_]T{ 1, 2, 3, 4 };
-    const x = NamedArrayConst(K, T){
-        .idx = NamedIndex(K).initContiguous(.{ .k = 4 }),
-        .buf = &x_buf,
-    };
-
-    var y_buf = [_]T{ 0, 0, 0, 0 };
-    const y = NamedArray(M, T){
-        .idx = NamedIndex(M).initContiguous(.{ .m = 4 }),
-        .buf = &y_buf,
-    };
-
-    blas.gbmv(T, BK, K, M, AB, x, y, .{ .alpha = 1.0, .beta = 0.0 }, .{ .kl = 1, .ku = 1 });
-
-    const expected = [_]T{ 4.0, 8.0, 12.0, 11.0 };
-    for (0..4) |i| {
-        try std.testing.expectApproxEqAbs(expected[i], y_buf[i], math.floatEpsAt(T, expected[i]));
-    }
-}
-
-test "gbmv real rectangular" {
-    // 3×4 matrix (M=3, N=4, KL=1, KU=1):
-    // A = [2 1 0 0]    x = [1]    y = A*x = [ 4]
-    //     [1 2 1 0]        [2]               [ 8]
-    //     [0 1 2 1]        [3]               [12]
-    //                      [4]
-    const BK = enum { band, k };
-    const K = enum { k };
-    const M = enum { m };
-    const T = f64;
-
-    // Band storage with band axis contiguous (stride 1), same data as square case but M=3
-    // Col 0: [0, 2, 1], Col 1: [1, 2, 1], Col 2: [1, 2, 1], Col 3: [1, 2, 0]
-    const ab_buf = [_]T{
-        0, 2, 1,
-        1, 2, 1,
-        1, 2, 1,
-        1, 2, 0,
-    };
-    const AB = NamedArrayConst(BK, T){
-        .idx = .{
-            .shape = .{ .band = 3, .k = 4 },
-            .strides = .{ .band = 1, .k = 3 },
-        },
-        .buf = &ab_buf,
-    };
-
-    const x_buf = [_]T{ 1, 2, 3, 4 };
-    const x = NamedArrayConst(K, T){
-        .idx = NamedIndex(K).initContiguous(.{ .k = 4 }),
-        .buf = &x_buf,
-    };
-
-    var y_buf = [_]T{ 0, 0, 0 };
-    const y = NamedArray(M, T){
-        .idx = NamedIndex(M).initContiguous(.{ .m = 3 }),
-        .buf = &y_buf,
-    };
-
-    blas.gbmv(T, BK, K, M, AB, x, y, .{ .alpha = 1.0, .beta = 0.0 }, .{ .kl = 1, .ku = 1 });
-
-    const expected = [_]T{ 4.0, 8.0, 12.0 };
-    for (0..3) |i| {
-        try std.testing.expectApproxEqAbs(expected[i], y_buf[i], math.floatEpsAt(T, expected[i]));
-    }
-}
-
-test "gbmv column-major matrix" {
-    // Same 4×4 tridiagonal matrix, column-major band storage
-    const BK = enum { band, k };
-    const K = enum { k };
-    const M = enum { m };
-    const T = f64;
-
-    // Column-major band storage (3 band rows × 4 cols):
-    // Col 0: [0, 2, 1], Col 1: [1, 2, 1], Col 2: [1, 2, 1], Col 3: [1, 2, 0]
-    const ab_buf = [_]T{
-        0, 2, 1,
-        1, 2, 1,
-        1, 2, 1,
-        1, 2, 0,
-    };
-    const AB = NamedArrayConst(BK, T){
-        .idx = .{
-            .shape = .{ .band = 3, .k = 4 },
-            .strides = .{ .band = 1, .k = 3 },
-        },
-        .buf = &ab_buf,
-    };
-
-    const x_buf = [_]T{ 1, 2, 3, 4 };
-    const x = NamedArrayConst(K, T){
-        .idx = NamedIndex(K).initContiguous(.{ .k = 4 }),
-        .buf = &x_buf,
-    };
-
-    var y_buf = [_]T{ 0, 0, 0, 0 };
-    const y = NamedArray(M, T){
-        .idx = NamedIndex(M).initContiguous(.{ .m = 4 }),
-        .buf = &y_buf,
-    };
-
-    blas.gbmv(T, BK, K, M, AB, x, y, .{ .alpha = 1.0, .beta = 0.0 }, .{ .kl = 1, .ku = 1 });
-
-    const expected = [_]T{ 4.0, 8.0, 12.0, 11.0 };
-    for (0..4) |i| {
-        try std.testing.expectApproxEqAbs(expected[i], y_buf[i], math.floatEpsAt(T, expected[i]));
-    }
-}
-
-test "sbmv real upper" {
-    // 4×4 symmetric tridiagonal (K=1), upper band storage:
-    // A = [2 1 0 0]    x = [1]    y = A*x = [ 4]
-    //     [1 2 1 0]        [2]               [ 8]
-    //     [0 1 2 1]        [3]               [12]
-    //     [0 0 1 2]        [4]               [11]
-    const BK = enum { band, k };
-    const K = enum { k };
-    const T = f64;
-
-    // Upper band storage (K+1=2 band rows × N=4 cols), band axis contiguous:
-    // Col 0: [0, 2], Col 1: [1, 2], Col 2: [1, 2], Col 3: [1, 2]
-    const ab_buf = [_]T{
-        0, 2,
-        1, 2,
-        1, 2,
-        1, 2,
-    };
-    const AB = NamedArrayConst(BK, T){
-        .idx = .{
-            .shape = .{ .band = 2, .k = 4 },
-            .strides = .{ .band = 1, .k = 2 },
-        },
-        .buf = &ab_buf,
-    };
-
-    const x_buf = [_]T{ 1, 2, 3, 4 };
-    const x = NamedArrayConst(K, T){
-        .idx = NamedIndex(K).initContiguous(.{ .k = 4 }),
-        .buf = &x_buf,
-    };
-
-    var y_buf = [_]T{ 0, 0, 0, 0 };
-    const y = NamedArray(K, T){
-        .idx = NamedIndex(K).initContiguous(.{ .k = 4 }),
-        .buf = &y_buf,
-    };
-
-    // triangle = .k (second axis, ordinal 1) → Upper
-    blas.sbmv(T, BK, K, .k, AB, x, y, .{ .alpha = 1.0, .beta = 0.0 });
-
-    const expected = [_]T{ 4.0, 8.0, 12.0, 11.0 };
-    for (0..4) |i| {
-        try std.testing.expectApproxEqAbs(expected[i], y_buf[i], math.floatEpsAt(T, expected[i]));
-    }
-}
-
-test "sbmv column-major matrix" {
-    // Same symmetric tridiagonal, column-major upper band storage
-    const BK = enum { band, k };
-    const K = enum { k };
-    const T = f64;
-
-    // Column-major: Col 0: [0, 2], Col 1: [1, 2], Col 2: [1, 2], Col 3: [1, 2]
-    const ab_buf = [_]T{
-        0, 2,
-        1, 2,
-        1, 2,
-        1, 2,
-    };
-    const AB = NamedArrayConst(BK, T){
-        .idx = .{
-            .shape = .{ .band = 2, .k = 4 },
-            .strides = .{ .band = 1, .k = 2 },
-        },
-        .buf = &ab_buf,
-    };
-
-    const x_buf = [_]T{ 1, 2, 3, 4 };
-    const x = NamedArrayConst(K, T){
-        .idx = NamedIndex(K).initContiguous(.{ .k = 4 }),
-        .buf = &x_buf,
-    };
-
-    var y_buf = [_]T{ 0, 0, 0, 0 };
-    const y = NamedArray(K, T){
-        .idx = NamedIndex(K).initContiguous(.{ .k = 4 }),
-        .buf = &y_buf,
-    };
-
-    blas.sbmv(T, BK, K, .k, AB, x, y, .{ .alpha = 1.0, .beta = 0.0 });
-
-    const expected = [_]T{ 4.0, 8.0, 12.0, 11.0 };
-    for (0..4) |i| {
-        try std.testing.expectApproxEqAbs(expected[i], y_buf[i], math.floatEpsAt(T, expected[i]));
-    }
-}
-
-test "hbmv complex upper" {
-    // 4×4 Hermitian tridiagonal (K=1), upper band storage:
-    // A = [2    1+i  0    0   ]    x = [1]    y = [3+i ]
-    //     [1-i  3    2+i  0   ]        [1]        [6   ]
-    //     [0    2-i  4    1+i ]        [1]        [7   ]
-    //     [0    0    1-i  5   ]        [1]        [6-i ]
-    const BK = enum { band, k };
-    const K = enum { k };
-    const T = Complex(f64);
-
-    // Upper band storage (K+1=2 band rows × N=4 cols), band axis contiguous:
-    // Col 0: [0, 2], Col 1: [1+i, 3], Col 2: [2+i, 4], Col 3: [1+i, 5]
-    const ab_buf = [_]T{
-        .{ .re = 0, .im = 0 }, .{ .re = 2, .im = 0 },
-        .{ .re = 1, .im = 1 }, .{ .re = 3, .im = 0 },
-        .{ .re = 2, .im = 1 }, .{ .re = 4, .im = 0 },
-        .{ .re = 1, .im = 1 }, .{ .re = 5, .im = 0 },
-    };
-    const AB = NamedArrayConst(BK, T){
-        .idx = .{
-            .shape = .{ .band = 2, .k = 4 },
-            .strides = .{ .band = 1, .k = 2 },
-        },
-        .buf = &ab_buf,
-    };
-
-    const x_buf = [_]T{
-        .{ .re = 1, .im = 0 },
-        .{ .re = 1, .im = 0 },
-        .{ .re = 1, .im = 0 },
-        .{ .re = 1, .im = 0 },
-    };
-    const x = NamedArrayConst(K, T){
-        .idx = NamedIndex(K).initContiguous(.{ .k = 4 }),
-        .buf = &x_buf,
-    };
-
-    var y_buf = [_]T{
-        .{ .re = 0, .im = 0 },
-        .{ .re = 0, .im = 0 },
-        .{ .re = 0, .im = 0 },
-        .{ .re = 0, .im = 0 },
-    };
-    const y = NamedArray(K, T){
-        .idx = NamedIndex(K).initContiguous(.{ .k = 4 }),
-        .buf = &y_buf,
-    };
-
-    blas.hbmv(T, BK, K, .k, AB, x, y, .{
-        .alpha = .{ .re = 1, .im = 0 },
-        .beta = .{ .re = 0, .im = 0 },
-    });
-
-    const expected = [_]T{
-        .{ .re = 3, .im = 1 },
-        .{ .re = 6, .im = 0 },
-        .{ .re = 7, .im = 0 },
-        .{ .re = 6, .im = -1 },
-    };
-    const eps = 1e-10;
-    for (0..4) |i| {
-        try std.testing.expectApproxEqAbs(expected[i].re, y_buf[i].re, eps);
-        try std.testing.expectApproxEqAbs(expected[i].im, y_buf[i].im, eps);
-    }
-}
-
-test "hbmv column-major matrix" {
-    // Same Hermitian tridiagonal, column-major upper band storage
-    const BK = enum { band, k };
-    const K = enum { k };
-    const T = Complex(f64);
-
-    // Column-major: Col 0: [0, 2], Col 1: [1+i, 3], Col 2: [2+i, 4], Col 3: [1+i, 5]
-    const ab_buf = [_]T{
-        .{ .re = 0, .im = 0 }, .{ .re = 2, .im = 0 },
-        .{ .re = 1, .im = 1 }, .{ .re = 3, .im = 0 },
-        .{ .re = 2, .im = 1 }, .{ .re = 4, .im = 0 },
-        .{ .re = 1, .im = 1 }, .{ .re = 5, .im = 0 },
-    };
-    const AB = NamedArrayConst(BK, T){
-        .idx = .{
-            .shape = .{ .band = 2, .k = 4 },
-            .strides = .{ .band = 1, .k = 2 },
-        },
-        .buf = &ab_buf,
-    };
-
-    const x_buf = [_]T{
-        .{ .re = 1, .im = 0 },
-        .{ .re = 1, .im = 0 },
-        .{ .re = 1, .im = 0 },
-        .{ .re = 1, .im = 0 },
-    };
-    const x = NamedArrayConst(K, T){
-        .idx = NamedIndex(K).initContiguous(.{ .k = 4 }),
-        .buf = &x_buf,
-    };
-
-    var y_buf = [_]T{
-        .{ .re = 0, .im = 0 },
-        .{ .re = 0, .im = 0 },
-        .{ .re = 0, .im = 0 },
-        .{ .re = 0, .im = 0 },
-    };
-    const y = NamedArray(K, T){
-        .idx = NamedIndex(K).initContiguous(.{ .k = 4 }),
-        .buf = &y_buf,
-    };
-
-    blas.hbmv(T, BK, K, .k, AB, x, y, .{
-        .alpha = .{ .re = 1, .im = 0 },
-        .beta = .{ .re = 0, .im = 0 },
-    });
-
-    const expected = [_]T{
-        .{ .re = 3, .im = 1 },
-        .{ .re = 6, .im = 0 },
-        .{ .re = 7, .im = 0 },
-        .{ .re = 6, .im = -1 },
-    };
-    const eps = 1e-10;
-    for (0..4) |i| {
-        try std.testing.expectApproxEqAbs(expected[i].re, y_buf[i].re, eps);
-        try std.testing.expectApproxEqAbs(expected[i].im, y_buf[i].im, eps);
-    }
-}
-
-test "tbmv real upper" {
-    // 4×4 upper triangular bidiagonal (K=1):
-    // A = [2 1 0 0]    x = [1]    x' = A*x = [ 4]
-    //     [0 3 1 0]        [2]                [ 9]
-    //     [0 0 4 1]        [3]                [16]
-    //     [0 0 0 5]        [4]                [20]
-    const BK = enum { band, k };
-    const K = enum { k };
-    const T = f64;
-
-    // Upper band storage (K+1=2 band rows × N=4 cols), band axis contiguous:
-    // Col 0: [0, 2], Col 1: [1, 3], Col 2: [1, 4], Col 3: [1, 5]
-    const ab_buf = [_]T{
-        0, 2,
-        1, 3,
-        1, 4,
-        1, 5,
-    };
-    const AB = NamedArrayConst(BK, T){
-        .idx = .{
-            .shape = .{ .band = 2, .k = 4 },
-            .strides = .{ .band = 1, .k = 2 },
-        },
-        .buf = &ab_buf,
-    };
-
-    var x_buf = [_]T{ 1, 2, 3, 4 };
-    const x = NamedArray(K, T){
-        .idx = NamedIndex(K).initContiguous(.{ .k = 4 }),
-        .buf = &x_buf,
-    };
-
-    // triangle = .k (second axis) → Upper
-    blas.tbmv(T, BK, K, .k, .non_unit, AB, x);
-
-    const expected = [_]T{ 4.0, 9.0, 16.0, 20.0 };
-    for (0..4) |i| {
-        try std.testing.expectApproxEqAbs(expected[i], x_buf[i], math.floatEpsAt(T, expected[i]));
-    }
-}
-
-test "tbmv column-major matrix" {
-    // Same upper triangular bidiagonal, column-major band storage
-    const BK = enum { band, k };
-    const K = enum { k };
-    const T = f64;
-
-    // Column-major: Col 0: [0, 2], Col 1: [1, 3], Col 2: [1, 4], Col 3: [1, 5]
-    const ab_buf = [_]T{
-        0, 2,
-        1, 3,
-        1, 4,
-        1, 5,
-    };
-    const AB = NamedArrayConst(BK, T){
-        .idx = .{
-            .shape = .{ .band = 2, .k = 4 },
-            .strides = .{ .band = 1, .k = 2 },
-        },
-        .buf = &ab_buf,
-    };
-
-    var x_buf = [_]T{ 1, 2, 3, 4 };
-    const x = NamedArray(K, T){
-        .idx = NamedIndex(K).initContiguous(.{ .k = 4 }),
-        .buf = &x_buf,
-    };
-
-    blas.tbmv(T, BK, K, .k, .non_unit, AB, x);
-
-    const expected = [_]T{ 4.0, 9.0, 16.0, 20.0 };
-    for (0..4) |i| {
-        try std.testing.expectApproxEqAbs(expected[i], x_buf[i], math.floatEpsAt(T, expected[i]));
-    }
-}
-
-test "tbsv real upper" {
-    // Solve A*x = b where A is the same 4×4 upper triangular bidiagonal:
-    // A = [2 1 0 0]    b = [4]    x = A⁻¹*b = [1]
-    //     [0 3 1 0]        [9]                  [2]
-    //     [0 0 4 1]        [16]                 [3]
-    //     [0 0 0 5]        [20]                 [4]
-    const BK = enum { band, k };
-    const K = enum { k };
-    const T = f64;
-
-    // Upper band storage, band axis contiguous:
-    // Col 0: [0, 2], Col 1: [1, 3], Col 2: [1, 4], Col 3: [1, 5]
-    const ab_buf = [_]T{
-        0, 2,
-        1, 3,
-        1, 4,
-        1, 5,
-    };
-    const AB = NamedArrayConst(BK, T){
-        .idx = .{
-            .shape = .{ .band = 2, .k = 4 },
-            .strides = .{ .band = 1, .k = 2 },
-        },
-        .buf = &ab_buf,
-    };
-
-    var x_buf = [_]T{ 4, 9, 16, 20 };
-    const x = NamedArray(K, T){
-        .idx = NamedIndex(K).initContiguous(.{ .k = 4 }),
-        .buf = &x_buf,
-    };
-
-    blas.tbsv(T, BK, K, .k, .non_unit, AB, x);
-
-    const expected = [_]T{ 1.0, 2.0, 3.0, 4.0 };
-    for (0..4) |i| {
-        try std.testing.expectApproxEqAbs(expected[i], x_buf[i], math.floatEpsAt(T, expected[i]));
-    }
-}
-
-test "tbsv column-major matrix" {
-    // Same solve, column-major band storage
-    const BK = enum { band, k };
-    const K = enum { k };
-    const T = f64;
-
-    const ab_buf = [_]T{
-        0, 2,
-        1, 3,
-        1, 4,
-        1, 5,
-    };
-    const AB = NamedArrayConst(BK, T){
-        .idx = .{
-            .shape = .{ .band = 2, .k = 4 },
-            .strides = .{ .band = 1, .k = 2 },
-        },
-        .buf = &ab_buf,
-    };
-
-    var x_buf = [_]T{ 4, 9, 16, 20 };
-    const x = NamedArray(K, T){
-        .idx = NamedIndex(K).initContiguous(.{ .k = 4 }),
-        .buf = &x_buf,
-    };
-
-    blas.tbsv(T, BK, K, .k, .non_unit, AB, x);
-
-    const expected = [_]T{ 1.0, 2.0, 3.0, 4.0 };
-    for (0..4) |i| {
-        try std.testing.expectApproxEqAbs(expected[i], x_buf[i], math.floatEpsAt(T, expected[i]));
-    }
-}
-
-// ============================================================
-// Packed matrix operation tests
-// ============================================================
-
-test "spmv real upper" {
-    // 3×3 symmetric matrix, upper packed storage:
-    // A = [1 2 3]    x = [1]    y = A*x = [14]
-    //     [2 5 6]        [2]               [30]
-    //     [3 6 9]        [3]               [42]
-    //
-    // Upper packed (col-major): col0=[1], col1=[2,5], col2=[3,6,9]
-    const MK = enum { m, k };
-    const K = enum { k };
-    const M = enum { m };
-    const T = f64;
-
-    const ap = [_]T{ 1, 2, 5, 3, 6, 9 };
-
-    const x_buf = [_]T{ 1, 2, 3 };
-    const x = NamedArrayConst(K, T){
-        .idx = NamedIndex(K).initContiguous(.{ .k = 3 }),
-        .buf = &x_buf,
-    };
-
-    var y_buf = [_]T{ 0, 0, 0 };
-    const y = NamedArray(M, T){
-        .idx = NamedIndex(M).initContiguous(.{ .m = 3 }),
-        .buf = &y_buf,
-    };
-
-    // triangle = .k (second axis) → Upper
-    blas.spmv(T, MK, K, M, .k, &ap, x, y, .{ .alpha = 1.0, .beta = 0.0 });
-
-    const expected = [_]T{ 14.0, 30.0, 42.0 };
-    for (0..3) |i| {
-        try std.testing.expectApproxEqAbs(expected[i], y_buf[i], math.floatEpsAt(T, expected[i]));
-    }
-}
-
-test "spmv real lower" {
-    // Same 3×3 symmetric matrix, lower packed storage:
-    // Lower packed (col-major): col0=[1,2,3], col1=[5,6], col2=[9]
-    const MK = enum { m, k };
-    const K = enum { k };
-    const M = enum { m };
-    const T = f64;
-
-    const ap = [_]T{ 1, 2, 3, 5, 6, 9 };
-
-    const x_buf = [_]T{ 1, 2, 3 };
-    const x = NamedArrayConst(K, T){
-        .idx = NamedIndex(K).initContiguous(.{ .k = 3 }),
-        .buf = &x_buf,
-    };
-
-    var y_buf = [_]T{ 0, 0, 0 };
-    const y = NamedArray(M, T){
-        .idx = NamedIndex(M).initContiguous(.{ .m = 3 }),
-        .buf = &y_buf,
-    };
-
-    // triangle = .m (first axis) → Lower
-    blas.spmv(T, MK, K, M, .m, &ap, x, y, .{ .alpha = 1.0, .beta = 0.0 });
-
-    const expected = [_]T{ 14.0, 30.0, 42.0 };
-    for (0..3) |i| {
-        try std.testing.expectApproxEqAbs(expected[i], y_buf[i], math.floatEpsAt(T, expected[i]));
-    }
-}
-
-test "spmv real nontrivial scalars and strides" {
-    // Same matrix, alpha=2, beta=1, x stride=2, y stride=2
-    const MK = enum { m, k };
-    const K = enum { k };
-    const M = enum { m };
-    const T = f64;
-
-    const ap = [_]T{ 1, 2, 5, 3, 6, 9 };
-
-    // x = [1, 2, 3] stored with stride 2
-    const x_buf = [_]T{ 1, 0, 2, 0, 3 };
-    const x = NamedArrayConst(K, T){
-        .idx = .{ .shape = .{ .k = 3 }, .strides = .{ .k = 2 } },
-        .buf = &x_buf,
-    };
-
-    // y = [1, 1, 1] stored with stride 2, expect y = 2*A*x + y = [29, 61, 85]
-    var y_buf = [_]T{ 1, 0, 1, 0, 1 };
-    const y = NamedArray(M, T){
-        .idx = .{ .shape = .{ .m = 3 }, .strides = .{ .m = 2 } },
-        .buf = &y_buf,
-    };
-
-    blas.spmv(T, MK, K, M, .k, &ap, x, y, .{ .alpha = 2.0, .beta = 1.0 });
-
-    const expected = [_]T{ 29.0, 61.0, 85.0 };
-    for (0..3) |i| {
-        try std.testing.expectApproxEqAbs(expected[i], y_buf[i * 2], math.floatEpsAt(T, expected[i]));
-    }
-}
-
-test "hpmv complex upper" {
-    // 3×3 Hermitian matrix, upper packed storage:
-    // A = [2      1+i    3    ]    x = [1]    y = A*x = [6+i ]
-    //     [1-i    4      2+i  ]        [1]               [7   ]
-    //     [3      2-i    6    ]        [1]               [11-i]
-    //
-    // Upper packed (col-major): col0=[2], col1=[1+i, 4], col2=[3, 2+i, 6]
-    const MK = enum { m, k };
-    const K = enum { k };
-    const M = enum { m };
-    const T = Complex(f64);
-
-    const ap = [_]T{
-        .{ .re = 2, .im = 0 },
-        .{ .re = 1, .im = 1 },
-        .{ .re = 4, .im = 0 },
-        .{ .re = 3, .im = 0 },
-        .{ .re = 2, .im = 1 },
-        .{ .re = 6, .im = 0 },
-    };
-
-    const x_buf = [_]T{
-        .{ .re = 1, .im = 0 },
-        .{ .re = 1, .im = 0 },
-        .{ .re = 1, .im = 0 },
-    };
-    const x = NamedArrayConst(K, T){
-        .idx = NamedIndex(K).initContiguous(.{ .k = 3 }),
-        .buf = &x_buf,
-    };
-
-    var y_buf = [_]T{
-        .{ .re = 0, .im = 0 },
-        .{ .re = 0, .im = 0 },
-        .{ .re = 0, .im = 0 },
-    };
-    const y = NamedArray(M, T){
-        .idx = NamedIndex(M).initContiguous(.{ .m = 3 }),
-        .buf = &y_buf,
-    };
-
-    blas.hpmv(T, MK, K, M, .k, &ap, x, y, .{
-        .alpha = .{ .re = 1, .im = 0 },
-        .beta = .{ .re = 0, .im = 0 },
-    });
-
-    const expected = [_]T{
-        .{ .re = 6, .im = 1 },
-        .{ .re = 7, .im = 0 },
-        .{ .re = 11, .im = -1 },
-    };
-    const eps = 1e-10;
-    for (0..3) |i| {
-        try std.testing.expectApproxEqAbs(expected[i].re, y_buf[i].re, eps);
-        try std.testing.expectApproxEqAbs(expected[i].im, y_buf[i].im, eps);
-    }
-}
-
-test "hpmv complex lower" {
-    // Same Hermitian matrix, lower packed storage:
-    // Lower packed (col-major): col0=[2, 1-i, 3], col1=[4, 2-i], col2=[6]
-    const MK = enum { m, k };
-    const K = enum { k };
-    const M = enum { m };
-    const T = Complex(f64);
-
-    const ap = [_]T{
-        .{ .re = 2, .im = 0 },
-        .{ .re = 1, .im = -1 },
-        .{ .re = 3, .im = 0 },
-        .{ .re = 4, .im = 0 },
-        .{ .re = 2, .im = -1 },
-        .{ .re = 6, .im = 0 },
-    };
-
-    const x_buf = [_]T{
-        .{ .re = 1, .im = 0 },
-        .{ .re = 1, .im = 0 },
-        .{ .re = 1, .im = 0 },
-    };
-    const x = NamedArrayConst(K, T){
-        .idx = NamedIndex(K).initContiguous(.{ .k = 3 }),
-        .buf = &x_buf,
-    };
-
-    var y_buf = [_]T{
-        .{ .re = 0, .im = 0 },
-        .{ .re = 0, .im = 0 },
-        .{ .re = 0, .im = 0 },
-    };
-    const y = NamedArray(M, T){
-        .idx = NamedIndex(M).initContiguous(.{ .m = 3 }),
-        .buf = &y_buf,
-    };
-
-    // triangle = .m (first axis) → Lower
-    blas.hpmv(T, MK, K, M, .m, &ap, x, y, .{
-        .alpha = .{ .re = 1, .im = 0 },
-        .beta = .{ .re = 0, .im = 0 },
-    });
-
-    const expected = [_]T{
-        .{ .re = 6, .im = 1 },
-        .{ .re = 7, .im = 0 },
-        .{ .re = 11, .im = -1 },
-    };
-    const eps = 1e-10;
-    for (0..3) |i| {
-        try std.testing.expectApproxEqAbs(expected[i].re, y_buf[i].re, eps);
-        try std.testing.expectApproxEqAbs(expected[i].im, y_buf[i].im, eps);
-    }
-}
-
-test "tpmv real upper" {
-    // 3×3 upper triangular, packed storage:
-    // A = [2 1 3]    x = [1]    A*x = [13]
-    //     [0 4 2]        [2]          [14]
-    //     [0 0 5]        [3]          [15]
-    //
-    // Upper packed (col-major): col0=[2], col1=[1,4], col2=[3,2,5]
-    const MK = enum { m, k };
-    const K = enum { k };
-    const T = f64;
-
-    const ap = [_]T{ 2, 1, 4, 3, 2, 5 };
-
-    var x_buf = [_]T{ 1, 2, 3 };
-    const x = NamedArray(K, T){
-        .idx = NamedIndex(K).initContiguous(.{ .k = 3 }),
-        .buf = &x_buf,
-    };
-
-    // triangle = .k (second axis) → Upper
-    blas.tpmv(T, MK, K, .k, .non_unit, &ap, x);
-
-    const expected = [_]T{ 13.0, 14.0, 15.0 };
-    for (0..3) |i| {
-        try std.testing.expectApproxEqAbs(expected[i], x_buf[i], math.floatEpsAt(T, expected[i]));
-    }
-}
-
-test "tpmv real lower" {
-    // 3×3 lower triangular, packed storage:
-    // A = [2 0 0]    x = [1]    A*x = [ 2]
-    //     [1 4 0]        [2]          [ 9]
-    //     [3 2 5]        [3]          [22]
-    //
-    // Lower packed (col-major): col0=[2,1,3], col1=[4,2], col2=[5]
-    const MK = enum { m, k };
-    const K = enum { k };
-    const T = f64;
-
-    const ap = [_]T{ 2, 1, 3, 4, 2, 5 };
-
-    var x_buf = [_]T{ 1, 2, 3 };
-    const x = NamedArray(K, T){
-        .idx = NamedIndex(K).initContiguous(.{ .k = 3 }),
-        .buf = &x_buf,
-    };
-
-    // triangle = .m (first axis) → Lower
-    blas.tpmv(T, MK, K, .m, .non_unit, &ap, x);
-
-    const expected = [_]T{ 2.0, 9.0, 22.0 };
-    for (0..3) |i| {
-        try std.testing.expectApproxEqAbs(expected[i], x_buf[i], math.floatEpsAt(T, expected[i]));
-    }
-}
-
-test "tpmv real unit diagonal" {
-    // 3×3 upper triangular with unit diagonal:
-    // A = [1 2 3]    x = [1]    A*x = [14]
-    //     [0 1 1]        [2]          [ 5]
-    //     [0 0 1]        [3]          [ 3]
-    //
-    // Upper packed: [*, 2, *, 3, 1, *] — diagonal entries are not read.
-    const MK = enum { m, k };
-    const K = enum { k };
-    const T = f64;
-
-    const ap = [_]T{ 0, 2, 0, 3, 1, 0 }; // diagonal positions contain 0 (ignored)
-
-    var x_buf = [_]T{ 1, 2, 3 };
-    const x = NamedArray(K, T){
-        .idx = NamedIndex(K).initContiguous(.{ .k = 3 }),
-        .buf = &x_buf,
-    };
-
-    blas.tpmv(T, MK, K, .k, .unit, &ap, x);
-
-    const expected = [_]T{ 14.0, 5.0, 3.0 };
-    for (0..3) |i| {
-        try std.testing.expectApproxEqAbs(expected[i], x_buf[i], math.floatEpsAt(T, expected[i]));
-    }
-}
-
-test "tpmv complex upper" {
-    // 3×3 upper triangular complex:
-    // A = [2    1+i  3  ]    x = [1]    A*x = [2+2+2i+9]   = [13+2i]
-    //     [0    4    2-i]        [2]          [0+8+6-3i]     [14-3i]
-    //     [0    0    5  ]        [3]          [0+0+15]       [15   ]
-    //
-    // Upper packed: [2, 1+i, 4, 3, 2-i, 5]
-    const MK = enum { m, k };
-    const K = enum { k };
-    const T = Complex(f64);
-
-    const ap = [_]T{
-        .{ .re = 2, .im = 0 },
-        .{ .re = 1, .im = 1 },
-        .{ .re = 4, .im = 0 },
-        .{ .re = 3, .im = 0 },
-        .{ .re = 2, .im = -1 },
-        .{ .re = 5, .im = 0 },
-    };
-
-    var x_buf = [_]T{
-        .{ .re = 1, .im = 0 },
-        .{ .re = 2, .im = 0 },
-        .{ .re = 3, .im = 0 },
-    };
-    const x = NamedArray(K, T){
-        .idx = NamedIndex(K).initContiguous(.{ .k = 3 }),
-        .buf = &x_buf,
-    };
-
-    blas.tpmv(T, MK, K, .k, .non_unit, &ap, x);
-
-    const expected = [_]T{
-        .{ .re = 13, .im = 2 },
-        .{ .re = 14, .im = -3 },
-        .{ .re = 15, .im = 0 },
-    };
-    const eps = 1e-10;
-    for (0..3) |i| {
-        try std.testing.expectApproxEqAbs(expected[i].re, x_buf[i].re, eps);
-        try std.testing.expectApproxEqAbs(expected[i].im, x_buf[i].im, eps);
-    }
-}
-
-test "tpmv nontrivial strides" {
-    // Upper triangular, x with stride 2
-    const AB = enum { a, b };
-    const B = enum { b };
-    const T = f64;
-
-    const ap = [_]T{ 2, 1, 4, 3, 2, 5 };
-
-    // x = [1, 2, 3] stored with stride 2
-    var x_buf = [_]T{ 1, 0, 2, 0, 3 };
-    const x = NamedArray(B, T){
-        .idx = .{ .shape = .{ .b = 3 }, .strides = .{ .b = 2 } },
-        .buf = &x_buf,
-    };
-
-    blas.tpmv(T, AB, B, .b, .non_unit, &ap, x);
-
-    const expected = [_]T{ 13.0, 14.0, 15.0 };
-    for (0..3) |i| {
-        try std.testing.expectApproxEqAbs(expected[i], x_buf[i * 2], math.floatEpsAt(T, expected[i]));
-    }
-}
-
-test "tpsv real upper" {
-    // Solve A*x = b where A is 3×3 upper triangular:
-    // A = [2 1 3]    b = [13]    x = A⁻¹*b = [1]
-    //     [0 4 2]        [14]                 [2]
-    //     [0 0 5]        [15]                 [3]
-    //
-    // Upper packed: [2, 1, 4, 3, 2, 5]
-    const MK = enum { m, k };
-    const K = enum { k };
-    const T = f64;
-
-    const ap = [_]T{ 2, 1, 4, 3, 2, 5 };
-
-    var x_buf = [_]T{ 13, 14, 15 };
-    const x = NamedArray(K, T){
-        .idx = NamedIndex(K).initContiguous(.{ .k = 3 }),
-        .buf = &x_buf,
-    };
-
-    blas.tpsv(T, MK, K, .k, .non_unit, &ap, x);
-
-    const expected = [_]T{ 1.0, 2.0, 3.0 };
-    for (0..3) |i| {
-        try std.testing.expectApproxEqAbs(expected[i], x_buf[i], math.floatEpsAt(T, expected[i]));
-    }
-}
-
-test "tpsv real lower" {
-    // Solve A*x = b where A is 3×3 lower triangular:
-    // A = [2 0 0]    b = [ 2]    x = A⁻¹*b = [1]
-    //     [1 4 0]        [ 9]                 [2]
-    //     [3 2 5]        [22]                 [3]
-    //
-    // Lower packed: [2, 1, 3, 4, 2, 5]
-    const MK = enum { m, k };
-    const K = enum { k };
-    const T = f64;
-
-    const ap = [_]T{ 2, 1, 3, 4, 2, 5 };
-
-    var x_buf = [_]T{ 2, 9, 22 };
-    const x = NamedArray(K, T){
-        .idx = NamedIndex(K).initContiguous(.{ .k = 3 }),
-        .buf = &x_buf,
-    };
-
-    blas.tpsv(T, MK, K, .m, .non_unit, &ap, x);
-
-    const expected = [_]T{ 1.0, 2.0, 3.0 };
-    for (0..3) |i| {
-        try std.testing.expectApproxEqAbs(expected[i], x_buf[i], math.floatEpsAt(T, expected[i]));
-    }
-}
-
-test "tpsv real unit diagonal" {
-    // Solve A*x = b where A is 3×3 upper triangular with unit diagonal:
-    // A = [1 2 3]    b = [14]    x = A⁻¹*b = [1]
-    //     [0 1 1]        [ 5]                 [2]
-    //     [0 0 1]        [ 3]                 [3]
-    //
-    // Upper packed: [*, 2, *, 3, 1, *]
-    const MK = enum { m, k };
-    const K = enum { k };
-    const T = f64;
-
-    const ap = [_]T{ 0, 2, 0, 3, 1, 0 };
-
-    var x_buf = [_]T{ 14, 5, 3 };
-    const x = NamedArray(K, T){
-        .idx = NamedIndex(K).initContiguous(.{ .k = 3 }),
-        .buf = &x_buf,
-    };
-
-    blas.tpsv(T, MK, K, .k, .unit, &ap, x);
-
-    const expected = [_]T{ 1.0, 2.0, 3.0 };
-    for (0..3) |i| {
-        try std.testing.expectApproxEqAbs(expected[i], x_buf[i], math.floatEpsAt(T, expected[i]));
-    }
-}
-
-test "tpsv nontrivial strides" {
-    // Upper triangular solve, x with stride 2
-    const AB = enum { a, b };
-    const B = enum { b };
-    const T = f64;
-
-    const ap = [_]T{ 2, 1, 4, 3, 2, 5 };
-
-    // b = [13, 14, 15] stored with stride 2
-    var x_buf = [_]T{ 13, 0, 14, 0, 15 };
-    const x = NamedArray(B, T){
-        .idx = .{ .shape = .{ .b = 3 }, .strides = .{ .b = 2 } },
-        .buf = &x_buf,
-    };
-
-    blas.tpsv(T, AB, B, .b, .non_unit, &ap, x);
-
-    const expected = [_]T{ 1.0, 2.0, 3.0 };
-    for (0..3) |i| {
-        try std.testing.expectApproxEqAbs(expected[i], x_buf[i * 2], math.floatEpsAt(T, expected[i]));
-    }
-}
-
 test "ger real" {
     const MK = enum { m, k };
     const M = enum { m };
@@ -5550,6 +4575,513 @@ test "her2 complex nontrivial strides" {
     try std.testing.expectApproxEqAbs(@as(f32, 0), a_buf[3].im, eps);
 }
 
+// ============================================================
+// Band matrix operation tests
+// ============================================================
+
+test "gbmv real" {
+    // 4×4 tridiagonal matrix (KL=1, KU=1):
+    // A = [2 1 0 0]    x = [1]    y = A*x = [ 4]
+    //     [1 2 1 0]        [2]               [ 8]
+    //     [0 1 2 1]        [3]               [12]
+    //     [0 0 1 2]        [4]               [11]
+    const BK = enum { band, k };
+    const K = enum { k };
+    const M = enum { m };
+    const T = f64;
+
+    // Band storage with band axis contiguous (stride 1), as required by BLAS.
+    // Each group of 3 is one column: [superdiag, diag, subdiag]
+    // Col 0: [0, 2, 1], Col 1: [1, 2, 1], Col 2: [1, 2, 1], Col 3: [1, 2, 0]
+    const ab_buf = [_]T{
+        0, 2, 1,
+        1, 2, 1,
+        1, 2, 1,
+        1, 2, 0,
+    };
+    const AB = NamedArrayConst(BK, T){
+        .idx = .{
+            .shape = .{ .band = 3, .k = 4 },
+            .strides = .{ .band = 1, .k = 3 },
+        },
+        .buf = &ab_buf,
+    };
+
+    const x_buf = [_]T{ 1, 2, 3, 4 };
+    const x = NamedArrayConst(K, T){
+        .idx = NamedIndex(K).initContiguous(.{ .k = 4 }),
+        .buf = &x_buf,
+    };
+
+    var y_buf = [_]T{ 0, 0, 0, 0 };
+    const y = NamedArray(M, T){
+        .idx = NamedIndex(M).initContiguous(.{ .m = 4 }),
+        .buf = &y_buf,
+    };
+
+    blas.gbmv(T, BK, K, M, AB, x, y, .{ .alpha = 1.0, .beta = 0.0 }, .{ .kl = 1, .ku = 1 });
+
+    const expected = [_]T{ 4.0, 8.0, 12.0, 11.0 };
+    for (0..4) |i| {
+        try std.testing.expectApproxEqAbs(expected[i], y_buf[i], math.floatEpsAt(T, expected[i]));
+    }
+}
+
+test "gbmv real rectangular" {
+    // 3×4 matrix (M=3, N=4, KL=1, KU=1):
+    // A = [2 1 0 0]    x = [1]    y = A*x = [ 4]
+    //     [1 2 1 0]        [2]               [ 8]
+    //     [0 1 2 1]        [3]               [12]
+    //                      [4]
+    const BK = enum { band, k };
+    const K = enum { k };
+    const M = enum { m };
+    const T = f64;
+
+    // Band storage with band axis contiguous (stride 1), same data as square case but M=3
+    // Col 0: [0, 2, 1], Col 1: [1, 2, 1], Col 2: [1, 2, 1], Col 3: [1, 2, 0]
+    const ab_buf = [_]T{
+        0, 2, 1,
+        1, 2, 1,
+        1, 2, 1,
+        1, 2, 0,
+    };
+    const AB = NamedArrayConst(BK, T){
+        .idx = .{
+            .shape = .{ .band = 3, .k = 4 },
+            .strides = .{ .band = 1, .k = 3 },
+        },
+        .buf = &ab_buf,
+    };
+
+    const x_buf = [_]T{ 1, 2, 3, 4 };
+    const x = NamedArrayConst(K, T){
+        .idx = NamedIndex(K).initContiguous(.{ .k = 4 }),
+        .buf = &x_buf,
+    };
+
+    var y_buf = [_]T{ 0, 0, 0 };
+    const y = NamedArray(M, T){
+        .idx = NamedIndex(M).initContiguous(.{ .m = 3 }),
+        .buf = &y_buf,
+    };
+
+    blas.gbmv(T, BK, K, M, AB, x, y, .{ .alpha = 1.0, .beta = 0.0 }, .{ .kl = 1, .ku = 1 });
+
+    const expected = [_]T{ 4.0, 8.0, 12.0 };
+    for (0..3) |i| {
+        try std.testing.expectApproxEqAbs(expected[i], y_buf[i], math.floatEpsAt(T, expected[i]));
+    }
+}
+
+test "gbmv column-major matrix" {
+    // Same 4×4 tridiagonal matrix, column-major band storage
+    const BK = enum { band, k };
+    const K = enum { k };
+    const M = enum { m };
+    const T = f64;
+
+    // Column-major band storage (3 band rows × 4 cols):
+    // Col 0: [0, 2, 1], Col 1: [1, 2, 1], Col 2: [1, 2, 1], Col 3: [1, 2, 0]
+    const ab_buf = [_]T{
+        0, 2, 1,
+        1, 2, 1,
+        1, 2, 1,
+        1, 2, 0,
+    };
+    const AB = NamedArrayConst(BK, T){
+        .idx = .{
+            .shape = .{ .band = 3, .k = 4 },
+            .strides = .{ .band = 1, .k = 3 },
+        },
+        .buf = &ab_buf,
+    };
+
+    const x_buf = [_]T{ 1, 2, 3, 4 };
+    const x = NamedArrayConst(K, T){
+        .idx = NamedIndex(K).initContiguous(.{ .k = 4 }),
+        .buf = &x_buf,
+    };
+
+    var y_buf = [_]T{ 0, 0, 0, 0 };
+    const y = NamedArray(M, T){
+        .idx = NamedIndex(M).initContiguous(.{ .m = 4 }),
+        .buf = &y_buf,
+    };
+
+    blas.gbmv(T, BK, K, M, AB, x, y, .{ .alpha = 1.0, .beta = 0.0 }, .{ .kl = 1, .ku = 1 });
+
+    const expected = [_]T{ 4.0, 8.0, 12.0, 11.0 };
+    for (0..4) |i| {
+        try std.testing.expectApproxEqAbs(expected[i], y_buf[i], math.floatEpsAt(T, expected[i]));
+    }
+}
+
+test "sbmv real upper" {
+    // 4×4 symmetric tridiagonal (K=1), upper band storage:
+    // A = [2 1 0 0]    x = [1]    y = A*x = [ 4]
+    //     [1 2 1 0]        [2]               [ 8]
+    //     [0 1 2 1]        [3]               [12]
+    //     [0 0 1 2]        [4]               [11]
+    const BK = enum { band, k };
+    const K = enum { k };
+    const T = f64;
+
+    // Upper band storage (K+1=2 band rows × N=4 cols), band axis contiguous:
+    // Col 0: [0, 2], Col 1: [1, 2], Col 2: [1, 2], Col 3: [1, 2]
+    const ab_buf = [_]T{
+        0, 2,
+        1, 2,
+        1, 2,
+        1, 2,
+    };
+    const AB = NamedArrayConst(BK, T){
+        .idx = .{
+            .shape = .{ .band = 2, .k = 4 },
+            .strides = .{ .band = 1, .k = 2 },
+        },
+        .buf = &ab_buf,
+    };
+
+    const x_buf = [_]T{ 1, 2, 3, 4 };
+    const x = NamedArrayConst(K, T){
+        .idx = NamedIndex(K).initContiguous(.{ .k = 4 }),
+        .buf = &x_buf,
+    };
+
+    var y_buf = [_]T{ 0, 0, 0, 0 };
+    const y = NamedArray(K, T){
+        .idx = NamedIndex(K).initContiguous(.{ .k = 4 }),
+        .buf = &y_buf,
+    };
+
+    // triangle = .k (second axis, ordinal 1) → Upper
+    blas.sbmv(T, BK, K, .k, AB, x, y, .{ .alpha = 1.0, .beta = 0.0 });
+
+    const expected = [_]T{ 4.0, 8.0, 12.0, 11.0 };
+    for (0..4) |i| {
+        try std.testing.expectApproxEqAbs(expected[i], y_buf[i], math.floatEpsAt(T, expected[i]));
+    }
+}
+
+test "sbmv column-major matrix" {
+    // Same symmetric tridiagonal, column-major upper band storage
+    const BK = enum { band, k };
+    const K = enum { k };
+    const T = f64;
+
+    // Column-major: Col 0: [0, 2], Col 1: [1, 2], Col 2: [1, 2], Col 3: [1, 2]
+    const ab_buf = [_]T{
+        0, 2,
+        1, 2,
+        1, 2,
+        1, 2,
+    };
+    const AB = NamedArrayConst(BK, T){
+        .idx = .{
+            .shape = .{ .band = 2, .k = 4 },
+            .strides = .{ .band = 1, .k = 2 },
+        },
+        .buf = &ab_buf,
+    };
+
+    const x_buf = [_]T{ 1, 2, 3, 4 };
+    const x = NamedArrayConst(K, T){
+        .idx = NamedIndex(K).initContiguous(.{ .k = 4 }),
+        .buf = &x_buf,
+    };
+
+    var y_buf = [_]T{ 0, 0, 0, 0 };
+    const y = NamedArray(K, T){
+        .idx = NamedIndex(K).initContiguous(.{ .k = 4 }),
+        .buf = &y_buf,
+    };
+
+    blas.sbmv(T, BK, K, .k, AB, x, y, .{ .alpha = 1.0, .beta = 0.0 });
+
+    const expected = [_]T{ 4.0, 8.0, 12.0, 11.0 };
+    for (0..4) |i| {
+        try std.testing.expectApproxEqAbs(expected[i], y_buf[i], math.floatEpsAt(T, expected[i]));
+    }
+}
+
+test "hbmv complex upper" {
+    // 4×4 Hermitian tridiagonal (K=1), upper band storage:
+    // A = [2    1+i  0    0   ]    x = [1]    y = [3+i ]
+    //     [1-i  3    2+i  0   ]        [1]        [6   ]
+    //     [0    2-i  4    1+i ]        [1]        [7   ]
+    //     [0    0    1-i  5   ]        [1]        [6-i ]
+    const BK = enum { band, k };
+    const K = enum { k };
+    const T = Complex(f64);
+
+    // Upper band storage (K+1=2 band rows × N=4 cols), band axis contiguous:
+    // Col 0: [0, 2], Col 1: [1+i, 3], Col 2: [2+i, 4], Col 3: [1+i, 5]
+    const ab_buf = [_]T{
+        .{ .re = 0, .im = 0 }, .{ .re = 2, .im = 0 },
+        .{ .re = 1, .im = 1 }, .{ .re = 3, .im = 0 },
+        .{ .re = 2, .im = 1 }, .{ .re = 4, .im = 0 },
+        .{ .re = 1, .im = 1 }, .{ .re = 5, .im = 0 },
+    };
+    const AB = NamedArrayConst(BK, T){
+        .idx = .{
+            .shape = .{ .band = 2, .k = 4 },
+            .strides = .{ .band = 1, .k = 2 },
+        },
+        .buf = &ab_buf,
+    };
+
+    const x_buf = [_]T{
+        .{ .re = 1, .im = 0 },
+        .{ .re = 1, .im = 0 },
+        .{ .re = 1, .im = 0 },
+        .{ .re = 1, .im = 0 },
+    };
+    const x = NamedArrayConst(K, T){
+        .idx = NamedIndex(K).initContiguous(.{ .k = 4 }),
+        .buf = &x_buf,
+    };
+
+    var y_buf = [_]T{
+        .{ .re = 0, .im = 0 },
+        .{ .re = 0, .im = 0 },
+        .{ .re = 0, .im = 0 },
+        .{ .re = 0, .im = 0 },
+    };
+    const y = NamedArray(K, T){
+        .idx = NamedIndex(K).initContiguous(.{ .k = 4 }),
+        .buf = &y_buf,
+    };
+
+    blas.hbmv(T, BK, K, .k, AB, x, y, .{
+        .alpha = .{ .re = 1, .im = 0 },
+        .beta = .{ .re = 0, .im = 0 },
+    });
+
+    const expected = [_]T{
+        .{ .re = 3, .im = 1 },
+        .{ .re = 6, .im = 0 },
+        .{ .re = 7, .im = 0 },
+        .{ .re = 6, .im = -1 },
+    };
+    const eps = 1e-10;
+    for (0..4) |i| {
+        try std.testing.expectApproxEqAbs(expected[i].re, y_buf[i].re, eps);
+        try std.testing.expectApproxEqAbs(expected[i].im, y_buf[i].im, eps);
+    }
+}
+
+test "hbmv column-major matrix" {
+    // Same Hermitian tridiagonal, column-major upper band storage
+    const BK = enum { band, k };
+    const K = enum { k };
+    const T = Complex(f64);
+
+    // Column-major: Col 0: [0, 2], Col 1: [1+i, 3], Col 2: [2+i, 4], Col 3: [1+i, 5]
+    const ab_buf = [_]T{
+        .{ .re = 0, .im = 0 }, .{ .re = 2, .im = 0 },
+        .{ .re = 1, .im = 1 }, .{ .re = 3, .im = 0 },
+        .{ .re = 2, .im = 1 }, .{ .re = 4, .im = 0 },
+        .{ .re = 1, .im = 1 }, .{ .re = 5, .im = 0 },
+    };
+    const AB = NamedArrayConst(BK, T){
+        .idx = .{
+            .shape = .{ .band = 2, .k = 4 },
+            .strides = .{ .band = 1, .k = 2 },
+        },
+        .buf = &ab_buf,
+    };
+
+    const x_buf = [_]T{
+        .{ .re = 1, .im = 0 },
+        .{ .re = 1, .im = 0 },
+        .{ .re = 1, .im = 0 },
+        .{ .re = 1, .im = 0 },
+    };
+    const x = NamedArrayConst(K, T){
+        .idx = NamedIndex(K).initContiguous(.{ .k = 4 }),
+        .buf = &x_buf,
+    };
+
+    var y_buf = [_]T{
+        .{ .re = 0, .im = 0 },
+        .{ .re = 0, .im = 0 },
+        .{ .re = 0, .im = 0 },
+        .{ .re = 0, .im = 0 },
+    };
+    const y = NamedArray(K, T){
+        .idx = NamedIndex(K).initContiguous(.{ .k = 4 }),
+        .buf = &y_buf,
+    };
+
+    blas.hbmv(T, BK, K, .k, AB, x, y, .{
+        .alpha = .{ .re = 1, .im = 0 },
+        .beta = .{ .re = 0, .im = 0 },
+    });
+
+    const expected = [_]T{
+        .{ .re = 3, .im = 1 },
+        .{ .re = 6, .im = 0 },
+        .{ .re = 7, .im = 0 },
+        .{ .re = 6, .im = -1 },
+    };
+    const eps = 1e-10;
+    for (0..4) |i| {
+        try std.testing.expectApproxEqAbs(expected[i].re, y_buf[i].re, eps);
+        try std.testing.expectApproxEqAbs(expected[i].im, y_buf[i].im, eps);
+    }
+}
+
+test "tbmv real upper" {
+    // 4×4 upper triangular bidiagonal (K=1):
+    // A = [2 1 0 0]    x = [1]    x' = A*x = [ 4]
+    //     [0 3 1 0]        [2]                [ 9]
+    //     [0 0 4 1]        [3]                [16]
+    //     [0 0 0 5]        [4]                [20]
+    const BK = enum { band, k };
+    const K = enum { k };
+    const T = f64;
+
+    // Upper band storage (K+1=2 band rows × N=4 cols), band axis contiguous:
+    // Col 0: [0, 2], Col 1: [1, 3], Col 2: [1, 4], Col 3: [1, 5]
+    const ab_buf = [_]T{
+        0, 2,
+        1, 3,
+        1, 4,
+        1, 5,
+    };
+    const AB = NamedArrayConst(BK, T){
+        .idx = .{
+            .shape = .{ .band = 2, .k = 4 },
+            .strides = .{ .band = 1, .k = 2 },
+        },
+        .buf = &ab_buf,
+    };
+
+    var x_buf = [_]T{ 1, 2, 3, 4 };
+    const x = NamedArray(K, T){
+        .idx = NamedIndex(K).initContiguous(.{ .k = 4 }),
+        .buf = &x_buf,
+    };
+
+    // triangle = .k (second axis) → Upper
+    blas.tbmv(T, BK, K, .k, .non_unit, AB, x);
+
+    const expected = [_]T{ 4.0, 9.0, 16.0, 20.0 };
+    for (0..4) |i| {
+        try std.testing.expectApproxEqAbs(expected[i], x_buf[i], math.floatEpsAt(T, expected[i]));
+    }
+}
+
+test "tbmv column-major matrix" {
+    // Same upper triangular bidiagonal, column-major band storage
+    const BK = enum { band, k };
+    const K = enum { k };
+    const T = f64;
+
+    // Column-major: Col 0: [0, 2], Col 1: [1, 3], Col 2: [1, 4], Col 3: [1, 5]
+    const ab_buf = [_]T{
+        0, 2,
+        1, 3,
+        1, 4,
+        1, 5,
+    };
+    const AB = NamedArrayConst(BK, T){
+        .idx = .{
+            .shape = .{ .band = 2, .k = 4 },
+            .strides = .{ .band = 1, .k = 2 },
+        },
+        .buf = &ab_buf,
+    };
+
+    var x_buf = [_]T{ 1, 2, 3, 4 };
+    const x = NamedArray(K, T){
+        .idx = NamedIndex(K).initContiguous(.{ .k = 4 }),
+        .buf = &x_buf,
+    };
+
+    blas.tbmv(T, BK, K, .k, .non_unit, AB, x);
+
+    const expected = [_]T{ 4.0, 9.0, 16.0, 20.0 };
+    for (0..4) |i| {
+        try std.testing.expectApproxEqAbs(expected[i], x_buf[i], math.floatEpsAt(T, expected[i]));
+    }
+}
+
+test "tbsv real upper" {
+    // Solve A*x = b where A is the same 4×4 upper triangular bidiagonal:
+    // A = [2 1 0 0]    b = [4]    x = A⁻¹*b = [1]
+    //     [0 3 1 0]        [9]                  [2]
+    //     [0 0 4 1]        [16]                 [3]
+    //     [0 0 0 5]        [20]                 [4]
+    const BK = enum { band, k };
+    const K = enum { k };
+    const T = f64;
+
+    // Upper band storage, band axis contiguous:
+    // Col 0: [0, 2], Col 1: [1, 3], Col 2: [1, 4], Col 3: [1, 5]
+    const ab_buf = [_]T{
+        0, 2,
+        1, 3,
+        1, 4,
+        1, 5,
+    };
+    const AB = NamedArrayConst(BK, T){
+        .idx = .{
+            .shape = .{ .band = 2, .k = 4 },
+            .strides = .{ .band = 1, .k = 2 },
+        },
+        .buf = &ab_buf,
+    };
+
+    var x_buf = [_]T{ 4, 9, 16, 20 };
+    const x = NamedArray(K, T){
+        .idx = NamedIndex(K).initContiguous(.{ .k = 4 }),
+        .buf = &x_buf,
+    };
+
+    blas.tbsv(T, BK, K, .k, .non_unit, AB, x);
+
+    const expected = [_]T{ 1.0, 2.0, 3.0, 4.0 };
+    for (0..4) |i| {
+        try std.testing.expectApproxEqAbs(expected[i], x_buf[i], math.floatEpsAt(T, expected[i]));
+    }
+}
+
+test "tbsv column-major matrix" {
+    // Same solve, column-major band storage
+    const BK = enum { band, k };
+    const K = enum { k };
+    const T = f64;
+
+    const ab_buf = [_]T{
+        0, 2,
+        1, 3,
+        1, 4,
+        1, 5,
+    };
+    const AB = NamedArrayConst(BK, T){
+        .idx = .{
+            .shape = .{ .band = 2, .k = 4 },
+            .strides = .{ .band = 1, .k = 2 },
+        },
+        .buf = &ab_buf,
+    };
+
+    var x_buf = [_]T{ 4, 9, 16, 20 };
+    const x = NamedArray(K, T){
+        .idx = NamedIndex(K).initContiguous(.{ .k = 4 }),
+        .buf = &x_buf,
+    };
+
+    blas.tbsv(T, BK, K, .k, .non_unit, AB, x);
+
+    const expected = [_]T{ 1.0, 2.0, 3.0, 4.0 };
+    for (0..4) |i| {
+        try std.testing.expectApproxEqAbs(expected[i], x_buf[i], math.floatEpsAt(T, expected[i]));
+    }
+}
+
 test "her2 column-major matrix" {
     const IJ = enum { i, j };
     const I = enum { i };
@@ -5621,6 +5153,470 @@ test "her2 column-major matrix" {
     try std.testing.expectEqual(@as(f64, 99), a_buf[2].im);
     try std.testing.expectApproxEqAbs(@as(f64, 6), a_buf[3].re, eps);
     try std.testing.expectApproxEqAbs(@as(f64, 0), a_buf[3].im, eps);
+}
+
+test "spmv real upper" {
+    // 3×3 symmetric matrix, upper packed storage:
+    // A = [1 2 3]    x = [1]    y = A*x = [14]
+    //     [2 5 6]        [2]               [30]
+    //     [3 6 9]        [3]               [42]
+    //
+    // Upper packed (col-major): col0=[1], col1=[2,5], col2=[3,6,9]
+    const MK = enum { m, k };
+    const K = enum { k };
+    const M = enum { m };
+    const T = f64;
+
+    const ap = [_]T{ 1, 2, 5, 3, 6, 9 };
+
+    const x_buf = [_]T{ 1, 2, 3 };
+    const x = NamedArrayConst(K, T){
+        .idx = NamedIndex(K).initContiguous(.{ .k = 3 }),
+        .buf = &x_buf,
+    };
+
+    var y_buf = [_]T{ 0, 0, 0 };
+    const y = NamedArray(M, T){
+        .idx = NamedIndex(M).initContiguous(.{ .m = 3 }),
+        .buf = &y_buf,
+    };
+
+    // triangle = .k (second axis) → Upper
+    blas.spmv(T, MK, K, M, .k, &ap, x, y, .{ .alpha = 1.0, .beta = 0.0 });
+
+    const expected = [_]T{ 14.0, 30.0, 42.0 };
+    for (0..3) |i| {
+        try std.testing.expectApproxEqAbs(expected[i], y_buf[i], math.floatEpsAt(T, expected[i]));
+    }
+}
+
+test "spmv real lower" {
+    // Same 3×3 symmetric matrix, lower packed storage:
+    // Lower packed (col-major): col0=[1,2,3], col1=[5,6], col2=[9]
+    const MK = enum { m, k };
+    const K = enum { k };
+    const M = enum { m };
+    const T = f64;
+
+    const ap = [_]T{ 1, 2, 3, 5, 6, 9 };
+
+    const x_buf = [_]T{ 1, 2, 3 };
+    const x = NamedArrayConst(K, T){
+        .idx = NamedIndex(K).initContiguous(.{ .k = 3 }),
+        .buf = &x_buf,
+    };
+
+    var y_buf = [_]T{ 0, 0, 0 };
+    const y = NamedArray(M, T){
+        .idx = NamedIndex(M).initContiguous(.{ .m = 3 }),
+        .buf = &y_buf,
+    };
+
+    // triangle = .m (first axis) → Lower
+    blas.spmv(T, MK, K, M, .m, &ap, x, y, .{ .alpha = 1.0, .beta = 0.0 });
+
+    const expected = [_]T{ 14.0, 30.0, 42.0 };
+    for (0..3) |i| {
+        try std.testing.expectApproxEqAbs(expected[i], y_buf[i], math.floatEpsAt(T, expected[i]));
+    }
+}
+
+test "spmv real nontrivial scalars and strides" {
+    // Same matrix, alpha=2, beta=1, x stride=2, y stride=2
+    const MK = enum { m, k };
+    const K = enum { k };
+    const M = enum { m };
+    const T = f64;
+
+    const ap = [_]T{ 1, 2, 5, 3, 6, 9 };
+
+    // x = [1, 2, 3] stored with stride 2
+    const x_buf = [_]T{ 1, 0, 2, 0, 3 };
+    const x = NamedArrayConst(K, T){
+        .idx = .{ .shape = .{ .k = 3 }, .strides = .{ .k = 2 } },
+        .buf = &x_buf,
+    };
+
+    // y = [1, 1, 1] stored with stride 2, expect y = 2*A*x + y = [29, 61, 85]
+    var y_buf = [_]T{ 1, 0, 1, 0, 1 };
+    const y = NamedArray(M, T){
+        .idx = .{ .shape = .{ .m = 3 }, .strides = .{ .m = 2 } },
+        .buf = &y_buf,
+    };
+
+    blas.spmv(T, MK, K, M, .k, &ap, x, y, .{ .alpha = 2.0, .beta = 1.0 });
+
+    const expected = [_]T{ 29.0, 61.0, 85.0 };
+    for (0..3) |i| {
+        try std.testing.expectApproxEqAbs(expected[i], y_buf[i * 2], math.floatEpsAt(T, expected[i]));
+    }
+}
+
+test "hpmv complex upper" {
+    // 3×3 Hermitian matrix, upper packed storage:
+    // A = [2      1+i    3    ]    x = [1]    y = A*x = [6+i ]
+    //     [1-i    4      2+i  ]        [1]               [7   ]
+    //     [3      2-i    6    ]        [1]               [11-i]
+    //
+    // Upper packed (col-major): col0=[2], col1=[1+i, 4], col2=[3, 2+i, 6]
+    const MK = enum { m, k };
+    const K = enum { k };
+    const M = enum { m };
+    const T = Complex(f64);
+
+    const ap = [_]T{
+        .{ .re = 2, .im = 0 },
+        .{ .re = 1, .im = 1 },
+        .{ .re = 4, .im = 0 },
+        .{ .re = 3, .im = 0 },
+        .{ .re = 2, .im = 1 },
+        .{ .re = 6, .im = 0 },
+    };
+
+    const x_buf = [_]T{
+        .{ .re = 1, .im = 0 },
+        .{ .re = 1, .im = 0 },
+        .{ .re = 1, .im = 0 },
+    };
+    const x = NamedArrayConst(K, T){
+        .idx = NamedIndex(K).initContiguous(.{ .k = 3 }),
+        .buf = &x_buf,
+    };
+
+    var y_buf = [_]T{
+        .{ .re = 0, .im = 0 },
+        .{ .re = 0, .im = 0 },
+        .{ .re = 0, .im = 0 },
+    };
+    const y = NamedArray(M, T){
+        .idx = NamedIndex(M).initContiguous(.{ .m = 3 }),
+        .buf = &y_buf,
+    };
+
+    blas.hpmv(T, MK, K, M, .k, &ap, x, y, .{
+        .alpha = .{ .re = 1, .im = 0 },
+        .beta = .{ .re = 0, .im = 0 },
+    });
+
+    const expected = [_]T{
+        .{ .re = 6, .im = 1 },
+        .{ .re = 7, .im = 0 },
+        .{ .re = 11, .im = -1 },
+    };
+    const eps = 1e-10;
+    for (0..3) |i| {
+        try std.testing.expectApproxEqAbs(expected[i].re, y_buf[i].re, eps);
+        try std.testing.expectApproxEqAbs(expected[i].im, y_buf[i].im, eps);
+    }
+}
+
+test "hpmv complex lower" {
+    // Same Hermitian matrix, lower packed storage:
+    // Lower packed (col-major): col0=[2, 1-i, 3], col1=[4, 2-i], col2=[6]
+    const MK = enum { m, k };
+    const K = enum { k };
+    const M = enum { m };
+    const T = Complex(f64);
+
+    const ap = [_]T{
+        .{ .re = 2, .im = 0 },
+        .{ .re = 1, .im = -1 },
+        .{ .re = 3, .im = 0 },
+        .{ .re = 4, .im = 0 },
+        .{ .re = 2, .im = -1 },
+        .{ .re = 6, .im = 0 },
+    };
+
+    const x_buf = [_]T{
+        .{ .re = 1, .im = 0 },
+        .{ .re = 1, .im = 0 },
+        .{ .re = 1, .im = 0 },
+    };
+    const x = NamedArrayConst(K, T){
+        .idx = NamedIndex(K).initContiguous(.{ .k = 3 }),
+        .buf = &x_buf,
+    };
+
+    var y_buf = [_]T{
+        .{ .re = 0, .im = 0 },
+        .{ .re = 0, .im = 0 },
+        .{ .re = 0, .im = 0 },
+    };
+    const y = NamedArray(M, T){
+        .idx = NamedIndex(M).initContiguous(.{ .m = 3 }),
+        .buf = &y_buf,
+    };
+
+    // triangle = .m (first axis) → Lower
+    blas.hpmv(T, MK, K, M, .m, &ap, x, y, .{
+        .alpha = .{ .re = 1, .im = 0 },
+        .beta = .{ .re = 0, .im = 0 },
+    });
+
+    const expected = [_]T{
+        .{ .re = 6, .im = 1 },
+        .{ .re = 7, .im = 0 },
+        .{ .re = 11, .im = -1 },
+    };
+    const eps = 1e-10;
+    for (0..3) |i| {
+        try std.testing.expectApproxEqAbs(expected[i].re, y_buf[i].re, eps);
+        try std.testing.expectApproxEqAbs(expected[i].im, y_buf[i].im, eps);
+    }
+}
+
+test "tpmv real upper" {
+    // 3×3 upper triangular, packed storage:
+    // A = [2 1 3]    x = [1]    A*x = [13]
+    //     [0 4 2]        [2]          [14]
+    //     [0 0 5]        [3]          [15]
+    //
+    // Upper packed (col-major): col0=[2], col1=[1,4], col2=[3,2,5]
+    const MK = enum { m, k };
+    const K = enum { k };
+    const T = f64;
+
+    const ap = [_]T{ 2, 1, 4, 3, 2, 5 };
+
+    var x_buf = [_]T{ 1, 2, 3 };
+    const x = NamedArray(K, T){
+        .idx = NamedIndex(K).initContiguous(.{ .k = 3 }),
+        .buf = &x_buf,
+    };
+
+    // triangle = .k (second axis) → Upper
+    blas.tpmv(T, MK, K, .k, .non_unit, &ap, x);
+
+    const expected = [_]T{ 13.0, 14.0, 15.0 };
+    for (0..3) |i| {
+        try std.testing.expectApproxEqAbs(expected[i], x_buf[i], math.floatEpsAt(T, expected[i]));
+    }
+}
+
+test "tpmv real lower" {
+    // 3×3 lower triangular, packed storage:
+    // A = [2 0 0]    x = [1]    A*x = [ 2]
+    //     [1 4 0]        [2]          [ 9]
+    //     [3 2 5]        [3]          [22]
+    //
+    // Lower packed (col-major): col0=[2,1,3], col1=[4,2], col2=[5]
+    const MK = enum { m, k };
+    const K = enum { k };
+    const T = f64;
+
+    const ap = [_]T{ 2, 1, 3, 4, 2, 5 };
+
+    var x_buf = [_]T{ 1, 2, 3 };
+    const x = NamedArray(K, T){
+        .idx = NamedIndex(K).initContiguous(.{ .k = 3 }),
+        .buf = &x_buf,
+    };
+
+    // triangle = .m (first axis) → Lower
+    blas.tpmv(T, MK, K, .m, .non_unit, &ap, x);
+
+    const expected = [_]T{ 2.0, 9.0, 22.0 };
+    for (0..3) |i| {
+        try std.testing.expectApproxEqAbs(expected[i], x_buf[i], math.floatEpsAt(T, expected[i]));
+    }
+}
+
+test "tpmv real unit diagonal" {
+    // 3×3 upper triangular with unit diagonal:
+    // A = [1 2 3]    x = [1]    A*x = [14]
+    //     [0 1 1]        [2]          [ 5]
+    //     [0 0 1]        [3]          [ 3]
+    //
+    // Upper packed: [*, 2, *, 3, 1, *] — diagonal entries are not read.
+    const MK = enum { m, k };
+    const K = enum { k };
+    const T = f64;
+
+    const ap = [_]T{ 0, 2, 0, 3, 1, 0 }; // diagonal positions contain 0 (ignored)
+
+    var x_buf = [_]T{ 1, 2, 3 };
+    const x = NamedArray(K, T){
+        .idx = NamedIndex(K).initContiguous(.{ .k = 3 }),
+        .buf = &x_buf,
+    };
+
+    blas.tpmv(T, MK, K, .k, .unit, &ap, x);
+
+    const expected = [_]T{ 14.0, 5.0, 3.0 };
+    for (0..3) |i| {
+        try std.testing.expectApproxEqAbs(expected[i], x_buf[i], math.floatEpsAt(T, expected[i]));
+    }
+}
+
+test "tpmv complex upper" {
+    // 3×3 upper triangular complex:
+    // A = [2    1+i  3  ]    x = [1]    A*x = [2+2+2i+9]   = [13+2i]
+    //     [0    4    2-i]        [2]          [0+8+6-3i]     [14-3i]
+    //     [0    0    5  ]        [3]          [0+0+15]       [15   ]
+    //
+    // Upper packed: [2, 1+i, 4, 3, 2-i, 5]
+    const MK = enum { m, k };
+    const K = enum { k };
+    const T = Complex(f64);
+
+    const ap = [_]T{
+        .{ .re = 2, .im = 0 },
+        .{ .re = 1, .im = 1 },
+        .{ .re = 4, .im = 0 },
+        .{ .re = 3, .im = 0 },
+        .{ .re = 2, .im = -1 },
+        .{ .re = 5, .im = 0 },
+    };
+
+    var x_buf = [_]T{
+        .{ .re = 1, .im = 0 },
+        .{ .re = 2, .im = 0 },
+        .{ .re = 3, .im = 0 },
+    };
+    const x = NamedArray(K, T){
+        .idx = NamedIndex(K).initContiguous(.{ .k = 3 }),
+        .buf = &x_buf,
+    };
+
+    blas.tpmv(T, MK, K, .k, .non_unit, &ap, x);
+
+    const expected = [_]T{
+        .{ .re = 13, .im = 2 },
+        .{ .re = 14, .im = -3 },
+        .{ .re = 15, .im = 0 },
+    };
+    const eps = 1e-10;
+    for (0..3) |i| {
+        try std.testing.expectApproxEqAbs(expected[i].re, x_buf[i].re, eps);
+        try std.testing.expectApproxEqAbs(expected[i].im, x_buf[i].im, eps);
+    }
+}
+
+test "tpmv nontrivial strides" {
+    // Upper triangular, x with stride 2
+    const AB = enum { a, b };
+    const B = enum { b };
+    const T = f64;
+
+    const ap = [_]T{ 2, 1, 4, 3, 2, 5 };
+
+    // x = [1, 2, 3] stored with stride 2
+    var x_buf = [_]T{ 1, 0, 2, 0, 3 };
+    const x = NamedArray(B, T){
+        .idx = .{ .shape = .{ .b = 3 }, .strides = .{ .b = 2 } },
+        .buf = &x_buf,
+    };
+
+    blas.tpmv(T, AB, B, .b, .non_unit, &ap, x);
+
+    const expected = [_]T{ 13.0, 14.0, 15.0 };
+    for (0..3) |i| {
+        try std.testing.expectApproxEqAbs(expected[i], x_buf[i * 2], math.floatEpsAt(T, expected[i]));
+    }
+}
+
+test "tpsv real upper" {
+    // Solve A*x = b where A is 3×3 upper triangular:
+    // A = [2 1 3]    b = [13]    x = A⁻¹*b = [1]
+    //     [0 4 2]        [14]                 [2]
+    //     [0 0 5]        [15]                 [3]
+    //
+    // Upper packed: [2, 1, 4, 3, 2, 5]
+    const MK = enum { m, k };
+    const K = enum { k };
+    const T = f64;
+
+    const ap = [_]T{ 2, 1, 4, 3, 2, 5 };
+
+    var x_buf = [_]T{ 13, 14, 15 };
+    const x = NamedArray(K, T){
+        .idx = NamedIndex(K).initContiguous(.{ .k = 3 }),
+        .buf = &x_buf,
+    };
+
+    blas.tpsv(T, MK, K, .k, .non_unit, &ap, x);
+
+    const expected = [_]T{ 1.0, 2.0, 3.0 };
+    for (0..3) |i| {
+        try std.testing.expectApproxEqAbs(expected[i], x_buf[i], math.floatEpsAt(T, expected[i]));
+    }
+}
+
+test "tpsv real lower" {
+    // Solve A*x = b where A is 3×3 lower triangular:
+    // A = [2 0 0]    b = [ 2]    x = A⁻¹*b = [1]
+    //     [1 4 0]        [ 9]                 [2]
+    //     [3 2 5]        [22]                 [3]
+    //
+    // Lower packed: [2, 1, 3, 4, 2, 5]
+    const MK = enum { m, k };
+    const K = enum { k };
+    const T = f64;
+
+    const ap = [_]T{ 2, 1, 3, 4, 2, 5 };
+
+    var x_buf = [_]T{ 2, 9, 22 };
+    const x = NamedArray(K, T){
+        .idx = NamedIndex(K).initContiguous(.{ .k = 3 }),
+        .buf = &x_buf,
+    };
+
+    blas.tpsv(T, MK, K, .m, .non_unit, &ap, x);
+
+    const expected = [_]T{ 1.0, 2.0, 3.0 };
+    for (0..3) |i| {
+        try std.testing.expectApproxEqAbs(expected[i], x_buf[i], math.floatEpsAt(T, expected[i]));
+    }
+}
+
+test "tpsv real unit diagonal" {
+    // Solve A*x = b where A is 3×3 upper triangular with unit diagonal:
+    // A = [1 2 3]    b = [14]    x = A⁻¹*b = [1]
+    //     [0 1 1]        [ 5]                 [2]
+    //     [0 0 1]        [ 3]                 [3]
+    //
+    // Upper packed: [*, 2, *, 3, 1, *]
+    const MK = enum { m, k };
+    const K = enum { k };
+    const T = f64;
+
+    const ap = [_]T{ 0, 2, 0, 3, 1, 0 };
+
+    var x_buf = [_]T{ 14, 5, 3 };
+    const x = NamedArray(K, T){
+        .idx = NamedIndex(K).initContiguous(.{ .k = 3 }),
+        .buf = &x_buf,
+    };
+
+    blas.tpsv(T, MK, K, .k, .unit, &ap, x);
+
+    const expected = [_]T{ 1.0, 2.0, 3.0 };
+    for (0..3) |i| {
+        try std.testing.expectApproxEqAbs(expected[i], x_buf[i], math.floatEpsAt(T, expected[i]));
+    }
+}
+
+test "tpsv nontrivial strides" {
+    // Upper triangular solve, x with stride 2
+    const AB = enum { a, b };
+    const B = enum { b };
+    const T = f64;
+
+    const ap = [_]T{ 2, 1, 4, 3, 2, 5 };
+
+    // b = [13, 14, 15] stored with stride 2
+    var x_buf = [_]T{ 13, 0, 14, 0, 15 };
+    const x = NamedArray(B, T){
+        .idx = .{ .shape = .{ .b = 3 }, .strides = .{ .b = 2 } },
+        .buf = &x_buf,
+    };
+
+    blas.tpsv(T, AB, B, .b, .non_unit, &ap, x);
+
+    const expected = [_]T{ 1.0, 2.0, 3.0 };
+    for (0..3) |i| {
+        try std.testing.expectApproxEqAbs(expected[i], x_buf[i * 2], math.floatEpsAt(T, expected[i]));
+    }
 }
 
 // TODO: Figure this out. See blas.rot_complex above.

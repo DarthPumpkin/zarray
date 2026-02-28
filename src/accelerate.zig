@@ -478,7 +478,6 @@ pub const blas = struct {
         y: NamedArray(AxisY, Scalar),
         scalars: struct { alpha: Scalar = one(Scalar), beta: Scalar = one(Scalar) },
     ) void {
-        const a_names = comptime meta.fieldNames(AxisA);
         const x_axis_idx = comptime matchingAxisIdx(AxisA, AxisX, AxisY);
         const f = switch (Scalar) {
             f32 => acc.cblas_sgemv,
@@ -491,12 +490,7 @@ pub const blas = struct {
         _ = named_index.resolveDimensions(.{ A.idx.shape, x.idx.shape, y.idx.shape }) catch
             @panic("gemv: dimension mismatch");
 
-        const a_ij_idx = A.idx.rename(IJ, &.{
-            .{ .old = a_names[x_axis_idx], .new = "j" },
-            .{ .old = a_names[1 - x_axis_idx], .new = "i" },
-        });
-        const A_ij: NamedArrayConst(IJ, Scalar) = .{ .idx = a_ij_idx, .buf = A.buf };
-        const A_blas = Blas2d(Scalar).init(A_ij);
+        const A_blas = Blas2d(Scalar).fromNamedArray(AxisA, A, 1 - x_axis_idx);
         const x_blas = Blas1d(Scalar).init(AxisX, x);
         const y_blas = Blas1dMut(Scalar).init(AxisY, y);
         const alpha_blas = if (comptime isComplex(Scalar)) &scalars.alpha else scalars.alpha;
@@ -533,7 +527,6 @@ pub const blas = struct {
         y: NamedArray(AxisY, Scalar),
         scalars: struct { alpha: Scalar = one(Scalar), beta: Scalar = one(Scalar) },
     ) void {
-        const a_names = comptime meta.fieldNames(AxisA);
         _ = comptime matchingAxisIdx(AxisA, AxisX, AxisY);
         const f = switch (Scalar) {
             Complex(f32) => acc.cblas_chemv,
@@ -544,12 +537,7 @@ pub const blas = struct {
         _ = named_index.resolveDimensions(.{ A.idx.shape, x.idx.shape, y.idx.shape }) catch
             @panic("hemv: dimension mismatch");
 
-        const a_ij_idx = A.idx.rename(IJ, &.{
-            .{ .old = a_names[0], .new = "i" },
-            .{ .old = a_names[1], .new = "j" },
-        });
-        const A_ij: NamedArrayConst(IJ, Scalar) = .{ .idx = a_ij_idx, .buf = A.buf };
-        const A_blas = Blas2d(Scalar).init(A_ij);
+        const A_blas = Blas2d(Scalar).fromNamedArray(AxisA, A, 0);
         assert(A_blas.rows == A_blas.cols);
 
         const x_blas = Blas1d(Scalar).init(AxisX, x);
@@ -586,7 +574,6 @@ pub const blas = struct {
         y: NamedArray(AxisY, Scalar),
         scalars: struct { alpha: Scalar = one(Scalar), beta: Scalar = one(Scalar) },
     ) void {
-        const a_names = comptime meta.fieldNames(AxisA);
         _ = comptime matchingAxisIdx(AxisA, AxisX, AxisY);
         const f = switch (Scalar) {
             f32 => acc.cblas_ssymv,
@@ -597,12 +584,7 @@ pub const blas = struct {
         _ = named_index.resolveDimensions(.{ A.idx.shape, x.idx.shape, y.idx.shape }) catch
             @panic("symv: dimension mismatch");
 
-        const a_ij_idx = A.idx.rename(IJ, &.{
-            .{ .old = a_names[0], .new = "i" },
-            .{ .old = a_names[1], .new = "j" },
-        });
-        const A_ij: NamedArrayConst(IJ, Scalar) = .{ .idx = a_ij_idx, .buf = A.buf };
-        const A_blas = Blas2d(Scalar).init(A_ij);
+        const A_blas = Blas2d(Scalar).fromNamedArray(AxisA, A, 0);
         assert(A_blas.rows == A_blas.cols);
 
         const x_blas = Blas1d(Scalar).init(AxisX, x);
@@ -636,7 +618,6 @@ pub const blas = struct {
         A: NamedArrayConst(AxisA, Scalar),
         x: NamedArray(AxisX, Scalar),
     ) void {
-        const a_names = comptime meta.fieldNames(AxisA);
         comptime assertMatchingAxis(AxisA, AxisX);
         const f = switch (Scalar) {
             f32 => acc.cblas_strmv,
@@ -649,12 +630,7 @@ pub const blas = struct {
         _ = named_index.resolveDimensions(.{ A.idx.shape, x.idx.shape }) catch
             @panic("trmv: dimension mismatch");
 
-        const a_ij_idx = A.idx.rename(IJ, &.{
-            .{ .old = a_names[0], .new = "i" },
-            .{ .old = a_names[1], .new = "j" },
-        });
-        const A_ij: NamedArrayConst(IJ, Scalar) = .{ .idx = a_ij_idx, .buf = A.buf };
-        const A_blas = Blas2d(Scalar).init(A_ij);
+        const A_blas = Blas2d(Scalar).fromNamedArray(AxisA, A, 0);
         assert(A_blas.rows == A_blas.cols);
 
         const x_blas = Blas1dMut(Scalar).init(AxisX, x);
@@ -691,7 +667,6 @@ pub const blas = struct {
         A: NamedArrayConst(AxisA, Scalar),
         x: NamedArray(AxisX, Scalar),
     ) void {
-        const a_names = comptime meta.fieldNames(AxisA);
         comptime assertMatchingAxis(AxisA, AxisX);
         const f = switch (Scalar) {
             f32 => acc.cblas_strsv,
@@ -704,12 +679,7 @@ pub const blas = struct {
         _ = named_index.resolveDimensions(.{ A.idx.shape, x.idx.shape }) catch
             @panic("trsv: dimension mismatch");
 
-        const a_ij_idx = A.idx.rename(IJ, &.{
-            .{ .old = a_names[0], .new = "i" },
-            .{ .old = a_names[1], .new = "j" },
-        });
-        const A_ij: NamedArrayConst(IJ, Scalar) = .{ .idx = a_ij_idx, .buf = A.buf };
-        const A_blas = Blas2d(Scalar).init(A_ij);
+        const A_blas = Blas2d(Scalar).fromNamedArray(AxisA, A, 0);
         assert(A_blas.rows == A_blas.cols);
 
         const x_blas = Blas1dMut(Scalar).init(AxisX, x);
@@ -748,19 +718,14 @@ pub const blas = struct {
         comptime AxisA: type,
         comptime AxisX: type,
         comptime AxisY: type,
-        A: NamedArrayConst(AxisA, Scalar),
+        A: BlasBand(Scalar, AxisA, AxisX),
         x: NamedArrayConst(AxisX, Scalar),
         y: NamedArray(AxisY, Scalar),
         scalars: struct { alpha: Scalar = one(Scalar), beta: Scalar = one(Scalar) },
         comptime band: struct { kl: usize, ku: usize },
     ) void {
-        const a_names = comptime meta.fieldNames(AxisA);
         comptime assertMatchingAxis(AxisA, AxisX);
         comptime assert(meta.fields(AxisY).len == 1);
-        const x_axis_idx = comptime blk: {
-            const x_name = meta.fields(AxisX)[0].name;
-            break :blk if (std.mem.eql(u8, x_name, a_names[0])) @as(usize, 0) else @as(usize, 1);
-        };
         const f = switch (Scalar) {
             f32 => acc.cblas_sgbmv,
             f64 => acc.cblas_dgbmv,
@@ -769,20 +734,7 @@ pub const blas = struct {
             else => @compileError("gbmv is incompatible with given Scalar type."),
         };
 
-        _ = named_index.resolveDimensions(.{ A.idx.shape, x.idx.shape, y.idx.shape }) catch
-            @panic("gbmv: dimension mismatch");
-
-        // Band storage: the band axis must be contiguous (stride 1) per BLAS convention.
-        // The vector axis stride serves as LDA and must be at least the band size.
-        const band_name = a_names[1 - x_axis_idx];
-        const n_name = a_names[x_axis_idx];
-        const band_stride = @field(A.idx.strides, band_name);
-        const n_stride = @field(A.idx.strides, n_name);
-        const band_size: usize = @field(A.idx.shape, band_name);
-
-        assert(band_stride == 1); // Band axis must be contiguous (stride 1)
-        assert(n_stride >= band_size); // LDA >= KL+KU+1
-        assert(band_size == band.kl + band.ku + 1);
+        assert(A.band_size == band.kl + band.ku + 1);
 
         const x_blas = Blas1d(Scalar).init(AxisX, x);
         const y_blas = Blas1dMut(Scalar).init(AxisY, y);
@@ -798,8 +750,8 @@ pub const blas = struct {
             @intCast(band.kl),
             @intCast(band.ku),
             alpha_blas,
-            @ptrCast(A.buf.ptr),
-            @intCast(n_stride), // LDA = stride of N axis
+            A.ptr,
+            A.leading, // LDA
             x_blas.ptr,
             x_blas.inc,
             beta_blas,
@@ -824,51 +776,29 @@ pub const blas = struct {
         comptime AxisA: type,
         comptime AxisX: type,
         triangle: AxisA,
-        A: NamedArrayConst(AxisA, Scalar),
+        A: BlasBand(Scalar, AxisA, AxisX),
         x: NamedArrayConst(AxisX, Scalar),
         y: NamedArray(AxisX, Scalar),
         scalars: struct { alpha: Scalar = one(Scalar), beta: Scalar = one(Scalar) },
     ) void {
-        const a_names = comptime meta.fieldNames(AxisA);
         comptime assertMatchingAxis(AxisA, AxisX);
-        const x_axis_idx = comptime blk: {
-            const x_name = meta.fields(AxisX)[0].name;
-            break :blk if (std.mem.eql(u8, x_name, a_names[0])) @as(usize, 0) else @as(usize, 1);
-        };
         const f = switch (Scalar) {
             f32 => acc.cblas_ssbmv,
             f64 => acc.cblas_dsbmv,
             else => @compileError("sbmv requires f32 or f64."),
         };
 
-        _ = named_index.resolveDimensions(.{ A.idx.shape, x.idx.shape, y.idx.shape }) catch
-            @panic("sbmv: dimension mismatch");
-
-        // Band storage: the band axis must be contiguous (stride 1) per BLAS convention.
-        // The vector axis stride serves as LDA and must be at least the band size.
-        const band_name = a_names[1 - x_axis_idx];
-        const n_name = a_names[x_axis_idx];
-        const band_stride = @field(A.idx.strides, band_name);
-        const n_stride = @field(A.idx.strides, n_name);
-        const band_size: usize = @field(A.idx.shape, band_name);
-        const n: usize = @field(A.idx.shape, n_name);
-
-        assert(band_stride == 1); // Band axis must be contiguous (stride 1)
-        assert(n_stride >= band_size); // LDA >= K+1
-
         const x_blas = Blas1d(Scalar).init(AxisX, x);
         const y_blas = Blas1dMut(Scalar).init(AxisX, y);
-
-        const k = band_size - 1;
 
         f(
             @intCast(acc.CblasColMajor),
             uploBlas(AxisA, triangle),
-            @intCast(n), // N
-            @intCast(k),
+            A.n, // N
+            A.k(),
             scalars.alpha,
-            @ptrCast(A.buf.ptr),
-            @intCast(n_stride), // LDA = stride of N axis
+            A.ptr,
+            A.leading, // LDA
             x_blas.ptr,
             x_blas.inc,
             scalars.beta,
@@ -893,51 +823,29 @@ pub const blas = struct {
         comptime AxisA: type,
         comptime AxisX: type,
         triangle: AxisA,
-        A: NamedArrayConst(AxisA, Scalar),
+        A: BlasBand(Scalar, AxisA, AxisX),
         x: NamedArrayConst(AxisX, Scalar),
         y: NamedArray(AxisX, Scalar),
         scalars: struct { alpha: Scalar = one(Scalar), beta: Scalar = one(Scalar) },
     ) void {
-        const a_names = comptime meta.fieldNames(AxisA);
         comptime assertMatchingAxis(AxisA, AxisX);
-        const x_axis_idx = comptime blk: {
-            const x_name = meta.fields(AxisX)[0].name;
-            break :blk if (std.mem.eql(u8, x_name, a_names[0])) @as(usize, 0) else @as(usize, 1);
-        };
         const f = switch (Scalar) {
             Complex(f32) => acc.cblas_chbmv,
             Complex(f64) => acc.cblas_zhbmv,
             else => @compileError("hbmv requires Complex(f32) or Complex(f64)."),
         };
 
-        _ = named_index.resolveDimensions(.{ A.idx.shape, x.idx.shape, y.idx.shape }) catch
-            @panic("hbmv: dimension mismatch");
-
-        // Band storage: the band axis must be contiguous (stride 1) per BLAS convention.
-        // The vector axis stride serves as LDA and must be at least the band size.
-        const band_name = a_names[1 - x_axis_idx];
-        const n_name = a_names[x_axis_idx];
-        const band_stride = @field(A.idx.strides, band_name);
-        const n_stride = @field(A.idx.strides, n_name);
-        const band_size: usize = @field(A.idx.shape, band_name);
-        const n: usize = @field(A.idx.shape, n_name);
-
-        assert(band_stride == 1); // Band axis must be contiguous (stride 1)
-        assert(n_stride >= band_size); // LDA >= K+1
-
         const x_blas = Blas1d(Scalar).init(AxisX, x);
         const y_blas = Blas1dMut(Scalar).init(AxisX, y);
-
-        const k = band_size - 1;
 
         f(
             @intCast(acc.CblasColMajor),
             uploBlas(AxisA, triangle),
-            @intCast(n), // N
-            @intCast(k),
+            A.n, // N
+            A.k(),
             &scalars.alpha,
-            @ptrCast(A.buf.ptr),
-            @intCast(n_stride), // LDA = stride of N axis
+            A.ptr,
+            A.leading, // LDA
             x_blas.ptr,
             x_blas.inc,
             &scalars.beta,
@@ -963,15 +871,10 @@ pub const blas = struct {
         comptime AxisX: type,
         triangle: AxisA,
         diag: Diag,
-        A: NamedArrayConst(AxisA, Scalar),
+        A: BlasBand(Scalar, AxisA, AxisX),
         x: NamedArray(AxisX, Scalar),
     ) void {
-        const a_names = comptime meta.fieldNames(AxisA);
         comptime assertMatchingAxis(AxisA, AxisX);
-        const x_axis_idx = comptime blk: {
-            const x_name = meta.fields(AxisX)[0].name;
-            break :blk if (std.mem.eql(u8, x_name, a_names[0])) @as(usize, 0) else @as(usize, 1);
-        };
         const f = switch (Scalar) {
             f32 => acc.cblas_stbmv,
             f64 => acc.cblas_dtbmv,
@@ -980,24 +883,8 @@ pub const blas = struct {
             else => @compileError("tbmv is incompatible with given Scalar type."),
         };
 
-        _ = named_index.resolveDimensions(.{ A.idx.shape, x.idx.shape }) catch
-            @panic("tbmv: dimension mismatch");
-
-        // Band storage: the band axis must be contiguous (stride 1) per BLAS convention.
-        // The vector axis stride serves as LDA and must be at least the band size.
-        const band_name = a_names[1 - x_axis_idx];
-        const n_name = a_names[x_axis_idx];
-        const band_stride = @field(A.idx.strides, band_name);
-        const n_stride = @field(A.idx.strides, n_name);
-        const band_size: usize = @field(A.idx.shape, band_name);
-        const n: usize = @field(A.idx.shape, n_name);
-
-        assert(band_stride == 1); // Band axis must be contiguous (stride 1)
-        assert(n_stride >= band_size); // LDA >= K+1
-
         const x_blas = Blas1dMut(Scalar).init(AxisX, x);
 
-        const k = band_size - 1;
         const diag_blas: acc.CBLAS_DIAG = switch (diag) {
             .unit => @intCast(acc.CblasUnit),
             .non_unit => @intCast(acc.CblasNonUnit),
@@ -1008,10 +895,10 @@ pub const blas = struct {
             uploBlas(AxisA, triangle),
             @intCast(acc.CblasNoTrans),
             diag_blas,
-            @intCast(n), // N
-            @intCast(k),
-            @ptrCast(A.buf.ptr),
-            @intCast(n_stride), // LDA = stride of N axis
+            A.n, // N
+            A.k(),
+            A.ptr,
+            A.leading, // LDA
             x_blas.ptr,
             x_blas.inc,
         );
@@ -1034,15 +921,10 @@ pub const blas = struct {
         comptime AxisX: type,
         triangle: AxisA,
         diag: Diag,
-        A: NamedArrayConst(AxisA, Scalar),
+        A: BlasBand(Scalar, AxisA, AxisX),
         x: NamedArray(AxisX, Scalar),
     ) void {
-        const a_names = comptime meta.fieldNames(AxisA);
         comptime assertMatchingAxis(AxisA, AxisX);
-        const x_axis_idx = comptime blk: {
-            const x_name = meta.fields(AxisX)[0].name;
-            break :blk if (std.mem.eql(u8, x_name, a_names[0])) @as(usize, 0) else @as(usize, 1);
-        };
         const f = switch (Scalar) {
             f32 => acc.cblas_stbsv,
             f64 => acc.cblas_dtbsv,
@@ -1051,24 +933,8 @@ pub const blas = struct {
             else => @compileError("tbsv is incompatible with given Scalar type."),
         };
 
-        _ = named_index.resolveDimensions(.{ A.idx.shape, x.idx.shape }) catch
-            @panic("tbsv: dimension mismatch");
-
-        // Band storage: the band axis must be contiguous (stride 1) per BLAS convention.
-        // The vector axis stride serves as LDA and must be at least the band size.
-        const band_name = a_names[1 - x_axis_idx];
-        const n_name = a_names[x_axis_idx];
-        const band_stride = @field(A.idx.strides, band_name);
-        const n_stride = @field(A.idx.strides, n_name);
-        const band_size: usize = @field(A.idx.shape, band_name);
-        const n: usize = @field(A.idx.shape, n_name);
-
-        assert(band_stride == 1); // Band axis must be contiguous (stride 1)
-        assert(n_stride >= band_size); // LDA >= K+1
-
         const x_blas = Blas1dMut(Scalar).init(AxisX, x);
 
-        const k = band_size - 1;
         const diag_blas: acc.CBLAS_DIAG = switch (diag) {
             .unit => @intCast(acc.CblasUnit),
             .non_unit => @intCast(acc.CblasNonUnit),
@@ -1079,10 +945,10 @@ pub const blas = struct {
             uploBlas(AxisA, triangle),
             @intCast(acc.CblasNoTrans),
             diag_blas,
-            @intCast(n), // N
-            @intCast(k),
-            @ptrCast(A.buf.ptr),
-            @intCast(n_stride), // LDA = stride of N axis
+            A.n, // N
+            A.k(),
+            A.ptr,
+            A.leading, // LDA
             x_blas.ptr,
             x_blas.inc,
         );
@@ -1105,9 +971,7 @@ pub const blas = struct {
         comptime AxisA: type,
         comptime AxisX: type,
         comptime AxisY: type,
-        triangle: AxisA,
-        major: AxisA,
-        AP: []const Scalar,
+        A: BlasPacked(Scalar, AxisA),
         x: NamedArrayConst(AxisX, Scalar),
         y: NamedArray(AxisY, Scalar),
         scalars: struct { alpha: Scalar = one(Scalar), beta: Scalar = one(Scalar) },
@@ -1121,17 +985,16 @@ pub const blas = struct {
 
         const x_blas = Blas1d(Scalar).init(AxisX, x);
         const y_blas = Blas1dMut(Scalar).init(AxisY, y);
-        const n: usize = @intCast(x_blas.len);
 
         assert(x_blas.len == y_blas.len); // Square matrix: x and y dimensions must match
-        assert(AP.len == n * (n + 1) / 2); // Packed storage size must be N*(N+1)/2
+        A.validate(@intCast(x_blas.len));
 
         f(
-            layoutBlas(AxisA, major),
-            uploBlas(AxisA, triangle),
+            A.layout(),
+            A.uplo(),
             x_blas.len, // N
             scalars.alpha,
-            AP.ptr,
+            A.ptr(),
             x_blas.ptr,
             x_blas.inc,
             scalars.beta,
@@ -1157,9 +1020,7 @@ pub const blas = struct {
         comptime AxisA: type,
         comptime AxisX: type,
         comptime AxisY: type,
-        triangle: AxisA,
-        major: AxisA,
-        AP: []const Scalar,
+        A: BlasPacked(Scalar, AxisA),
         x: NamedArrayConst(AxisX, Scalar),
         y: NamedArray(AxisY, Scalar),
         scalars: struct { alpha: Scalar = one(Scalar), beta: Scalar = one(Scalar) },
@@ -1173,17 +1034,16 @@ pub const blas = struct {
 
         const x_blas = Blas1d(Scalar).init(AxisX, x);
         const y_blas = Blas1dMut(Scalar).init(AxisY, y);
-        const n: usize = @intCast(x_blas.len);
 
         assert(x_blas.len == y_blas.len); // Square matrix: x and y dimensions must match
-        assert(AP.len == n * (n + 1) / 2); // Packed storage size must be N*(N+1)/2
+        A.validate(@intCast(x_blas.len));
 
         f(
-            layoutBlas(AxisA, major),
-            uploBlas(AxisA, triangle),
+            A.layout(),
+            A.uplo(),
             x_blas.len, // N
             &scalars.alpha,
-            AP.ptr,
+            A.ptr(),
             x_blas.ptr,
             x_blas.inc,
             &scalars.beta,
@@ -1208,10 +1068,8 @@ pub const blas = struct {
         comptime Scalar: type,
         comptime AxisA: type,
         comptime AxisX: type,
-        triangle: AxisA,
-        major: AxisA,
+        A: BlasPacked(Scalar, AxisA),
         diag: Diag,
-        AP: []const Scalar,
         x: NamedArray(AxisX, Scalar),
     ) void {
         comptime assertMatchingAxis(AxisA, AxisX);
@@ -1224,9 +1082,7 @@ pub const blas = struct {
         };
 
         const x_blas = Blas1dMut(Scalar).init(AxisX, x);
-        const n: usize = @intCast(x_blas.len);
-
-        assert(AP.len == n * (n + 1) / 2); // Packed storage size must be N*(N+1)/2
+        A.validate(@intCast(x_blas.len));
 
         const diag_blas: acc.CBLAS_DIAG = switch (diag) {
             .unit => @intCast(acc.CblasUnit),
@@ -1234,12 +1090,12 @@ pub const blas = struct {
         };
 
         f(
-            layoutBlas(AxisA, major),
-            uploBlas(AxisA, triangle),
+            A.layout(),
+            A.uplo(),
             @intCast(acc.CblasNoTrans),
             diag_blas,
             x_blas.len, // N
-            AP.ptr,
+            A.ptr(),
             x_blas.ptr,
             x_blas.inc,
         );
@@ -1261,10 +1117,8 @@ pub const blas = struct {
         comptime Scalar: type,
         comptime AxisA: type,
         comptime AxisX: type,
-        triangle: AxisA,
-        major: AxisA,
+        A: BlasPacked(Scalar, AxisA),
         diag: Diag,
-        AP: []const Scalar,
         x: NamedArray(AxisX, Scalar),
     ) void {
         comptime assertMatchingAxis(AxisA, AxisX);
@@ -1277,9 +1131,7 @@ pub const blas = struct {
         };
 
         const x_blas = Blas1dMut(Scalar).init(AxisX, x);
-        const n: usize = @intCast(x_blas.len);
-
-        assert(AP.len == n * (n + 1) / 2); // Packed storage size must be N*(N+1)/2
+        A.validate(@intCast(x_blas.len));
 
         const diag_blas: acc.CBLAS_DIAG = switch (diag) {
             .unit => @intCast(acc.CblasUnit),
@@ -1287,12 +1139,12 @@ pub const blas = struct {
         };
 
         f(
-            layoutBlas(AxisA, major),
-            uploBlas(AxisA, triangle),
+            A.layout(),
+            A.uplo(),
             @intCast(acc.CblasNoTrans),
             diag_blas,
             x_blas.len, // N
-            AP.ptr,
+            A.ptr(),
             x_blas.ptr,
             x_blas.inc,
         );
@@ -1313,9 +1165,7 @@ pub const blas = struct {
         comptime Scalar: type,
         comptime AxisA: type,
         comptime AxisX: type,
-        triangle: AxisA,
-        major: AxisA,
-        AP: []Scalar,
+        A: BlasPackedMut(Scalar, AxisA),
         x: NamedArrayConst(AxisX, Scalar),
         scalars: struct { alpha: Scalar = one(Scalar) },
     ) void {
@@ -1327,18 +1177,16 @@ pub const blas = struct {
         };
 
         const x_blas = Blas1d(Scalar).init(AxisX, x);
-        const n: usize = @intCast(x_blas.len);
-
-        assert(AP.len == n * (n + 1) / 2); // Packed storage size must be N*(N+1)/2
+        A.validate(@intCast(x_blas.len));
 
         f(
-            layoutBlas(AxisA, major),
-            uploBlas(AxisA, triangle),
+            A.layout(),
+            A.uplo(),
             x_blas.len, // N
             scalars.alpha,
             x_blas.ptr,
             x_blas.inc,
-            AP.ptr,
+            A.ptr(),
         );
     }
 
@@ -1357,9 +1205,7 @@ pub const blas = struct {
         comptime RealScalar: type,
         comptime AxisA: type,
         comptime AxisX: type,
-        triangle: AxisA,
-        major: AxisA,
-        AP: []Complex(RealScalar),
+        A: BlasPackedMut(Complex(RealScalar), AxisA),
         x: NamedArrayConst(AxisX, Complex(RealScalar)),
         scalars: struct { alpha: RealScalar = 1.0 },
     ) void {
@@ -1372,18 +1218,16 @@ pub const blas = struct {
 
         const Scalar = Complex(RealScalar);
         const x_blas = Blas1d(Scalar).init(AxisX, x);
-        const n: usize = @intCast(x_blas.len);
-
-        assert(AP.len == n * (n + 1) / 2); // Packed storage size must be N*(N+1)/2
+        A.validate(@intCast(x_blas.len));
 
         f(
-            layoutBlas(AxisA, major),
-            uploBlas(AxisA, triangle),
+            A.layout(),
+            A.uplo(),
             x_blas.len, // N
             scalars.alpha,
             x_blas.ptr,
             x_blas.inc,
-            AP.ptr,
+            A.ptr(),
         );
     }
 
@@ -1404,9 +1248,7 @@ pub const blas = struct {
         comptime AxisA: type,
         comptime AxisX: type,
         comptime AxisY: type,
-        triangle: AxisA,
-        major: AxisA,
-        AP: []Scalar,
+        A: BlasPackedMut(Scalar, AxisA),
         x: NamedArrayConst(AxisX, Scalar),
         y: NamedArrayConst(AxisY, Scalar),
         scalars: struct { alpha: Scalar = one(Scalar) },
@@ -1420,21 +1262,20 @@ pub const blas = struct {
 
         const x_blas = Blas1d(Scalar).init(AxisX, x);
         const y_blas = Blas1d(Scalar).init(AxisY, y);
-        const n: usize = @intCast(x_blas.len);
 
         assert(x_blas.len == y_blas.len); // Square matrix: x and y dimensions must match
-        assert(AP.len == n * (n + 1) / 2); // Packed storage size must be N*(N+1)/2
+        A.validate(@intCast(x_blas.len));
 
         f(
-            layoutBlas(AxisA, major),
-            uploBlas(AxisA, triangle),
+            A.layout(),
+            A.uplo(),
             x_blas.len, // N
             scalars.alpha,
             x_blas.ptr,
             x_blas.inc,
             y_blas.ptr,
             y_blas.inc,
-            AP.ptr,
+            A.ptr(),
         );
     }
 
@@ -1455,9 +1296,7 @@ pub const blas = struct {
         comptime AxisA: type,
         comptime AxisX: type,
         comptime AxisY: type,
-        triangle: AxisA,
-        major: AxisA,
-        AP: []Scalar,
+        A: BlasPackedMut(Scalar, AxisA),
         x: NamedArrayConst(AxisX, Scalar),
         y: NamedArrayConst(AxisY, Scalar),
         scalars: struct { alpha: Scalar = one(Scalar) },
@@ -1471,21 +1310,20 @@ pub const blas = struct {
 
         const x_blas = Blas1d(Scalar).init(AxisX, x);
         const y_blas = Blas1d(Scalar).init(AxisY, y);
-        const n: usize = @intCast(x_blas.len);
 
         assert(x_blas.len == y_blas.len); // Square matrix: x and y dimensions must match
-        assert(AP.len == n * (n + 1) / 2); // Packed storage size must be N*(N+1)/2
+        A.validate(@intCast(x_blas.len));
 
         f(
-            layoutBlas(AxisA, major),
-            uploBlas(AxisA, triangle),
+            A.layout(),
+            A.uplo(),
             x_blas.len, // N
             &scalars.alpha,
             x_blas.ptr,
             x_blas.inc,
             y_blas.ptr,
             y_blas.inc,
-            AP.ptr,
+            A.ptr(),
         );
     }
 
@@ -1503,7 +1341,6 @@ pub const blas = struct {
         y: NamedArrayConst(AxisY, Scalar),
         scalars: struct { alpha: Scalar = one(Scalar) },
     ) void {
-        const a_names = comptime meta.fieldNames(AxisA);
         const x_axis_idx = comptime matchingAxisIdx(AxisA, AxisX, AxisY);
         const f = switch (Scalar) {
             f32 => acc.cblas_sger,
@@ -1514,12 +1351,7 @@ pub const blas = struct {
         _ = named_index.resolveDimensions(.{ A.idx.shape, x.idx.shape, y.idx.shape }) catch
             @panic("ger: dimension mismatch");
 
-        const a_ij_idx = A.idx.rename(IJ, &.{
-            .{ .old = a_names[x_axis_idx], .new = "i" },
-            .{ .old = a_names[1 - x_axis_idx], .new = "j" },
-        });
-        const A_ij: NamedArray(IJ, Scalar) = .{ .idx = a_ij_idx, .buf = A.buf };
-        const A_blas = Blas2dMut(Scalar).init(A_ij);
+        const A_blas = Blas2dMut(Scalar).fromNamedArray(AxisA, A, x_axis_idx);
         const x_blas = Blas1d(Scalar).init(AxisX, x);
         const y_blas = Blas1d(Scalar).init(AxisY, y);
 
@@ -1582,7 +1414,6 @@ pub const blas = struct {
         y: NamedArrayConst(AxisY, Scalar),
         alpha: Scalar,
     ) void {
-        const a_names = comptime meta.fieldNames(AxisA);
         const x_axis_idx = comptime matchingAxisIdx(AxisA, AxisX, AxisY);
         const f = switch (Scalar) {
             Complex(f32) => if (conjugated) acc.cblas_cgerc else acc.cblas_cgeru,
@@ -1593,12 +1424,7 @@ pub const blas = struct {
         _ = named_index.resolveDimensions(.{ A.idx.shape, x.idx.shape, y.idx.shape }) catch
             @panic(if (conjugated) "gerc: dimension mismatch" else "geru: dimension mismatch");
 
-        const a_ij_idx = A.idx.rename(IJ, &.{
-            .{ .old = a_names[x_axis_idx], .new = "i" },
-            .{ .old = a_names[1 - x_axis_idx], .new = "j" },
-        });
-        const A_ij: NamedArray(IJ, Scalar) = .{ .idx = a_ij_idx, .buf = A.buf };
-        const A_blas = Blas2dMut(Scalar).init(A_ij);
+        const A_blas = Blas2dMut(Scalar).fromNamedArray(AxisA, A, x_axis_idx);
         const x_blas = Blas1d(Scalar).init(AxisX, x);
         const y_blas = Blas1d(Scalar).init(AxisY, y);
 
@@ -1630,7 +1456,6 @@ pub const blas = struct {
         x: NamedArrayConst(AxisX, Scalar),
         scalars: struct { alpha: Scalar = one(Scalar) },
     ) void {
-        const a_names = comptime meta.fieldNames(AxisA);
         comptime assertMatchingAxis(AxisA, AxisX);
         const f = switch (Scalar) {
             f32 => acc.cblas_ssyr,
@@ -1641,12 +1466,7 @@ pub const blas = struct {
         _ = named_index.resolveDimensions(.{ A.idx.shape, x.idx.shape }) catch
             @panic("syr: dimension mismatch");
 
-        const a_ij_idx = A.idx.rename(IJ, &.{
-            .{ .old = a_names[0], .new = "i" },
-            .{ .old = a_names[1], .new = "j" },
-        });
-        const A_ij: NamedArray(IJ, Scalar) = .{ .idx = a_ij_idx, .buf = A.buf };
-        const A_blas = Blas2dMut(Scalar).init(A_ij);
+        const A_blas = Blas2dMut(Scalar).fromNamedArray(AxisA, A, 0);
         assert(A_blas.rows == A_blas.cols);
 
         const x_blas = Blas1d(Scalar).init(AxisX, x);
@@ -1678,7 +1498,6 @@ pub const blas = struct {
         scalars: struct { alpha: RealScalar = 1.0 },
     ) void {
         const Scalar = Complex(RealScalar);
-        const a_names = comptime meta.fieldNames(AxisA);
         comptime assertMatchingAxis(AxisA, AxisX);
         const f = switch (RealScalar) {
             f32 => acc.cblas_cher,
@@ -1689,12 +1508,7 @@ pub const blas = struct {
         _ = named_index.resolveDimensions(.{ A.idx.shape, x.idx.shape }) catch
             @panic("her: dimension mismatch");
 
-        const a_ij_idx = A.idx.rename(IJ, &.{
-            .{ .old = a_names[0], .new = "i" },
-            .{ .old = a_names[1], .new = "j" },
-        });
-        const A_ij: NamedArray(IJ, Scalar) = .{ .idx = a_ij_idx, .buf = A.buf };
-        const A_blas = Blas2dMut(Scalar).init(A_ij);
+        const A_blas = Blas2dMut(Scalar).fromNamedArray(AxisA, A, 0);
         assert(A_blas.rows == A_blas.cols);
 
         const x_blas = Blas1d(Scalar).init(AxisX, x);
@@ -1727,7 +1541,6 @@ pub const blas = struct {
         y: NamedArrayConst(AxisY, Scalar),
         scalars: struct { alpha: Scalar = one(Scalar) },
     ) void {
-        const a_names = comptime meta.fieldNames(AxisA);
         _ = comptime matchingAxisIdx(AxisA, AxisX, AxisY);
         const f = switch (Scalar) {
             f32 => acc.cblas_ssyr2,
@@ -1738,12 +1551,7 @@ pub const blas = struct {
         _ = named_index.resolveDimensions(.{ A.idx.shape, x.idx.shape, y.idx.shape }) catch
             @panic("syr2: dimension mismatch");
 
-        const a_ij_idx = A.idx.rename(IJ, &.{
-            .{ .old = a_names[0], .new = "i" },
-            .{ .old = a_names[1], .new = "j" },
-        });
-        const A_ij: NamedArray(IJ, Scalar) = .{ .idx = a_ij_idx, .buf = A.buf };
-        const A_blas = Blas2dMut(Scalar).init(A_ij);
+        const A_blas = Blas2dMut(Scalar).fromNamedArray(AxisA, A, 0);
         assert(A_blas.rows == A_blas.cols);
 
         const x_blas = Blas1d(Scalar).init(AxisX, x);
@@ -1779,7 +1587,6 @@ pub const blas = struct {
         y: NamedArrayConst(AxisY, Scalar),
         scalars: struct { alpha: Scalar = one(Scalar) },
     ) void {
-        const a_names = comptime meta.fieldNames(AxisA);
         _ = comptime matchingAxisIdx(AxisA, AxisX, AxisY);
         const f = switch (Scalar) {
             Complex(f32) => acc.cblas_cher2,
@@ -1790,12 +1597,7 @@ pub const blas = struct {
         _ = named_index.resolveDimensions(.{ A.idx.shape, x.idx.shape, y.idx.shape }) catch
             @panic("her2: dimension mismatch");
 
-        const a_ij_idx = A.idx.rename(IJ, &.{
-            .{ .old = a_names[0], .new = "i" },
-            .{ .old = a_names[1], .new = "j" },
-        });
-        const A_ij: NamedArray(IJ, Scalar) = .{ .idx = a_ij_idx, .buf = A.buf };
-        const A_blas = Blas2dMut(Scalar).init(A_ij);
+        const A_blas = Blas2dMut(Scalar).fromNamedArray(AxisA, A, 0);
         assert(A_blas.rows == A_blas.cols);
 
         const x_blas = Blas1d(Scalar).init(AxisX, x);
@@ -2002,6 +1804,18 @@ pub const blas = struct {
                     .ptr = @ptrCast(arr.buf.ptr),
                 };
             }
+
+            /// Creates a Blas2d from an arbitrary 2D NamedArrayConst by renaming axes to IJ.
+            /// `i_axis` selects which AxisA field (0 or 1) maps to i; the other maps to j.
+            fn fromNamedArray(comptime AxisA: type, arr: NamedArrayConst(AxisA, Scalar), comptime i_axis: usize) @This() {
+                const rename_pairs = comptime [_]named_index.AxisRenamePair{
+                    .{ .old = meta.fieldNames(AxisA)[i_axis], .new = "i" },
+                    .{ .old = meta.fieldNames(AxisA)[1 - i_axis], .new = "j" },
+                };
+                const a_ij_idx = arr.idx.rename(IJ, &rename_pairs);
+                const arr_ij: NamedArrayConst(IJ, Scalar) = .{ .idx = a_ij_idx, .buf = arr.buf };
+                return init(arr_ij);
+            }
         };
     }
 
@@ -2034,11 +1848,124 @@ pub const blas = struct {
                     .ptr = @ptrCast(arr.buf.ptr),
                 };
             }
+
+            /// Creates a Blas2dMut from an arbitrary 2D NamedArray by renaming axes to IJ.
+            /// `i_axis` selects which AxisA field (0 or 1) maps to i; the other maps to j.
+            fn fromNamedArray(comptime AxisA: type, arr: NamedArray(AxisA, Scalar), comptime i_axis: usize) @This() {
+                const rename_pairs = comptime [_]named_index.AxisRenamePair{
+                    .{ .old = meta.fieldNames(AxisA)[i_axis], .new = "i" },
+                    .{ .old = meta.fieldNames(AxisA)[1 - i_axis], .new = "j" },
+                };
+                const a_ij_idx = arr.idx.rename(IJ, &rename_pairs);
+                const arr_ij: NamedArray(IJ, Scalar) = .{ .idx = a_ij_idx, .buf = arr.buf };
+                return init(arr_ij);
+            }
         };
     }
 
-    // const Blas2dLayout = enum(bool) { RowMajor, ColMajor };
-    // const Blas2dTrans = enum(u8) { NoTrans = 'N', Trans = 'T', ConjTrans = 'C' };
+    /// Wrapper for a matrix stored in BLAS packed format (read-only).
+    /// Bundles the triangle selector, packing order, and data slice into a single
+    /// value, making the storage assumptions explicit at the call site.
+    ///
+    /// Construct via struct literal:
+    /// ```
+    /// .{ .triangle = .k, .major = .k, .data = &ap }
+    /// ```
+    pub fn BlasPacked(comptime Scalar: type, comptime AxisA: type) type {
+        return struct {
+            triangle: AxisA,
+            major: AxisA,
+            data: []const Scalar,
+
+            pub fn uplo(self: @This()) acc.CBLAS_UPLO {
+                return uploBlas(AxisA, self.triangle);
+            }
+
+            pub fn layout(self: @This()) acc.CBLAS_ORDER {
+                return layoutBlas(AxisA, self.major);
+            }
+
+            pub fn ptr(self: @This()) [*]const Scalar {
+                return self.data.ptr;
+            }
+
+            /// Assert that the packed slice has exactly `n * (n + 1) / 2` elements.
+            pub fn validate(self: @This(), n: usize) void {
+                assert(self.data.len == n * (n + 1) / 2);
+            }
+        };
+    }
+
+    /// Wrapper for a matrix stored in BLAS packed format (mutable).
+    /// Same semantics as `BlasPacked` but the data slice is mutable.
+    pub fn BlasPackedMut(comptime Scalar: type, comptime AxisA: type) type {
+        return struct {
+            triangle: AxisA,
+            major: AxisA,
+            data: []Scalar,
+
+            pub fn uplo(self: @This()) acc.CBLAS_UPLO {
+                return uploBlas(AxisA, self.triangle);
+            }
+
+            pub fn layout(self: @This()) acc.CBLAS_ORDER {
+                return layoutBlas(AxisA, self.major);
+            }
+
+            pub fn ptr(self: @This()) [*]Scalar {
+                return self.data.ptr;
+            }
+
+            /// Assert that the packed slice has exactly `n * (n + 1) / 2` elements.
+            pub fn validate(self: @This(), n: usize) void {
+                assert(self.data.len == n * (n + 1) / 2);
+            }
+        };
+    }
+
+    /// Wrapper for a matrix stored in BLAS band format (read-only).
+    /// Constructed from a 2D `NamedArrayConst` whose axes are a band axis
+    /// (contiguous, stride 1) and a vector axis matching `AxisX`.
+    /// Validates the band-storage layout constraints at construction time.
+    pub fn BlasBand(comptime Scalar: type, comptime AxisA: type, comptime AxisX: type) type {
+        return struct {
+            n: c_int,
+            band_size: c_int,
+            leading: c_int,
+            ptr: [*]const Scalar,
+
+            const x_axis_idx = blk: {
+                const a_names = meta.fieldNames(AxisA);
+                const x_name = meta.fields(AxisX)[0].name;
+                break :blk if (std.mem.eql(u8, x_name, a_names[0])) @as(usize, 0) else @as(usize, 1);
+            };
+
+            pub fn init(A: NamedArrayConst(AxisA, Scalar)) @This() {
+                const a_names = comptime meta.fieldNames(AxisA);
+                const band_name = a_names[1 - x_axis_idx];
+                const n_name = a_names[x_axis_idx];
+                const band_stride = @field(A.idx.strides, band_name);
+                const n_stride = @field(A.idx.strides, n_name);
+                const band_sz: usize = @field(A.idx.shape, band_name);
+                const n_sz: usize = @field(A.idx.shape, n_name);
+
+                assert(band_stride == 1); // Band axis must be contiguous (stride 1)
+                assert(n_stride >= band_sz); // LDA >= band size
+
+                return .{
+                    .n = @intCast(n_sz),
+                    .band_size = @intCast(band_sz),
+                    .leading = @intCast(n_stride),
+                    .ptr = @ptrCast(A.buf.ptr),
+                };
+            }
+
+            /// Bandwidth `k` for symmetric / triangular band matrices (`band_size - 1`).
+            pub fn k(self: @This()) c_int {
+                return self.band_size - 1;
+            }
+        };
+    }
 };
 
 pub const lapack = struct { @compileError("To do: Implement LAPACK interface") };
@@ -4831,7 +4758,7 @@ test "gbmv real" {
         .buf = &y_buf,
     };
 
-    blas.gbmv(T, BK, K, M, AB, x, y, .{ .alpha = 1.0, .beta = 0.0 }, .{ .kl = 1, .ku = 1 });
+    blas.gbmv(T, BK, K, M, blas.BlasBand(T, BK, K).init(AB), x, y, .{ .alpha = 1.0, .beta = 0.0 }, .{ .kl = 1, .ku = 1 });
 
     const expected = [_]T{ 4.0, 8.0, 12.0, 11.0 };
     for (0..4) |i| {
@@ -4878,7 +4805,7 @@ test "gbmv real rectangular" {
         .buf = &y_buf,
     };
 
-    blas.gbmv(T, BK, K, M, AB, x, y, .{ .alpha = 1.0, .beta = 0.0 }, .{ .kl = 1, .ku = 1 });
+    blas.gbmv(T, BK, K, M, blas.BlasBand(T, BK, K).init(AB), x, y, .{ .alpha = 1.0, .beta = 0.0 }, .{ .kl = 1, .ku = 1 });
 
     const expected = [_]T{ 4.0, 8.0, 12.0 };
     for (0..3) |i| {
@@ -4921,7 +4848,7 @@ test "gbmv column-major matrix" {
         .buf = &y_buf,
     };
 
-    blas.gbmv(T, BK, K, M, AB, x, y, .{ .alpha = 1.0, .beta = 0.0 }, .{ .kl = 1, .ku = 1 });
+    blas.gbmv(T, BK, K, M, blas.BlasBand(T, BK, K).init(AB), x, y, .{ .alpha = 1.0, .beta = 0.0 }, .{ .kl = 1, .ku = 1 });
 
     const expected = [_]T{ 4.0, 8.0, 12.0, 11.0 };
     for (0..4) |i| {
@@ -4968,7 +4895,7 @@ test "sbmv real upper" {
     };
 
     // triangle = .k (second axis, ordinal 1) → Upper
-    blas.sbmv(T, BK, K, .k, AB, x, y, .{ .alpha = 1.0, .beta = 0.0 });
+    blas.sbmv(T, BK, K, .k, blas.BlasBand(T, BK, K).init(AB), x, y, .{ .alpha = 1.0, .beta = 0.0 });
 
     const expected = [_]T{ 4.0, 8.0, 12.0, 11.0 };
     for (0..4) |i| {
@@ -5009,7 +4936,7 @@ test "sbmv column-major matrix" {
         .buf = &y_buf,
     };
 
-    blas.sbmv(T, BK, K, .k, AB, x, y, .{ .alpha = 1.0, .beta = 0.0 });
+    blas.sbmv(T, BK, K, .k, blas.BlasBand(T, BK, K).init(AB), x, y, .{ .alpha = 1.0, .beta = 0.0 });
 
     const expected = [_]T{ 4.0, 8.0, 12.0, 11.0 };
     for (0..4) |i| {
@@ -5065,7 +4992,7 @@ test "hbmv complex upper" {
         .buf = &y_buf,
     };
 
-    blas.hbmv(T, BK, K, .k, AB, x, y, .{
+    blas.hbmv(T, BK, K, .k, blas.BlasBand(T, BK, K).init(AB), x, y, .{
         .alpha = .{ .re = 1, .im = 0 },
         .beta = .{ .re = 0, .im = 0 },
     });
@@ -5126,7 +5053,7 @@ test "hbmv column-major matrix" {
         .buf = &y_buf,
     };
 
-    blas.hbmv(T, BK, K, .k, AB, x, y, .{
+    blas.hbmv(T, BK, K, .k, blas.BlasBand(T, BK, K).init(AB), x, y, .{
         .alpha = .{ .re = 1, .im = 0 },
         .beta = .{ .re = 0, .im = 0 },
     });
@@ -5177,7 +5104,7 @@ test "tbmv real upper" {
     };
 
     // triangle = .k (second axis) → Upper
-    blas.tbmv(T, BK, K, .k, .non_unit, AB, x);
+    blas.tbmv(T, BK, K, .k, .non_unit, blas.BlasBand(T, BK, K).init(AB), x);
 
     const expected = [_]T{ 4.0, 9.0, 16.0, 20.0 };
     for (0..4) |i| {
@@ -5212,7 +5139,7 @@ test "tbmv column-major matrix" {
         .buf = &x_buf,
     };
 
-    blas.tbmv(T, BK, K, .k, .non_unit, AB, x);
+    blas.tbmv(T, BK, K, .k, .non_unit, blas.BlasBand(T, BK, K).init(AB), x);
 
     const expected = [_]T{ 4.0, 9.0, 16.0, 20.0 };
     for (0..4) |i| {
@@ -5252,7 +5179,7 @@ test "tbsv real upper" {
         .buf = &x_buf,
     };
 
-    blas.tbsv(T, BK, K, .k, .non_unit, AB, x);
+    blas.tbsv(T, BK, K, .k, .non_unit, blas.BlasBand(T, BK, K).init(AB), x);
 
     const expected = [_]T{ 1.0, 2.0, 3.0, 4.0 };
     for (0..4) |i| {
@@ -5286,7 +5213,7 @@ test "tbsv column-major matrix" {
         .buf = &x_buf,
     };
 
-    blas.tbsv(T, BK, K, .k, .non_unit, AB, x);
+    blas.tbsv(T, BK, K, .k, .non_unit, blas.BlasBand(T, BK, K).init(AB), x);
 
     const expected = [_]T{ 1.0, 2.0, 3.0, 4.0 };
     for (0..4) |i| {
@@ -5394,7 +5321,7 @@ test "spmv real upper" {
     };
 
     // triangle = .k (second axis) → Upper
-    blas.spmv(T, MK, K, M, .k, .k, &ap, x, y, .{ .alpha = 1.0, .beta = 0.0 });
+    blas.spmv(T, MK, K, M, .{ .triangle = .k, .major = .k, .data = &ap }, x, y, .{ .alpha = 1.0, .beta = 0.0 });
 
     const expected = [_]T{ 14.0, 30.0, 42.0 };
     for (0..3) |i| {
@@ -5425,7 +5352,7 @@ test "spmv real lower" {
     };
 
     // triangle = .m (first axis) → Lower
-    blas.spmv(T, MK, K, M, .m, .k, &ap, x, y, .{ .alpha = 1.0, .beta = 0.0 });
+    blas.spmv(T, MK, K, M, .{ .triangle = .m, .major = .k, .data = &ap }, x, y, .{ .alpha = 1.0, .beta = 0.0 });
 
     const expected = [_]T{ 14.0, 30.0, 42.0 };
     for (0..3) |i| {
@@ -5460,7 +5387,7 @@ test "spmv real upper row-major" {
     };
 
     // triangle = .k (upper), major = .m (first axis → row-major)
-    blas.spmv(T, MK, K, M, .k, .m, &ap, x, y, .{ .alpha = 1.0, .beta = 0.0 });
+    blas.spmv(T, MK, K, M, .{ .triangle = .k, .major = .m, .data = &ap }, x, y, .{ .alpha = 1.0, .beta = 0.0 });
 
     const expected = [_]T{ 14.0, 30.0, 42.0 };
     for (0..3) |i| {
@@ -5491,7 +5418,7 @@ test "spmv real nontrivial scalars and strides" {
         .buf = &y_buf,
     };
 
-    blas.spmv(T, MK, K, M, .k, .k, &ap, x, y, .{ .alpha = 2.0, .beta = 1.0 });
+    blas.spmv(T, MK, K, M, .{ .triangle = .k, .major = .k, .data = &ap }, x, y, .{ .alpha = 2.0, .beta = 1.0 });
 
     const expected = [_]T{ 29.0, 61.0, 85.0 };
     for (0..3) |i| {
@@ -5540,7 +5467,7 @@ test "hpmv complex upper" {
         .buf = &y_buf,
     };
 
-    blas.hpmv(T, MK, K, M, .k, .k, &ap, x, y, .{
+    blas.hpmv(T, MK, K, M, .{ .triangle = .k, .major = .k, .data = &ap }, x, y, .{
         .alpha = .{ .re = 1, .im = 0 },
         .beta = .{ .re = 0, .im = 0 },
     });
@@ -5595,7 +5522,7 @@ test "hpmv complex lower" {
     };
 
     // triangle = .m (first axis) → Lower
-    blas.hpmv(T, MK, K, M, .m, .k, &ap, x, y, .{
+    blas.hpmv(T, MK, K, M, .{ .triangle = .m, .major = .k, .data = &ap }, x, y, .{
         .alpha = .{ .re = 1, .im = 0 },
         .beta = .{ .re = 0, .im = 0 },
     });
@@ -5654,7 +5581,7 @@ test "hpmv complex upper row-major" {
     };
 
     // triangle = .k (upper), major = .m (first axis → row-major)
-    blas.hpmv(T, MK, K, M, .k, .m, &ap, x, y, .{
+    blas.hpmv(T, MK, K, M, .{ .triangle = .k, .major = .m, .data = &ap }, x, y, .{
         .alpha = .{ .re = 1, .im = 0 },
         .beta = .{ .re = 0, .im = 0 },
     });
@@ -5691,7 +5618,7 @@ test "tpmv real upper" {
     };
 
     // triangle = .k (second axis) → Upper
-    blas.tpmv(T, MK, K, .k, .k, .non_unit, &ap, x);
+    blas.tpmv(T, MK, K, .{ .triangle = .k, .major = .k, .data = &ap }, .non_unit, x);
 
     const expected = [_]T{ 13.0, 14.0, 15.0 };
     for (0..3) |i| {
@@ -5719,7 +5646,7 @@ test "tpmv real lower" {
     };
 
     // triangle = .m (first axis) → Lower
-    blas.tpmv(T, MK, K, .m, .k, .non_unit, &ap, x);
+    blas.tpmv(T, MK, K, .{ .triangle = .m, .major = .k, .data = &ap }, .non_unit, x);
 
     const expected = [_]T{ 2.0, 9.0, 22.0 };
     for (0..3) |i| {
@@ -5746,7 +5673,7 @@ test "tpmv real unit diagonal" {
         .buf = &x_buf,
     };
 
-    blas.tpmv(T, MK, K, .k, .k, .unit, &ap, x);
+    blas.tpmv(T, MK, K, .{ .triangle = .k, .major = .k, .data = &ap }, .unit, x);
 
     const expected = [_]T{ 14.0, 5.0, 3.0 };
     for (0..3) |i| {
@@ -5784,7 +5711,7 @@ test "tpmv complex upper" {
         .buf = &x_buf,
     };
 
-    blas.tpmv(T, MK, K, .k, .k, .non_unit, &ap, x);
+    blas.tpmv(T, MK, K, .{ .triangle = .k, .major = .k, .data = &ap }, .non_unit, x);
 
     const expected = [_]T{
         .{ .re = 13, .im = 2 },
@@ -5813,7 +5740,7 @@ test "tpmv nontrivial strides" {
         .buf = &x_buf,
     };
 
-    blas.tpmv(T, AB, B, .b, .b, .non_unit, &ap, x);
+    blas.tpmv(T, AB, B, .{ .triangle = .b, .major = .b, .data = &ap }, .non_unit, x);
 
     const expected = [_]T{ 13.0, 14.0, 15.0 };
     for (0..3) |i| {
@@ -5840,7 +5767,7 @@ test "tpsv real upper" {
         .buf = &x_buf,
     };
 
-    blas.tpsv(T, MK, K, .k, .k, .non_unit, &ap, x);
+    blas.tpsv(T, MK, K, .{ .triangle = .k, .major = .k, .data = &ap }, .non_unit, x);
 
     const expected = [_]T{ 1.0, 2.0, 3.0 };
     for (0..3) |i| {
@@ -5867,7 +5794,7 @@ test "tpsv real lower" {
         .buf = &x_buf,
     };
 
-    blas.tpsv(T, MK, K, .m, .k, .non_unit, &ap, x);
+    blas.tpsv(T, MK, K, .{ .triangle = .m, .major = .k, .data = &ap }, .non_unit, x);
 
     const expected = [_]T{ 1.0, 2.0, 3.0 };
     for (0..3) |i| {
@@ -5894,7 +5821,7 @@ test "tpsv real unit diagonal" {
         .buf = &x_buf,
     };
 
-    blas.tpsv(T, MK, K, .k, .k, .unit, &ap, x);
+    blas.tpsv(T, MK, K, .{ .triangle = .k, .major = .k, .data = &ap }, .unit, x);
 
     const expected = [_]T{ 1.0, 2.0, 3.0 };
     for (0..3) |i| {
@@ -5917,7 +5844,7 @@ test "tpsv nontrivial strides" {
         .buf = &x_buf,
     };
 
-    blas.tpsv(T, AB, B, .b, .b, .non_unit, &ap, x);
+    blas.tpsv(T, AB, B, .{ .triangle = .b, .major = .b, .data = &ap }, .non_unit, x);
 
     const expected = [_]T{ 1.0, 2.0, 3.0 };
     for (0..3) |i| {
@@ -5948,7 +5875,7 @@ test "spr real upper" {
         .buf = &x_buf,
     };
 
-    blas.spr(T, MK, K, .k, .k, &ap, x, .{});
+    blas.spr(T, MK, K, .{ .triangle = .k, .major = .k, .data = &ap }, x, .{});
 
     const expected = [_]T{ 2, 4, 9, 6, 12, 18 };
     for (0..6) |i| {
@@ -5972,7 +5899,7 @@ test "spr real lower" {
     };
 
     // triangle = .m (first axis) → Lower
-    blas.spr(T, MK, K, .m, .k, &ap, x, .{});
+    blas.spr(T, MK, K, .{ .triangle = .m, .major = .k, .data = &ap }, x, .{});
 
     const expected = [_]T{ 2, 4, 6, 9, 12, 18 };
     for (0..6) |i| {
@@ -6003,7 +5930,7 @@ test "spr real upper row-major" {
     };
 
     // triangle = .k (upper), major = .m (first axis → row-major)
-    blas.spr(T, MK, K, .k, .m, &ap, x, .{});
+    blas.spr(T, MK, K, .{ .triangle = .k, .major = .m, .data = &ap }, x, .{});
 
     // Row-major upper: [A00, A01, A02, A11, A12, A22]
     const expected = [_]T{ 2, 4, 6, 9, 12, 18 };
@@ -6029,7 +5956,7 @@ test "spr nontrivial alpha and strides" {
         .buf = &x_buf,
     };
 
-    blas.spr(T, MK, K, .k, .k, &ap, x, .{ .alpha = 2.0 });
+    blas.spr(T, MK, K, .{ .triangle = .k, .major = .k, .data = &ap }, x, .{ .alpha = 2.0 });
 
     const expected = [_]T{ 3, 6, 13, 9, 18, 27 };
     for (0..6) |i| {
@@ -6072,7 +5999,7 @@ test "hpr complex upper" {
         .buf = &x_buf,
     };
 
-    blas.hpr(f64, MK, K, .k, .k, &ap, x, .{});
+    blas.hpr(f64, MK, K, .{ .triangle = .k, .major = .k, .data = &ap }, x, .{});
 
     const eps = 1e-10;
     try std.testing.expectApproxEqAbs(@as(f64, 3), ap[0].re, eps);
@@ -6109,7 +6036,7 @@ test "hpr complex lower" {
     };
 
     // triangle = .m (first axis) → Lower
-    blas.hpr(f64, MK, K, .m, .k, &ap, x, .{});
+    blas.hpr(f64, MK, K, .{ .triangle = .m, .major = .k, .data = &ap }, x, .{});
 
     const eps = 1e-10;
     try std.testing.expectApproxEqAbs(@as(f64, 3), ap[0].re, eps);
@@ -6147,7 +6074,7 @@ test "hpr nontrivial alpha and strides" {
         .buf = &x_buf,
     };
 
-    blas.hpr(f32, MK, K, .k, .k, &ap, x, .{ .alpha = 2.0 });
+    blas.hpr(f32, MK, K, .{ .triangle = .k, .major = .k, .data = &ap }, x, .{ .alpha = 2.0 });
 
     const eps: f32 = 1e-4;
     try std.testing.expectApproxEqAbs(@as(f32, 9), ap[0].re, eps);
@@ -6187,7 +6114,7 @@ test "spr2 real upper" {
         .buf = &y_buf,
     };
 
-    blas.spr2(T, MK, K, M, .k, .k, &ap, x, y, .{});
+    blas.spr2(T, MK, K, M, .{ .triangle = .k, .major = .k, .data = &ap }, x, y, .{});
 
     const expected = [_]T{ 3, 4, 5, 7, 8, 15 };
     for (0..6) |i| {
@@ -6220,7 +6147,7 @@ test "spr2 real lower" {
     };
 
     // triangle = .m (first axis) → Lower
-    blas.spr2(T, MK, K, M, .m, .k, &ap, x, y, .{});
+    blas.spr2(T, MK, K, M, .{ .triangle = .m, .major = .k, .data = &ap }, x, y, .{});
 
     const expected = [_]T{ 3, 4, 7, 5, 8, 15 };
     for (0..6) |i| {
@@ -6252,7 +6179,7 @@ test "spr2 nontrivial alpha and strides" {
         .buf = &y_buf,
     };
 
-    blas.spr2(T, MK, K, M, .k, .k, &ap, x, y, .{ .alpha = 2.0 });
+    blas.spr2(T, MK, K, M, .{ .triangle = .k, .major = .k, .data = &ap }, x, y, .{ .alpha = 2.0 });
 
     const expected = [_]T{ 5, 6, 5, 11, 10, 21 };
     for (0..6) |i| {
@@ -6313,7 +6240,7 @@ test "hpr2 complex upper" {
         .buf = &y_buf,
     };
 
-    blas.hpr2(T, MK, M, K, .k, .k, &ap, x, y, .{});
+    blas.hpr2(T, MK, M, K, .{ .triangle = .k, .major = .k, .data = &ap }, x, y, .{});
 
     const eps = 1e-10;
     try std.testing.expectApproxEqAbs(@as(f64, 3), ap[0].re, eps);
@@ -6361,7 +6288,7 @@ test "hpr2 complex lower" {
     };
 
     // triangle = .m (first axis) → Lower
-    blas.hpr2(T, MK, M, K, .m, .k, &ap, x, y, .{});
+    blas.hpr2(T, MK, M, K, .{ .triangle = .m, .major = .k, .data = &ap }, x, y, .{});
 
     const eps = 1e-10;
     try std.testing.expectApproxEqAbs(@as(f64, 3), ap[0].re, eps);
@@ -6438,7 +6365,7 @@ test "hpr2 nontrivial alpha and strides" {
         .buf = &y_buf,
     };
 
-    blas.hpr2(T, MK, M, K, .k, .k, &ap, x, y, .{ .alpha = .{ .re = 2, .im = 1 } });
+    blas.hpr2(T, MK, M, K, .{ .triangle = .k, .major = .k, .data = &ap }, x, y, .{ .alpha = .{ .re = 2, .im = 1 } });
 
     const eps: f32 = 1e-4;
     try std.testing.expectApproxEqAbs(@as(f32, 3), ap[0].re, eps);

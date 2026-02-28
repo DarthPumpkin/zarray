@@ -1093,17 +1093,20 @@ pub const blas = struct {
     /// stored in packed format.
     /// `AxisA` is the 2D conceptual axis type of `A`; `triangle` selects which triangle
     /// is stored (second axis → upper, first axis → lower), using the same convention
-    /// as `symv`. `x`'s axis must match one axis of `AxisA` and `y`'s axis the other.
+    /// as `symv`. `major` selects the packing axis: first axis → row-major,
+    /// second axis → column-major.
+    /// `x`'s axis must match one axis of `AxisA` and `y`'s axis the other.
     /// The scalars `alpha` and `beta` are optional and default to 1.
     ///
     /// **Storage requirement**: `AP` must be a contiguous slice of exactly
-    /// `N * (N + 1) / 2` elements in column-major packed order.
+    /// `N * (N + 1) / 2` elements in the packed order specified by `major`.
     pub fn spmv(
         comptime Scalar: type,
         comptime AxisA: type,
         comptime AxisX: type,
         comptime AxisY: type,
         triangle: AxisA,
+        major: AxisA,
         AP: []const Scalar,
         x: NamedArrayConst(AxisX, Scalar),
         y: NamedArray(AxisY, Scalar),
@@ -1124,7 +1127,7 @@ pub const blas = struct {
         assert(AP.len == n * (n + 1) / 2); // Packed storage size must be N*(N+1)/2
 
         f(
-            @intCast(acc.CblasColMajor),
+            layoutBlas(AxisA, major),
             uploBlas(AxisA, triangle),
             x_blas.len, // N
             scalars.alpha,
@@ -1142,17 +1145,20 @@ pub const blas = struct {
     /// stored in packed format.
     /// `AxisA` is the 2D conceptual axis type of `A`; `triangle` selects which triangle
     /// is stored (second axis → upper, first axis → lower), using the same convention
-    /// as `hemv`. `x`'s axis must match one axis of `AxisA` and `y`'s axis the other.
+    /// as `hemv`. `major` selects the packing axis: first axis → row-major,
+    /// second axis → column-major.
+    /// `x`'s axis must match one axis of `AxisA` and `y`'s axis the other.
     /// The scalars `alpha` and `beta` are optional and default to 1.
     ///
     /// **Storage requirement**: `AP` must be a contiguous slice of exactly
-    /// `N * (N + 1) / 2` elements in column-major packed order.
+    /// `N * (N + 1) / 2` elements in the packed order specified by `major`.
     pub fn hpmv(
         comptime Scalar: type,
         comptime AxisA: type,
         comptime AxisX: type,
         comptime AxisY: type,
         triangle: AxisA,
+        major: AxisA,
         AP: []const Scalar,
         x: NamedArrayConst(AxisX, Scalar),
         y: NamedArray(AxisY, Scalar),
@@ -1173,7 +1179,7 @@ pub const blas = struct {
         assert(AP.len == n * (n + 1) / 2); // Packed storage size must be N*(N+1)/2
 
         f(
-            @intCast(acc.CblasColMajor),
+            layoutBlas(AxisA, major),
             uploBlas(AxisA, triangle),
             x_blas.len, // N
             &scalars.alpha,
@@ -1191,16 +1197,19 @@ pub const blas = struct {
     /// stored in packed format.
     /// `AxisA` is the 2D conceptual axis type of `A`; `triangle` selects which triangle
     /// is stored (second axis → upper, first axis → lower), using the same convention
-    /// as `trmv`. `x`'s axis must match one axis of `AxisA`.
+    /// as `trmv`. `major` selects the packing axis: first axis → row-major,
+    /// second axis → column-major.
+    /// `x`'s axis must match one axis of `AxisA`.
     /// If `diag` is `.unit`, the diagonal of `A` is assumed to be all ones and is not read.
     ///
     /// **Storage requirement**: `AP` must be a contiguous slice of exactly
-    /// `N * (N + 1) / 2` elements in column-major packed order.
+    /// `N * (N + 1) / 2` elements in the packed order specified by `major`.
     pub fn tpmv(
         comptime Scalar: type,
         comptime AxisA: type,
         comptime AxisX: type,
         triangle: AxisA,
+        major: AxisA,
         diag: Diag,
         AP: []const Scalar,
         x: NamedArray(AxisX, Scalar),
@@ -1225,7 +1234,7 @@ pub const blas = struct {
         };
 
         f(
-            @intCast(acc.CblasColMajor),
+            layoutBlas(AxisA, major),
             uploBlas(AxisA, triangle),
             @intCast(acc.CblasNoTrans),
             diag_blas,
@@ -1241,16 +1250,19 @@ pub const blas = struct {
     /// where `A` is an N×N triangular matrix stored in packed format.
     /// `AxisA` is the 2D conceptual axis type of `A`; `triangle` selects which triangle
     /// is stored (second axis → upper, first axis → lower), using the same convention
-    /// as `trsv`. `x`'s axis must match one axis of `AxisA`.
+    /// as `trsv`. `major` selects the packing axis: first axis → row-major,
+    /// second axis → column-major.
+    /// `x`'s axis must match one axis of `AxisA`.
     /// If `diag` is `.unit`, the diagonal of `A` is assumed to be all ones and is not read.
     ///
     /// **Storage requirement**: `AP` must be a contiguous slice of exactly
-    /// `N * (N + 1) / 2` elements in column-major packed order.
+    /// `N * (N + 1) / 2` elements in the packed order specified by `major`.
     pub fn tpsv(
         comptime Scalar: type,
         comptime AxisA: type,
         comptime AxisX: type,
         triangle: AxisA,
+        major: AxisA,
         diag: Diag,
         AP: []const Scalar,
         x: NamedArray(AxisX, Scalar),
@@ -1275,7 +1287,7 @@ pub const blas = struct {
         };
 
         f(
-            @intCast(acc.CblasColMajor),
+            layoutBlas(AxisA, major),
             uploBlas(AxisA, triangle),
             @intCast(acc.CblasNoTrans),
             diag_blas,
@@ -1290,16 +1302,19 @@ pub const blas = struct {
     /// Computes `A := alpha * x * xᵀ + A` (symmetric packed rank-1 update) for real scalars.
     /// `AxisA` is the 2D conceptual axis type of `A`; `triangle` selects which triangle
     /// is stored (second axis → upper, first axis → lower), using the same convention
-    /// as `syr`. `x`'s axis must match one axis of `AxisA`.
+    /// as `syr`. `major` selects the packing axis: first axis → row-major,
+    /// second axis → column-major.
+    /// `x`'s axis must match one axis of `AxisA`.
     /// The scalar `alpha` is optional and defaults to 1.
     ///
     /// **Storage requirement**: `AP` must be a contiguous mutable slice of exactly
-    /// `N * (N + 1) / 2` elements in column-major packed order.
+    /// `N * (N + 1) / 2` elements in the packed order specified by `major`.
     pub fn spr(
         comptime Scalar: type,
         comptime AxisA: type,
         comptime AxisX: type,
         triangle: AxisA,
+        major: AxisA,
         AP: []Scalar,
         x: NamedArrayConst(AxisX, Scalar),
         scalars: struct { alpha: Scalar = one(Scalar) },
@@ -1317,7 +1332,7 @@ pub const blas = struct {
         assert(AP.len == n * (n + 1) / 2); // Packed storage size must be N*(N+1)/2
 
         f(
-            @intCast(acc.CblasColMajor),
+            layoutBlas(AxisA, major),
             uploBlas(AxisA, triangle),
             x_blas.len, // N
             scalars.alpha,
@@ -1331,16 +1346,19 @@ pub const blas = struct {
     /// Computes `A := alpha * x * xᴴ + A` (Hermitian packed rank-1 update) for complex scalars.
     /// `AxisA` is the 2D conceptual axis type of `A`; `triangle` selects which triangle
     /// is stored (second axis → upper, first axis → lower), using the same convention
-    /// as `her`. `x`'s axis must match one axis of `AxisA`.
+    /// as `her`. `major` selects the packing axis: first axis → row-major,
+    /// second axis → column-major.
+    /// `x`'s axis must match one axis of `AxisA`.
     /// The scalar `alpha` is **real** and optional, defaulting to 1.
     ///
     /// **Storage requirement**: `AP` must be a contiguous mutable slice of exactly
-    /// `N * (N + 1) / 2` elements in column-major packed order.
+    /// `N * (N + 1) / 2` elements in the packed order specified by `major`.
     pub fn hpr(
         comptime RealScalar: type,
         comptime AxisA: type,
         comptime AxisX: type,
         triangle: AxisA,
+        major: AxisA,
         AP: []Complex(RealScalar),
         x: NamedArrayConst(AxisX, Complex(RealScalar)),
         scalars: struct { alpha: RealScalar = 1.0 },
@@ -1359,7 +1377,7 @@ pub const blas = struct {
         assert(AP.len == n * (n + 1) / 2); // Packed storage size must be N*(N+1)/2
 
         f(
-            @intCast(acc.CblasColMajor),
+            layoutBlas(AxisA, major),
             uploBlas(AxisA, triangle),
             x_blas.len, // N
             scalars.alpha,
@@ -1374,17 +1392,20 @@ pub const blas = struct {
     /// for real scalars.
     /// `AxisA` is the 2D conceptual axis type of `A`; `triangle` selects which triangle
     /// is stored (second axis → upper, first axis → lower), using the same convention
-    /// as `syr2`. `x`'s axis must match one axis of `AxisA` and `y`'s axis the other.
+    /// as `syr2`. `major` selects the packing axis: first axis → row-major,
+    /// second axis → column-major.
+    /// `x`'s axis must match one axis of `AxisA` and `y`'s axis the other.
     /// The scalar `alpha` is optional and defaults to 1.
     ///
     /// **Storage requirement**: `AP` must be a contiguous mutable slice of exactly
-    /// `N * (N + 1) / 2` elements in column-major packed order.
+    /// `N * (N + 1) / 2` elements in the packed order specified by `major`.
     pub fn spr2(
         comptime Scalar: type,
         comptime AxisA: type,
         comptime AxisX: type,
         comptime AxisY: type,
         triangle: AxisA,
+        major: AxisA,
         AP: []Scalar,
         x: NamedArrayConst(AxisX, Scalar),
         y: NamedArrayConst(AxisY, Scalar),
@@ -1405,7 +1426,7 @@ pub const blas = struct {
         assert(AP.len == n * (n + 1) / 2); // Packed storage size must be N*(N+1)/2
 
         f(
-            @intCast(acc.CblasColMajor),
+            layoutBlas(AxisA, major),
             uploBlas(AxisA, triangle),
             x_blas.len, // N
             scalars.alpha,
@@ -1422,17 +1443,20 @@ pub const blas = struct {
     /// for complex scalars.
     /// `AxisA` is the 2D conceptual axis type of `A`; `triangle` selects which triangle
     /// is stored (second axis → upper, first axis → lower), using the same convention
-    /// as `her2`. `x`'s axis must match one axis of `AxisA` and `y`'s axis the other.
+    /// as `her2`. `major` selects the packing axis: first axis → row-major,
+    /// second axis → column-major.
+    /// `x`'s axis must match one axis of `AxisA` and `y`'s axis the other.
     /// The scalar `alpha` is complex and optional, defaulting to 1.
     ///
     /// **Storage requirement**: `AP` must be a contiguous mutable slice of exactly
-    /// `N * (N + 1) / 2` elements in column-major packed order.
+    /// `N * (N + 1) / 2` elements in the packed order specified by `major`.
     pub fn hpr2(
         comptime Scalar: type,
         comptime AxisA: type,
         comptime AxisX: type,
         comptime AxisY: type,
         triangle: AxisA,
+        major: AxisA,
         AP: []Scalar,
         x: NamedArrayConst(AxisX, Scalar),
         y: NamedArrayConst(AxisY, Scalar),
@@ -1453,7 +1477,7 @@ pub const blas = struct {
         assert(AP.len == n * (n + 1) / 2); // Packed storage size must be N*(N+1)/2
 
         f(
-            @intCast(acc.CblasColMajor),
+            layoutBlas(AxisA, major),
             uploBlas(AxisA, triangle),
             x_blas.len, // N
             &scalars.alpha,
@@ -1858,6 +1882,15 @@ pub const blas = struct {
             @intCast(acc.CblasUpper)
         else
             @intCast(acc.CblasLower);
+    }
+
+    /// Maps a major-axis value to the corresponding CBLAS layout constant.
+    /// First axis (ordinal 0) as major → row-major; second axis (ordinal 1) → column-major.
+    fn layoutBlas(comptime AxisA: type, major: AxisA) acc.CBLAS_ORDER {
+        return if (@intFromEnum(major) == 0)
+            @intCast(acc.CblasRowMajor)
+        else
+            @intCast(acc.CblasColMajor);
     }
 
     /// Validates that AxisA is 2D, AxisX and AxisY are each 1D with distinct names,
@@ -5361,7 +5394,7 @@ test "spmv real upper" {
     };
 
     // triangle = .k (second axis) → Upper
-    blas.spmv(T, MK, K, M, .k, &ap, x, y, .{ .alpha = 1.0, .beta = 0.0 });
+    blas.spmv(T, MK, K, M, .k, .k, &ap, x, y, .{ .alpha = 1.0, .beta = 0.0 });
 
     const expected = [_]T{ 14.0, 30.0, 42.0 };
     for (0..3) |i| {
@@ -5392,7 +5425,42 @@ test "spmv real lower" {
     };
 
     // triangle = .m (first axis) → Lower
-    blas.spmv(T, MK, K, M, .m, &ap, x, y, .{ .alpha = 1.0, .beta = 0.0 });
+    blas.spmv(T, MK, K, M, .m, .k, &ap, x, y, .{ .alpha = 1.0, .beta = 0.0 });
+
+    const expected = [_]T{ 14.0, 30.0, 42.0 };
+    for (0..3) |i| {
+        try std.testing.expectApproxEqAbs(expected[i], y_buf[i], math.floatEpsAt(T, expected[i]));
+    }
+}
+
+test "spmv real upper row-major" {
+    // Same 3×3 symmetric matrix as "spmv real upper", but packed in row-major order.
+    // A = [1 2 3]    x = [1]    y = A*x = [14]
+    //     [2 5 6]        [2]               [30]
+    //     [3 6 9]        [3]               [42]
+    //
+    // Upper packed (row-major): row0=[1,2,3], row1=[5,6], row2=[9]
+    const MK = enum { m, k };
+    const K = enum { k };
+    const M = enum { m };
+    const T = f64;
+
+    const ap = [_]T{ 1, 2, 3, 5, 6, 9 };
+
+    const x_buf = [_]T{ 1, 2, 3 };
+    const x = NamedArrayConst(K, T){
+        .idx = NamedIndex(K).initContiguous(.{ .k = 3 }),
+        .buf = &x_buf,
+    };
+
+    var y_buf = [_]T{ 0, 0, 0 };
+    const y = NamedArray(M, T){
+        .idx = NamedIndex(M).initContiguous(.{ .m = 3 }),
+        .buf = &y_buf,
+    };
+
+    // triangle = .k (upper), major = .m (first axis → row-major)
+    blas.spmv(T, MK, K, M, .k, .m, &ap, x, y, .{ .alpha = 1.0, .beta = 0.0 });
 
     const expected = [_]T{ 14.0, 30.0, 42.0 };
     for (0..3) |i| {
@@ -5423,7 +5491,7 @@ test "spmv real nontrivial scalars and strides" {
         .buf = &y_buf,
     };
 
-    blas.spmv(T, MK, K, M, .k, &ap, x, y, .{ .alpha = 2.0, .beta = 1.0 });
+    blas.spmv(T, MK, K, M, .k, .k, &ap, x, y, .{ .alpha = 2.0, .beta = 1.0 });
 
     const expected = [_]T{ 29.0, 61.0, 85.0 };
     for (0..3) |i| {
@@ -5472,7 +5540,7 @@ test "hpmv complex upper" {
         .buf = &y_buf,
     };
 
-    blas.hpmv(T, MK, K, M, .k, &ap, x, y, .{
+    blas.hpmv(T, MK, K, M, .k, .k, &ap, x, y, .{
         .alpha = .{ .re = 1, .im = 0 },
         .beta = .{ .re = 0, .im = 0 },
     });
@@ -5527,7 +5595,66 @@ test "hpmv complex lower" {
     };
 
     // triangle = .m (first axis) → Lower
-    blas.hpmv(T, MK, K, M, .m, &ap, x, y, .{
+    blas.hpmv(T, MK, K, M, .m, .k, &ap, x, y, .{
+        .alpha = .{ .re = 1, .im = 0 },
+        .beta = .{ .re = 0, .im = 0 },
+    });
+
+    const expected = [_]T{
+        .{ .re = 6, .im = 1 },
+        .{ .re = 7, .im = 0 },
+        .{ .re = 11, .im = -1 },
+    };
+    const eps = 1e-10;
+    for (0..3) |i| {
+        try std.testing.expectApproxEqAbs(expected[i].re, y_buf[i].re, eps);
+        try std.testing.expectApproxEqAbs(expected[i].im, y_buf[i].im, eps);
+    }
+}
+
+test "hpmv complex upper row-major" {
+    // Same 3×3 Hermitian matrix as "hpmv complex upper", but packed in row-major order.
+    // A = [2      1+i    3    ]    x = [1]    y = A*x = [6+i ]
+    //     [1-i    4      2+i  ]        [1]               [7   ]
+    //     [3      2-i    6    ]        [1]               [11-i]
+    //
+    // Upper packed (row-major): row0=[2, 1+i, 3], row1=[4, 2+i], row2=[6]
+    const MK = enum { m, k };
+    const K = enum { k };
+    const M = enum { m };
+    const T = Complex(f64);
+
+    const ap = [_]T{
+        .{ .re = 2, .im = 0 },
+        .{ .re = 1, .im = 1 },
+        .{ .re = 3, .im = 0 },
+        .{ .re = 4, .im = 0 },
+        .{ .re = 2, .im = 1 },
+        .{ .re = 6, .im = 0 },
+    };
+
+    const x_buf = [_]T{
+        .{ .re = 1, .im = 0 },
+        .{ .re = 1, .im = 0 },
+        .{ .re = 1, .im = 0 },
+    };
+    const x = NamedArrayConst(K, T){
+        .idx = NamedIndex(K).initContiguous(.{ .k = 3 }),
+        .buf = &x_buf,
+    };
+
+    var y_buf = [_]T{
+        .{ .re = 0, .im = 0 },
+        .{ .re = 0, .im = 0 },
+        .{ .re = 0, .im = 0 },
+    };
+    const y = NamedArray(M, T){
+        .idx = NamedIndex(M).initContiguous(.{ .m = 3 }),
+        .buf = &y_buf,
+    };
+
+    // triangle = .k (upper), major = .m (first axis → row-major)
+    blas.hpmv(T, MK, K, M, .k, .m, &ap, x, y, .{
         .alpha = .{ .re = 1, .im = 0 },
         .beta = .{ .re = 0, .im = 0 },
     });
@@ -5564,7 +5691,7 @@ test "tpmv real upper" {
     };
 
     // triangle = .k (second axis) → Upper
-    blas.tpmv(T, MK, K, .k, .non_unit, &ap, x);
+    blas.tpmv(T, MK, K, .k, .k, .non_unit, &ap, x);
 
     const expected = [_]T{ 13.0, 14.0, 15.0 };
     for (0..3) |i| {
@@ -5592,7 +5719,7 @@ test "tpmv real lower" {
     };
 
     // triangle = .m (first axis) → Lower
-    blas.tpmv(T, MK, K, .m, .non_unit, &ap, x);
+    blas.tpmv(T, MK, K, .m, .k, .non_unit, &ap, x);
 
     const expected = [_]T{ 2.0, 9.0, 22.0 };
     for (0..3) |i| {
@@ -5619,7 +5746,7 @@ test "tpmv real unit diagonal" {
         .buf = &x_buf,
     };
 
-    blas.tpmv(T, MK, K, .k, .unit, &ap, x);
+    blas.tpmv(T, MK, K, .k, .k, .unit, &ap, x);
 
     const expected = [_]T{ 14.0, 5.0, 3.0 };
     for (0..3) |i| {
@@ -5657,7 +5784,7 @@ test "tpmv complex upper" {
         .buf = &x_buf,
     };
 
-    blas.tpmv(T, MK, K, .k, .non_unit, &ap, x);
+    blas.tpmv(T, MK, K, .k, .k, .non_unit, &ap, x);
 
     const expected = [_]T{
         .{ .re = 13, .im = 2 },
@@ -5686,7 +5813,7 @@ test "tpmv nontrivial strides" {
         .buf = &x_buf,
     };
 
-    blas.tpmv(T, AB, B, .b, .non_unit, &ap, x);
+    blas.tpmv(T, AB, B, .b, .b, .non_unit, &ap, x);
 
     const expected = [_]T{ 13.0, 14.0, 15.0 };
     for (0..3) |i| {
@@ -5713,7 +5840,7 @@ test "tpsv real upper" {
         .buf = &x_buf,
     };
 
-    blas.tpsv(T, MK, K, .k, .non_unit, &ap, x);
+    blas.tpsv(T, MK, K, .k, .k, .non_unit, &ap, x);
 
     const expected = [_]T{ 1.0, 2.0, 3.0 };
     for (0..3) |i| {
@@ -5740,7 +5867,7 @@ test "tpsv real lower" {
         .buf = &x_buf,
     };
 
-    blas.tpsv(T, MK, K, .m, .non_unit, &ap, x);
+    blas.tpsv(T, MK, K, .m, .k, .non_unit, &ap, x);
 
     const expected = [_]T{ 1.0, 2.0, 3.0 };
     for (0..3) |i| {
@@ -5767,7 +5894,7 @@ test "tpsv real unit diagonal" {
         .buf = &x_buf,
     };
 
-    blas.tpsv(T, MK, K, .k, .unit, &ap, x);
+    blas.tpsv(T, MK, K, .k, .k, .unit, &ap, x);
 
     const expected = [_]T{ 1.0, 2.0, 3.0 };
     for (0..3) |i| {
@@ -5790,7 +5917,7 @@ test "tpsv nontrivial strides" {
         .buf = &x_buf,
     };
 
-    blas.tpsv(T, AB, B, .b, .non_unit, &ap, x);
+    blas.tpsv(T, AB, B, .b, .b, .non_unit, &ap, x);
 
     const expected = [_]T{ 1.0, 2.0, 3.0 };
     for (0..3) |i| {
@@ -5821,7 +5948,7 @@ test "spr real upper" {
         .buf = &x_buf,
     };
 
-    blas.spr(T, MK, K, .k, &ap, x, .{});
+    blas.spr(T, MK, K, .k, .k, &ap, x, .{});
 
     const expected = [_]T{ 2, 4, 9, 6, 12, 18 };
     for (0..6) |i| {
@@ -5845,8 +5972,40 @@ test "spr real lower" {
     };
 
     // triangle = .m (first axis) → Lower
-    blas.spr(T, MK, K, .m, &ap, x, .{});
+    blas.spr(T, MK, K, .m, .k, &ap, x, .{});
 
+    const expected = [_]T{ 2, 4, 6, 9, 12, 18 };
+    for (0..6) |i| {
+        try std.testing.expectApproxEqAbs(expected[i], ap[i], math.floatEpsAt(T, expected[i]));
+    }
+}
+
+test "spr real upper row-major" {
+    // Same 3×3 symmetric matrix as "spr real upper", but packed in row-major order.
+    // A_init = [1 2 3]    x = [1]
+    //          [2 5 6]        [2]
+    //          [3 6 9]        [3]
+    //
+    // x*x^T = [[1,2,3],[2,4,6],[3,6,9]]
+    // A_new upper: [0,0]=2  [0,1]=4  [0,2]=6  [1,1]=9  [1,2]=12  [2,2]=18
+    //
+    // Upper packed (row-major): row0=[1,2,3], row1=[5,6], row2=[9]
+    const MK = enum { m, k };
+    const K = enum { k };
+    const T = f64;
+
+    var ap = [_]T{ 1, 2, 3, 5, 6, 9 };
+
+    const x_buf = [_]T{ 1, 2, 3 };
+    const x = NamedArrayConst(K, T){
+        .idx = NamedIndex(K).initContiguous(.{ .k = 3 }),
+        .buf = &x_buf,
+    };
+
+    // triangle = .k (upper), major = .m (first axis → row-major)
+    blas.spr(T, MK, K, .k, .m, &ap, x, .{});
+
+    // Row-major upper: [A00, A01, A02, A11, A12, A22]
     const expected = [_]T{ 2, 4, 6, 9, 12, 18 };
     for (0..6) |i| {
         try std.testing.expectApproxEqAbs(expected[i], ap[i], math.floatEpsAt(T, expected[i]));
@@ -5870,7 +6029,7 @@ test "spr nontrivial alpha and strides" {
         .buf = &x_buf,
     };
 
-    blas.spr(T, MK, K, .k, &ap, x, .{ .alpha = 2.0 });
+    blas.spr(T, MK, K, .k, .k, &ap, x, .{ .alpha = 2.0 });
 
     const expected = [_]T{ 3, 6, 13, 9, 18, 27 };
     for (0..6) |i| {
@@ -5913,7 +6072,7 @@ test "hpr complex upper" {
         .buf = &x_buf,
     };
 
-    blas.hpr(f64, MK, K, .k, &ap, x, .{});
+    blas.hpr(f64, MK, K, .k, .k, &ap, x, .{});
 
     const eps = 1e-10;
     try std.testing.expectApproxEqAbs(@as(f64, 3), ap[0].re, eps);
@@ -5950,7 +6109,7 @@ test "hpr complex lower" {
     };
 
     // triangle = .m (first axis) → Lower
-    blas.hpr(f64, MK, K, .m, &ap, x, .{});
+    blas.hpr(f64, MK, K, .m, .k, &ap, x, .{});
 
     const eps = 1e-10;
     try std.testing.expectApproxEqAbs(@as(f64, 3), ap[0].re, eps);
@@ -5988,7 +6147,7 @@ test "hpr nontrivial alpha and strides" {
         .buf = &x_buf,
     };
 
-    blas.hpr(f32, MK, K, .k, &ap, x, .{ .alpha = 2.0 });
+    blas.hpr(f32, MK, K, .k, .k, &ap, x, .{ .alpha = 2.0 });
 
     const eps: f32 = 1e-4;
     try std.testing.expectApproxEqAbs(@as(f32, 9), ap[0].re, eps);
@@ -6028,7 +6187,7 @@ test "spr2 real upper" {
         .buf = &y_buf,
     };
 
-    blas.spr2(T, MK, K, M, .k, &ap, x, y, .{});
+    blas.spr2(T, MK, K, M, .k, .k, &ap, x, y, .{});
 
     const expected = [_]T{ 3, 4, 5, 7, 8, 15 };
     for (0..6) |i| {
@@ -6061,7 +6220,7 @@ test "spr2 real lower" {
     };
 
     // triangle = .m (first axis) → Lower
-    blas.spr2(T, MK, K, M, .m, &ap, x, y, .{});
+    blas.spr2(T, MK, K, M, .m, .k, &ap, x, y, .{});
 
     const expected = [_]T{ 3, 4, 7, 5, 8, 15 };
     for (0..6) |i| {
@@ -6093,7 +6252,7 @@ test "spr2 nontrivial alpha and strides" {
         .buf = &y_buf,
     };
 
-    blas.spr2(T, MK, K, M, .k, &ap, x, y, .{ .alpha = 2.0 });
+    blas.spr2(T, MK, K, M, .k, .k, &ap, x, y, .{ .alpha = 2.0 });
 
     const expected = [_]T{ 5, 6, 5, 11, 10, 21 };
     for (0..6) |i| {
@@ -6154,7 +6313,7 @@ test "hpr2 complex upper" {
         .buf = &y_buf,
     };
 
-    blas.hpr2(T, MK, M, K, .k, &ap, x, y, .{});
+    blas.hpr2(T, MK, M, K, .k, .k, &ap, x, y, .{});
 
     const eps = 1e-10;
     try std.testing.expectApproxEqAbs(@as(f64, 3), ap[0].re, eps);
@@ -6202,7 +6361,7 @@ test "hpr2 complex lower" {
     };
 
     // triangle = .m (first axis) → Lower
-    blas.hpr2(T, MK, M, K, .m, &ap, x, y, .{});
+    blas.hpr2(T, MK, M, K, .m, .k, &ap, x, y, .{});
 
     const eps = 1e-10;
     try std.testing.expectApproxEqAbs(@as(f64, 3), ap[0].re, eps);
@@ -6279,7 +6438,7 @@ test "hpr2 nontrivial alpha and strides" {
         .buf = &y_buf,
     };
 
-    blas.hpr2(T, MK, M, K, .k, &ap, x, y, .{ .alpha = .{ .re = 2, .im = 1 } });
+    blas.hpr2(T, MK, M, K, .k, .k, &ap, x, y, .{ .alpha = .{ .re = 2, .im = 1 } });
 
     const eps: f32 = 1e-4;
     try std.testing.expectApproxEqAbs(@as(f32, 3), ap[0].re, eps);

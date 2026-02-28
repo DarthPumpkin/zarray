@@ -1286,6 +1286,185 @@ pub const blas = struct {
         );
     }
 
+    /// `sspr` and `dspr` in BLAS.
+    /// Computes `A := alpha * x * xᵀ + A` (symmetric packed rank-1 update) for real scalars.
+    /// `AxisA` is the 2D conceptual axis type of `A`; `triangle` selects which triangle
+    /// is stored (second axis → upper, first axis → lower), using the same convention
+    /// as `syr`. `x`'s axis must match one axis of `AxisA`.
+    /// The scalar `alpha` is optional and defaults to 1.
+    ///
+    /// **Storage requirement**: `AP` must be a contiguous mutable slice of exactly
+    /// `N * (N + 1) / 2` elements in column-major packed order.
+    pub fn spr(
+        comptime Scalar: type,
+        comptime AxisA: type,
+        comptime AxisX: type,
+        triangle: AxisA,
+        AP: []Scalar,
+        x: NamedArrayConst(AxisX, Scalar),
+        scalars: struct { alpha: Scalar = one(Scalar) },
+    ) void {
+        comptime assertMatchingAxis(AxisA, AxisX);
+        const f = switch (Scalar) {
+            f32 => acc.cblas_sspr,
+            f64 => acc.cblas_dspr,
+            else => @compileError("spr requires f32 or f64."),
+        };
+
+        const x_blas = Blas1d(Scalar).init(AxisX, x);
+        const n: usize = @intCast(x_blas.len);
+
+        assert(AP.len == n * (n + 1) / 2); // Packed storage size must be N*(N+1)/2
+
+        f(
+            @intCast(acc.CblasColMajor),
+            uploBlas(AxisA, triangle),
+            x_blas.len, // N
+            scalars.alpha,
+            x_blas.ptr,
+            x_blas.inc,
+            AP.ptr,
+        );
+    }
+
+    /// `chpr` and `zhpr` in BLAS.
+    /// Computes `A := alpha * x * xᴴ + A` (Hermitian packed rank-1 update) for complex scalars.
+    /// `AxisA` is the 2D conceptual axis type of `A`; `triangle` selects which triangle
+    /// is stored (second axis → upper, first axis → lower), using the same convention
+    /// as `her`. `x`'s axis must match one axis of `AxisA`.
+    /// The scalar `alpha` is **real** and optional, defaulting to 1.
+    ///
+    /// **Storage requirement**: `AP` must be a contiguous mutable slice of exactly
+    /// `N * (N + 1) / 2` elements in column-major packed order.
+    pub fn hpr(
+        comptime RealScalar: type,
+        comptime AxisA: type,
+        comptime AxisX: type,
+        triangle: AxisA,
+        AP: []Complex(RealScalar),
+        x: NamedArrayConst(AxisX, Complex(RealScalar)),
+        scalars: struct { alpha: RealScalar = 1.0 },
+    ) void {
+        comptime assertMatchingAxis(AxisA, AxisX);
+        const f = switch (RealScalar) {
+            f32 => acc.cblas_chpr,
+            f64 => acc.cblas_zhpr,
+            else => @compileError("hpr requires f32 or f64 as RealScalar."),
+        };
+
+        const Scalar = Complex(RealScalar);
+        const x_blas = Blas1d(Scalar).init(AxisX, x);
+        const n: usize = @intCast(x_blas.len);
+
+        assert(AP.len == n * (n + 1) / 2); // Packed storage size must be N*(N+1)/2
+
+        f(
+            @intCast(acc.CblasColMajor),
+            uploBlas(AxisA, triangle),
+            x_blas.len, // N
+            scalars.alpha,
+            x_blas.ptr,
+            x_blas.inc,
+            AP.ptr,
+        );
+    }
+
+    /// `sspr2` and `dspr2` in BLAS.
+    /// Computes `A := alpha * x * yᵀ + alpha * y * xᵀ + A` (symmetric packed rank-2 update)
+    /// for real scalars.
+    /// `AxisA` is the 2D conceptual axis type of `A`; `triangle` selects which triangle
+    /// is stored (second axis → upper, first axis → lower), using the same convention
+    /// as `syr2`. `x`'s axis must match one axis of `AxisA` and `y`'s axis the other.
+    /// The scalar `alpha` is optional and defaults to 1.
+    ///
+    /// **Storage requirement**: `AP` must be a contiguous mutable slice of exactly
+    /// `N * (N + 1) / 2` elements in column-major packed order.
+    pub fn spr2(
+        comptime Scalar: type,
+        comptime AxisA: type,
+        comptime AxisX: type,
+        comptime AxisY: type,
+        triangle: AxisA,
+        AP: []Scalar,
+        x: NamedArrayConst(AxisX, Scalar),
+        y: NamedArrayConst(AxisY, Scalar),
+        scalars: struct { alpha: Scalar = one(Scalar) },
+    ) void {
+        _ = comptime matchingAxisIdx(AxisA, AxisX, AxisY);
+        const f = switch (Scalar) {
+            f32 => acc.cblas_sspr2,
+            f64 => acc.cblas_dspr2,
+            else => @compileError("spr2 requires f32 or f64."),
+        };
+
+        const x_blas = Blas1d(Scalar).init(AxisX, x);
+        const y_blas = Blas1d(Scalar).init(AxisY, y);
+        const n: usize = @intCast(x_blas.len);
+
+        assert(x_blas.len == y_blas.len); // Square matrix: x and y dimensions must match
+        assert(AP.len == n * (n + 1) / 2); // Packed storage size must be N*(N+1)/2
+
+        f(
+            @intCast(acc.CblasColMajor),
+            uploBlas(AxisA, triangle),
+            x_blas.len, // N
+            scalars.alpha,
+            x_blas.ptr,
+            x_blas.inc,
+            y_blas.ptr,
+            y_blas.inc,
+            AP.ptr,
+        );
+    }
+
+    /// `chpr2` and `zhpr2` in BLAS.
+    /// Computes `A := alpha * x * yᴴ + conj(alpha) * y * xᴴ + A` (Hermitian packed rank-2 update)
+    /// for complex scalars.
+    /// `AxisA` is the 2D conceptual axis type of `A`; `triangle` selects which triangle
+    /// is stored (second axis → upper, first axis → lower), using the same convention
+    /// as `her2`. `x`'s axis must match one axis of `AxisA` and `y`'s axis the other.
+    /// The scalar `alpha` is complex and optional, defaulting to 1.
+    ///
+    /// **Storage requirement**: `AP` must be a contiguous mutable slice of exactly
+    /// `N * (N + 1) / 2` elements in column-major packed order.
+    pub fn hpr2(
+        comptime Scalar: type,
+        comptime AxisA: type,
+        comptime AxisX: type,
+        comptime AxisY: type,
+        triangle: AxisA,
+        AP: []Scalar,
+        x: NamedArrayConst(AxisX, Scalar),
+        y: NamedArrayConst(AxisY, Scalar),
+        scalars: struct { alpha: Scalar = one(Scalar) },
+    ) void {
+        _ = comptime matchingAxisIdx(AxisA, AxisX, AxisY);
+        const f = switch (Scalar) {
+            Complex(f32) => acc.cblas_chpr2,
+            Complex(f64) => acc.cblas_zhpr2,
+            else => @compileError("hpr2 requires Complex(f32) or Complex(f64)."),
+        };
+
+        const x_blas = Blas1d(Scalar).init(AxisX, x);
+        const y_blas = Blas1d(Scalar).init(AxisY, y);
+        const n: usize = @intCast(x_blas.len);
+
+        assert(x_blas.len == y_blas.len); // Square matrix: x and y dimensions must match
+        assert(AP.len == n * (n + 1) / 2); // Packed storage size must be N*(N+1)/2
+
+        f(
+            @intCast(acc.CblasColMajor),
+            uploBlas(AxisA, triangle),
+            x_blas.len, // N
+            &scalars.alpha,
+            x_blas.ptr,
+            x_blas.inc,
+            y_blas.ptr,
+            y_blas.inc,
+            AP.ptr,
+        );
+    }
+
     /// `sger` and `dger` in BLAS.
     /// Computes `A := alpha * x * yᵀ + A` (rank-1 update) for real scalars.
     /// `x`'s axis must match one axis of `A` and `y`'s axis must match the other.
@@ -5617,6 +5796,498 @@ test "tpsv nontrivial strides" {
     for (0..3) |i| {
         try std.testing.expectApproxEqAbs(expected[i], x_buf[i * 2], math.floatEpsAt(T, expected[i]));
     }
+}
+
+test "spr real upper" {
+    // 3×3 symmetric matrix, upper packed storage:
+    // A_init = [1 2 3]    x = [1]
+    //          [2 5 6]        [2]
+    //          [3 6 9]        [3]
+    //
+    // x*x^T = [[1,2,3],[2,4,6],[3,6,9]]
+    // A_new = A_init + x*x^T:
+    //   upper: [0,0]=2  [0,1]=4  [0,2]=6  [1,1]=9  [1,2]=12  [2,2]=18
+    //
+    // Upper packed (col-major): col0=[1], col1=[2,5], col2=[3,6,9]
+    const MK = enum { m, k };
+    const K = enum { k };
+    const T = f64;
+
+    var ap = [_]T{ 1, 2, 5, 3, 6, 9 };
+
+    const x_buf = [_]T{ 1, 2, 3 };
+    const x = NamedArrayConst(K, T){
+        .idx = NamedIndex(K).initContiguous(.{ .k = 3 }),
+        .buf = &x_buf,
+    };
+
+    blas.spr(T, MK, K, .k, &ap, x, .{});
+
+    const expected = [_]T{ 2, 4, 9, 6, 12, 18 };
+    for (0..6) |i| {
+        try std.testing.expectApproxEqAbs(expected[i], ap[i], math.floatEpsAt(T, expected[i]));
+    }
+}
+
+test "spr real lower" {
+    // Same 3×3 symmetric matrix, lower packed storage:
+    // Lower packed (col-major): col0=[1,2,3], col1=[5,6], col2=[9]
+    const MK = enum { m, k };
+    const K = enum { k };
+    const T = f64;
+
+    var ap = [_]T{ 1, 2, 3, 5, 6, 9 };
+
+    const x_buf = [_]T{ 1, 2, 3 };
+    const x = NamedArrayConst(K, T){
+        .idx = NamedIndex(K).initContiguous(.{ .k = 3 }),
+        .buf = &x_buf,
+    };
+
+    // triangle = .m (first axis) → Lower
+    blas.spr(T, MK, K, .m, &ap, x, .{});
+
+    const expected = [_]T{ 2, 4, 6, 9, 12, 18 };
+    for (0..6) |i| {
+        try std.testing.expectApproxEqAbs(expected[i], ap[i], math.floatEpsAt(T, expected[i]));
+    }
+}
+
+test "spr nontrivial alpha and strides" {
+    // Same matrix, alpha=2, x stored with stride 2
+    // A_new = 2 * x*x^T + A_init
+    // 2*x*x^T = [[2,4,6],[4,8,12],[6,12,18]]
+    // Upper packed: [1+2, 2+4, 5+8, 3+6, 6+12, 9+18] = [3, 6, 13, 9, 18, 27]
+    const MK = enum { m, k };
+    const K = enum { k };
+    const T = f64;
+
+    var ap = [_]T{ 1, 2, 5, 3, 6, 9 };
+
+    const x_buf = [_]T{ 1, 0, 2, 0, 3 };
+    const x = NamedArrayConst(K, T){
+        .idx = .{ .shape = .{ .k = 3 }, .strides = .{ .k = 2 } },
+        .buf = &x_buf,
+    };
+
+    blas.spr(T, MK, K, .k, &ap, x, .{ .alpha = 2.0 });
+
+    const expected = [_]T{ 3, 6, 13, 9, 18, 27 };
+    for (0..6) |i| {
+        try std.testing.expectApproxEqAbs(expected[i], ap[i], math.floatEpsAt(T, expected[i]));
+    }
+}
+
+test "hpr complex upper" {
+    // 2×2 Hermitian, upper packed storage:
+    // A_init = [[1+0i,  2+i ],
+    //           [2-i,   3+0i]]
+    //
+    // x = [1+i, 2]
+    // x*x^H:
+    //   (1+i)*conj(1+i) = (1+i)*(1-i) = 2
+    //   (1+i)*conj(2)   = (1+i)*2     = 2+2i
+    //   2*conj(1+i)     = 2*(1-i)     = 2-2i
+    //   2*conj(2)       = 4
+    // x*x^H = [[2, 2+2i], [2-2i, 4]]
+    //
+    // A_new upper = [[1+2, 2+i+2+2i], [_, 3+4]] = [[3+0i, 4+3i], [_, 7+0i]]
+    // Upper packed (col-major): col0=[1+0i], col1=[2+i, 3+0i]
+    // After: [3+0i, 4+3i, 7+0i]
+    const MK = enum { m, k };
+    const K = enum { k };
+    const T = Complex(f64);
+
+    var ap = [_]T{
+        .{ .re = 1, .im = 0 },
+        .{ .re = 2, .im = 1 },
+        .{ .re = 3, .im = 0 },
+    };
+
+    const x_buf = [_]T{
+        .{ .re = 1, .im = 1 },
+        .{ .re = 2, .im = 0 },
+    };
+    const x = NamedArrayConst(K, T){
+        .idx = NamedIndex(K).initContiguous(.{ .k = 2 }),
+        .buf = &x_buf,
+    };
+
+    blas.hpr(f64, MK, K, .k, &ap, x, .{});
+
+    const eps = 1e-10;
+    try std.testing.expectApproxEqAbs(@as(f64, 3), ap[0].re, eps);
+    try std.testing.expectApproxEqAbs(@as(f64, 0), ap[0].im, eps);
+    try std.testing.expectApproxEqAbs(@as(f64, 4), ap[1].re, eps);
+    try std.testing.expectApproxEqAbs(@as(f64, 3), ap[1].im, eps);
+    try std.testing.expectApproxEqAbs(@as(f64, 7), ap[2].re, eps);
+    try std.testing.expectApproxEqAbs(@as(f64, 0), ap[2].im, eps);
+}
+
+test "hpr complex lower" {
+    // Same 2×2 Hermitian, lower packed storage:
+    // Lower packed (col-major): col0=[1+0i, 2-i], col1=[3+0i]
+    // x*x^H = [[2, 2+2i], [2-2i, 4]]
+    // A_new lower: [[1+2, _], [2-i+2-2i, 3+4]] = [[3+0i, _], [4-3i, 7+0i]]
+    // After: [3+0i, 4-3i, 7+0i]
+    const MK = enum { m, k };
+    const K = enum { k };
+    const T = Complex(f64);
+
+    var ap = [_]T{
+        .{ .re = 1, .im = 0 },
+        .{ .re = 2, .im = -1 },
+        .{ .re = 3, .im = 0 },
+    };
+
+    const x_buf = [_]T{
+        .{ .re = 1, .im = 1 },
+        .{ .re = 2, .im = 0 },
+    };
+    const x = NamedArrayConst(K, T){
+        .idx = NamedIndex(K).initContiguous(.{ .k = 2 }),
+        .buf = &x_buf,
+    };
+
+    // triangle = .m (first axis) → Lower
+    blas.hpr(f64, MK, K, .m, &ap, x, .{});
+
+    const eps = 1e-10;
+    try std.testing.expectApproxEqAbs(@as(f64, 3), ap[0].re, eps);
+    try std.testing.expectApproxEqAbs(@as(f64, 0), ap[0].im, eps);
+    try std.testing.expectApproxEqAbs(@as(f64, 4), ap[1].re, eps);
+    try std.testing.expectApproxEqAbs(@as(f64, -3), ap[1].im, eps);
+    try std.testing.expectApproxEqAbs(@as(f64, 7), ap[2].re, eps);
+    try std.testing.expectApproxEqAbs(@as(f64, 0), ap[2].im, eps);
+}
+
+test "hpr nontrivial alpha and strides" {
+    // 2×2 Hermitian upper, alpha=2, x with stride 2
+    // A_init upper packed: [5+0i, 1+i, 3+0i]
+    // x physical = [1+i, 0, 2], stride=2 → logical x = [1+i, 2]
+    // x*x^H = [[2, 2+2i], [2-2i, 4]]
+    // 2*x*x^H = [[4, 4+4i], [4-4i, 8]]
+    // A_new upper: [5+4, 1+i+4+4i, 3+8] = [9+0i, 5+5i, 11+0i]
+    const MK = enum { m, k };
+    const K = enum { k };
+    const T = Complex(f32);
+
+    var ap = [_]T{
+        .{ .re = 5, .im = 0 },
+        .{ .re = 1, .im = 1 },
+        .{ .re = 3, .im = 0 },
+    };
+
+    const x_buf = [_]T{
+        .{ .re = 1, .im = 1 },
+        .{ .re = 0, .im = 0 },
+        .{ .re = 2, .im = 0 },
+    };
+    const x = NamedArrayConst(K, T){
+        .idx = .{ .shape = .{ .k = 2 }, .strides = .{ .k = 2 } },
+        .buf = &x_buf,
+    };
+
+    blas.hpr(f32, MK, K, .k, &ap, x, .{ .alpha = 2.0 });
+
+    const eps: f32 = 1e-4;
+    try std.testing.expectApproxEqAbs(@as(f32, 9), ap[0].re, eps);
+    try std.testing.expectApproxEqAbs(@as(f32, 0), ap[0].im, eps);
+    try std.testing.expectApproxEqAbs(@as(f32, 5), ap[1].re, eps);
+    try std.testing.expectApproxEqAbs(@as(f32, 5), ap[1].im, eps);
+    try std.testing.expectApproxEqAbs(@as(f32, 11), ap[2].re, eps);
+    try std.testing.expectApproxEqAbs(@as(f32, 0), ap[2].im, eps);
+}
+
+test "spr2 real upper" {
+    // 3×3 symmetric, upper packed storage:
+    // A_init = [1 2 3]    x = [1]    y = [1]
+    //          [2 5 6]        [2]        [0]
+    //          [3 6 9]        [3]        [1]
+    //
+    // x*y^T = [[1,0,1],[2,0,2],[3,0,3]]
+    // y*x^T = [[1,2,3],[0,0,0],[1,2,3]]
+    // x*y^T + y*x^T = [[2,2,4],[2,0,2],[4,2,6]]
+    // A_new upper: [1+2, 2+2, 5+0, 3+4, 6+2, 9+6] = [3, 4, 5, 7, 8, 15]
+    const MK = enum { m, k };
+    const K = enum { k };
+    const M = enum { m };
+    const T = f64;
+
+    var ap = [_]T{ 1, 2, 5, 3, 6, 9 };
+
+    const x_buf = [_]T{ 1, 2, 3 };
+    const x = NamedArrayConst(K, T){
+        .idx = NamedIndex(K).initContiguous(.{ .k = 3 }),
+        .buf = &x_buf,
+    };
+
+    const y_buf = [_]T{ 1, 0, 1 };
+    const y = NamedArrayConst(M, T){
+        .idx = NamedIndex(M).initContiguous(.{ .m = 3 }),
+        .buf = &y_buf,
+    };
+
+    blas.spr2(T, MK, K, M, .k, &ap, x, y, .{});
+
+    const expected = [_]T{ 3, 4, 5, 7, 8, 15 };
+    for (0..6) |i| {
+        try std.testing.expectApproxEqAbs(expected[i], ap[i], math.floatEpsAt(T, expected[i]));
+    }
+}
+
+test "spr2 real lower" {
+    // Same matrix, lower packed storage:
+    // Lower packed (col-major): col0=[1,2,3], col1=[5,6], col2=[9]
+    // x*y^T + y*x^T = [[2,2,4],[2,0,2],[4,2,6]]
+    // A_new lower: [1+2, 2+2, 3+4, 5+0, 6+2, 9+6] = [3, 4, 7, 5, 8, 15]
+    const MK = enum { m, k };
+    const K = enum { k };
+    const M = enum { m };
+    const T = f64;
+
+    var ap = [_]T{ 1, 2, 3, 5, 6, 9 };
+
+    const x_buf = [_]T{ 1, 2, 3 };
+    const x = NamedArrayConst(K, T){
+        .idx = NamedIndex(K).initContiguous(.{ .k = 3 }),
+        .buf = &x_buf,
+    };
+
+    const y_buf = [_]T{ 1, 0, 1 };
+    const y = NamedArrayConst(M, T){
+        .idx = NamedIndex(M).initContiguous(.{ .m = 3 }),
+        .buf = &y_buf,
+    };
+
+    // triangle = .m (first axis) → Lower
+    blas.spr2(T, MK, K, M, .m, &ap, x, y, .{});
+
+    const expected = [_]T{ 3, 4, 7, 5, 8, 15 };
+    for (0..6) |i| {
+        try std.testing.expectApproxEqAbs(expected[i], ap[i], math.floatEpsAt(T, expected[i]));
+    }
+}
+
+test "spr2 nontrivial alpha and strides" {
+    // Upper packed, alpha=2, x stride=2, y stride=2
+    // x = [1,2,3], y = [1,0,1]
+    // 2*(x*y^T + y*x^T) = 2*[[2,2,4],[2,0,2],[4,2,6]] = [[4,4,8],[4,0,4],[8,4,12]]
+    // Upper packed: [1+4, 2+4, 5+0, 3+8, 6+4, 9+12] = [5, 6, 5, 11, 10, 21]
+    const MK = enum { m, k };
+    const K = enum { k };
+    const M = enum { m };
+    const T = f64;
+
+    var ap = [_]T{ 1, 2, 5, 3, 6, 9 };
+
+    const x_buf = [_]T{ 1, 0, 2, 0, 3 };
+    const x = NamedArrayConst(K, T){
+        .idx = .{ .shape = .{ .k = 3 }, .strides = .{ .k = 2 } },
+        .buf = &x_buf,
+    };
+
+    const y_buf = [_]T{ 1, 0, 0, 0, 1 };
+    const y = NamedArrayConst(M, T){
+        .idx = .{ .shape = .{ .m = 3 }, .strides = .{ .m = 2 } },
+        .buf = &y_buf,
+    };
+
+    blas.spr2(T, MK, K, M, .k, &ap, x, y, .{ .alpha = 2.0 });
+
+    const expected = [_]T{ 5, 6, 5, 11, 10, 21 };
+    for (0..6) |i| {
+        try std.testing.expectApproxEqAbs(expected[i], ap[i], math.floatEpsAt(T, expected[i]));
+    }
+}
+
+test "hpr2 complex upper" {
+    // 2×2 Hermitian, upper packed storage:
+    // A_init upper packed: [1+0i, 2+i, 3+0i]
+    // A_init = [[1+0i, 2+i], [2-i, 3+0i]]
+    //
+    // x = [1+i, 2], y = [i, 1-i], alpha = 1+0i (default)
+    //
+    // x*y^H:
+    //   (1+i)*conj(i) = (1+i)*(-i) = -i-i^2 = 1-i
+    //   (1+i)*conj(1-i) = (1+i)*(1+i) = 1+2i-1 = 2i
+    //   2*conj(i) = -2i
+    //   2*conj(1-i) = 2*(1+i) = 2+2i
+    // x*y^H = [[1-i, 2i], [-2i, 2+2i]]
+    //
+    // y*x^H:
+    //   i*conj(1+i) = i*(1-i) = i+1 = 1+i
+    //   i*conj(2) = 2i
+    //   (1-i)*conj(1+i) = (1-i)*(1-i) = 1-2i-1 = -2i
+    //   (1-i)*conj(2) = 2-2i
+    // y*x^H = [[1+i, 2i], [-2i, 2-2i]]
+    //
+    // x*y^H + y*x^H = [[2+0i, 4i], [-4i, 4+0i]]
+    //
+    // A_new upper packed: [1+2, 2+i+4i, 3+4] = [3+0i, 2+5i, 7+0i]
+    const MK = enum { m, k };
+    const M = enum { m };
+    const K = enum { k };
+    const T = Complex(f64);
+
+    var ap = [_]T{
+        .{ .re = 1, .im = 0 },
+        .{ .re = 2, .im = 1 },
+        .{ .re = 3, .im = 0 },
+    };
+
+    const x_buf = [_]T{
+        .{ .re = 1, .im = 1 },
+        .{ .re = 2, .im = 0 },
+    };
+    const x = NamedArrayConst(M, T){
+        .idx = NamedIndex(M).initContiguous(.{ .m = 2 }),
+        .buf = &x_buf,
+    };
+
+    const y_buf = [_]T{
+        .{ .re = 0, .im = 1 },
+        .{ .re = 1, .im = -1 },
+    };
+    const y = NamedArrayConst(K, T){
+        .idx = NamedIndex(K).initContiguous(.{ .k = 2 }),
+        .buf = &y_buf,
+    };
+
+    blas.hpr2(T, MK, M, K, .k, &ap, x, y, .{});
+
+    const eps = 1e-10;
+    try std.testing.expectApproxEqAbs(@as(f64, 3), ap[0].re, eps);
+    try std.testing.expectApproxEqAbs(@as(f64, 0), ap[0].im, eps);
+    try std.testing.expectApproxEqAbs(@as(f64, 2), ap[1].re, eps);
+    try std.testing.expectApproxEqAbs(@as(f64, 5), ap[1].im, eps);
+    try std.testing.expectApproxEqAbs(@as(f64, 7), ap[2].re, eps);
+    try std.testing.expectApproxEqAbs(@as(f64, 0), ap[2].im, eps);
+}
+
+test "hpr2 complex lower" {
+    // Same 2×2 Hermitian, lower packed storage:
+    // A_init lower packed: [1+0i, 2-i, 3+0i]
+    //
+    // x*y^H + y*x^H = [[2+0i, 4i], [-4i, 4+0i]]  (same as above)
+    //
+    // A_new lower packed: [1+2, 2-i-4i, 3+4] = [3+0i, 2-5i, 7+0i]
+    const MK = enum { m, k };
+    const M = enum { m };
+    const K = enum { k };
+    const T = Complex(f64);
+
+    var ap = [_]T{
+        .{ .re = 1, .im = 0 },
+        .{ .re = 2, .im = -1 },
+        .{ .re = 3, .im = 0 },
+    };
+
+    const x_buf = [_]T{
+        .{ .re = 1, .im = 1 },
+        .{ .re = 2, .im = 0 },
+    };
+    const x = NamedArrayConst(M, T){
+        .idx = NamedIndex(M).initContiguous(.{ .m = 2 }),
+        .buf = &x_buf,
+    };
+
+    const y_buf = [_]T{
+        .{ .re = 0, .im = 1 },
+        .{ .re = 1, .im = -1 },
+    };
+    const y = NamedArrayConst(K, T){
+        .idx = NamedIndex(K).initContiguous(.{ .k = 2 }),
+        .buf = &y_buf,
+    };
+
+    // triangle = .m (first axis) → Lower
+    blas.hpr2(T, MK, M, K, .m, &ap, x, y, .{});
+
+    const eps = 1e-10;
+    try std.testing.expectApproxEqAbs(@as(f64, 3), ap[0].re, eps);
+    try std.testing.expectApproxEqAbs(@as(f64, 0), ap[0].im, eps);
+    try std.testing.expectApproxEqAbs(@as(f64, 2), ap[1].re, eps);
+    try std.testing.expectApproxEqAbs(@as(f64, -5), ap[1].im, eps);
+    try std.testing.expectApproxEqAbs(@as(f64, 7), ap[2].re, eps);
+    try std.testing.expectApproxEqAbs(@as(f64, 0), ap[2].im, eps);
+}
+
+test "hpr2 nontrivial alpha and strides" {
+    // 2×2 Hermitian upper, alpha = 2+i, x with stride 2
+    // A_init upper packed: [5+0i, 1+i, 3+0i]
+    //
+    // x physical = [i, 0, 1+i], stride=2 → logical x = [i, 1+i]
+    // y = [1, i]
+    //
+    // alpha * x * y^H:
+    //   x*y^H:
+    //     i*conj(1) = i,  i*conj(i) = i*(-i) = 1
+    //     (1+i)*conj(1) = 1+i,  (1+i)*conj(i) = (1+i)*(-i) = -i+1 = 1-i
+    //   x*y^H = [[i, 1], [1+i, 1-i]]
+    //   alpha*x*y^H = (2+i)*[[i, 1], [1+i, 1-i]]
+    //     [0,0] = (2+i)*i = -1+2i
+    //     [0,1] = (2+i)*1 = 2+i
+    //     [1,0] = (2+i)*(1+i) = 2+2i+i-1 = 1+3i
+    //     [1,1] = (2+i)*(1-i) = 2-2i+i+1 = 3-i
+    //
+    // conj(alpha) * y * x^H:
+    //   y*x^H:
+    //     1*conj(i) = -i,  1*conj(1+i) = 1-i
+    //     i*conj(i) = 1,  i*conj(1+i) = i-i^2 = 1+i
+    //   y*x^H = [[-i, 1-i], [1, 1+i]]
+    //   conj(alpha)*y*x^H = (2-i)*[[-i, 1-i], [1, 1+i]]
+    //     [0,0] = (2-i)*(-i) = -2i+i^2 = -1-2i
+    //     [0,1] = (2-i)*(1-i) = 2-2i-i+i^2 = 1-3i
+    //     [1,0] = (2-i)*1 = 2-i
+    //     [1,1] = (2-i)*(1+i) = 2+2i-i+1 = 3+i
+    //
+    // sum = alpha*x*y^H + conj(alpha)*y*x^H:
+    //   [0,0] = -1+2i + -1-2i = -2+0i
+    //   [0,1] = 2+i + 1-3i = 3-2i
+    //   [1,0] = 1+3i + 2-i = 3+2i
+    //   [1,1] = 3-i + 3+i = 6+0i
+    //
+    // A_new upper packed: [5-2, 1+i+3-2i, 3+6] = [3+0i, 4-i, 9+0i]
+    const MK = enum { m, k };
+    const M = enum { m };
+    const K = enum { k };
+    const T = Complex(f32);
+
+    var ap = [_]T{
+        .{ .re = 5, .im = 0 },
+        .{ .re = 1, .im = 1 },
+        .{ .re = 3, .im = 0 },
+    };
+
+    const x_buf = [_]T{
+        .{ .re = 0, .im = 1 },
+        .{ .re = 0, .im = 0 },
+        .{ .re = 1, .im = 1 },
+    };
+    const x = NamedArrayConst(M, T){
+        .idx = .{ .shape = .{ .m = 2 }, .strides = .{ .m = 2 } },
+        .buf = &x_buf,
+    };
+
+    const y_buf = [_]T{
+        .{ .re = 1, .im = 0 },
+        .{ .re = 0, .im = 1 },
+    };
+    const y = NamedArrayConst(K, T){
+        .idx = NamedIndex(K).initContiguous(.{ .k = 2 }),
+        .buf = &y_buf,
+    };
+
+    blas.hpr2(T, MK, M, K, .k, &ap, x, y, .{ .alpha = .{ .re = 2, .im = 1 } });
+
+    const eps: f32 = 1e-4;
+    try std.testing.expectApproxEqAbs(@as(f32, 3), ap[0].re, eps);
+    try std.testing.expectApproxEqAbs(@as(f32, 0), ap[0].im, eps);
+    try std.testing.expectApproxEqAbs(@as(f32, 4), ap[1].re, eps);
+    try std.testing.expectApproxEqAbs(@as(f32, -1), ap[1].im, eps);
+    try std.testing.expectApproxEqAbs(@as(f32, 9), ap[2].re, eps);
+    try std.testing.expectApproxEqAbs(@as(f32, 0), ap[2].im, eps);
 }
 
 // TODO: Figure this out. See blas.rot_complex above.

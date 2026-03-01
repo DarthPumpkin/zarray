@@ -1862,6 +1862,7 @@ pub const blas = struct {
     /// `A` has one axis matching an axis of `C` (the N dimension) and one that does not (the K dimension).
     /// `C` must be square (asserted at runtime).
     /// Only the triangle of `C` where `triangle >= the other axis` is read and written.
+    /// `A` and `C` must have the same physical layout (both row-major or both column-major).
     /// Both `alpha` and `beta` are real scalars, optional and default to 1.
     pub fn herk(
         comptime RealScalar: type,
@@ -1887,10 +1888,10 @@ pub const blas = struct {
 
         const A_blas = Blas2d(Scalar).fromNamedArray(AxisA, A, comptime nameIdx(AxisA, axes.n_name));
 
-        const trans: acc.CBLAS_TRANSPOSE = if (A_blas.layout == C_blas.layout)
-            @intCast(acc.CblasNoTrans)
-        else
-            @intCast(acc.CblasTrans);
+        if (A_blas.layout != C_blas.layout)
+            @panic("herk: A and C must have the same physical layout");
+
+        const trans: acc.CBLAS_TRANSPOSE = @intCast(acc.CblasNoTrans);
 
         f(
             C_blas.layout,
@@ -1976,7 +1977,7 @@ pub const blas = struct {
     /// Computes `C := alpha * A * Bᴴ + conj(alpha) * B * Aᴴ + beta * C` (Hermitian rank-2k update).
     /// Axis matching follows the `gemm` convention. `C` must be square (asserted at runtime).
     /// Only the triangle of `C` where `triangle >= the other axis` is read and written.
-    /// `A` and `B` must have the same physical layout.
+    /// `A`, `B` and `C` must all have the same physical layout (both row-major or both column-major).
     /// `alpha` is complex, `beta` is real; both are optional and default to 1.
     pub fn her2k(
         comptime RealScalar: type,
@@ -2005,12 +2006,12 @@ pub const blas = struct {
         const A_blas = Blas2d(Scalar).fromNamedArray(AxisA, A, comptime nameIdx(AxisA, axes.i_name));
         const B_blas = Blas2d(Scalar).fromNamedArray(AxisB, B, comptime nameIdx(AxisB, axes.j_name));
 
-        assert(A_blas.layout == B_blas.layout);
+        assert(A_blas.layout == B_blas.layout); // A and B must have the same layout
 
-        const trans: acc.CBLAS_TRANSPOSE = if (A_blas.layout == C_blas.layout)
-            @intCast(acc.CblasNoTrans)
-        else
-            @intCast(acc.CblasTrans);
+        if (A_blas.layout != C_blas.layout)
+            @panic("her2k: A, B and C must have the same physical layout");
+
+        const trans: acc.CBLAS_TRANSPOSE = @intCast(acc.CblasNoTrans);
 
         f(
             C_blas.layout,
@@ -8662,4 +8663,235 @@ test "trsm with alpha" {
 
     try std.testing.expectApproxEqAbs(@as(T, 6), b_buf[0], 1e-10);
     try std.testing.expectApproxEqAbs(@as(T, 6), b_buf[1], 1e-10);
+}
+
+test "gemm mixed layouts: A col, B/C row" {
+    const MK = enum { m, k };
+    const KN = enum { k, n };
+    const MN = enum { m, n };
+    const T = f64;
+
+    // A = [[1, 2], [3, 4]] col-major
+    const a_buf = [_]T{ 1, 3, 2, 4 };
+    const A = NamedArrayConst(MK, T){
+        .idx = .{ .shape = .{ .m = 2, .k = 2 }, .strides = .{ .m = 1, .k = 2 } },
+        .buf = &a_buf,
+    };
+
+    // B = [[5, 6], [7, 8]] row-major
+    const b_buf = [_]T{ 5, 6, 7, 8 };
+    const B = NamedArrayConst(KN, T){
+        .idx = NamedIndex(KN).initContiguous(.{ .k = 2, .n = 2 }),
+        .buf = &b_buf,
+    };
+
+    var c_buf = [_]T{ 0, 0, 0, 0 };
+    const C = NamedArray(MN, T){
+        .idx = NamedIndex(MN).initContiguous(.{ .m = 2, .n = 2 }),
+        .buf = &c_buf,
+    };
+
+    // C = A*B = [[19, 22], [43, 50]]
+    blas.gemm(T, MK, KN, MN, A, B, C, .{ .alpha = 1.0, .beta = 0.0 });
+
+    const expected = [_]T{ 19, 22, 43, 50 };
+    for (0..4) |i| {
+        try std.testing.expectApproxEqAbs(expected[i], c_buf[i], math.floatEpsAt(T, expected[i]));
+    }
+}
+
+test "gemm mixed layouts: B col, A/C row" {
+    const MK = enum { m, k };
+    const KN = enum { k, n };
+    const MN = enum { m, n };
+    const T = f64;
+
+    // A = [[1, 2], [3, 4]] row-major
+    const a_buf = [_]T{ 1, 2, 3, 4 };
+    const A = NamedArrayConst(MK, T){
+        .idx = NamedIndex(MK).initContiguous(.{ .m = 2, .k = 2 }),
+        .buf = &a_buf,
+    };
+
+    // B = [[5, 6], [7, 8]] col-major
+    const b_buf = [_]T{ 5, 7, 6, 8 };
+    const B = NamedArrayConst(KN, T){
+        .idx = .{ .shape = .{ .k = 2, .n = 2 }, .strides = .{ .k = 1, .n = 2 } },
+        .buf = &b_buf,
+    };
+
+    var c_buf = [_]T{ 0, 0, 0, 0 };
+    const C = NamedArray(MN, T){
+        .idx = NamedIndex(MN).initContiguous(.{ .m = 2, .n = 2 }),
+        .buf = &c_buf,
+    };
+
+    // C = A*B = [[19, 22], [43, 50]]
+    blas.gemm(T, MK, KN, MN, A, B, C, .{ .alpha = 1.0, .beta = 0.0 });
+
+    const expected = [_]T{ 19, 22, 43, 50 };
+    for (0..4) |i| {
+        try std.testing.expectApproxEqAbs(expected[i], c_buf[i], math.floatEpsAt(T, expected[i]));
+    }
+}
+
+test "gemm mixed layouts: A/B col, C row" {
+    const MK = enum { m, k };
+    const KN = enum { k, n };
+    const MN = enum { m, n };
+    const T = f64;
+
+    // A = [[1, 2], [3, 4]] col-major
+    const a_buf = [_]T{ 1, 3, 2, 4 };
+    const A = NamedArrayConst(MK, T){
+        .idx = .{ .shape = .{ .m = 2, .k = 2 }, .strides = .{ .m = 1, .k = 2 } },
+        .buf = &a_buf,
+    };
+
+    // B = [[5, 6], [7, 8]] col-major
+    const b_buf = [_]T{ 5, 7, 6, 8 };
+    const B = NamedArrayConst(KN, T){
+        .idx = .{ .shape = .{ .k = 2, .n = 2 }, .strides = .{ .k = 1, .n = 2 } },
+        .buf = &b_buf,
+    };
+
+    // C row-major
+    var c_buf = [_]T{ 0, 0, 0, 0 };
+    const C = NamedArray(MN, T){
+        .idx = NamedIndex(MN).initContiguous(.{ .m = 2, .n = 2 }),
+        .buf = &c_buf,
+    };
+
+    // C = A*B = [[19, 22], [43, 50]]
+    blas.gemm(T, MK, KN, MN, A, B, C, .{ .alpha = 1.0, .beta = 0.0 });
+
+    const expected = [_]T{ 19, 22, 43, 50 };
+    for (0..4) |i| {
+        try std.testing.expectApproxEqAbs(expected[i], c_buf[i], math.floatEpsAt(T, expected[i]));
+    }
+}
+
+test "syrk mixed layouts: A col, C row" {
+    const NK = enum { n, k };
+    const NN = enum { n, n2 };
+    const T = f64;
+
+    // A (2x3) = [[1, 2, 3], [4, 5, 6]] col-major
+    // Col-major: col0=[1,4], col1=[2,5], col2=[3,6]
+    const a_buf = [_]T{ 1, 4, 2, 5, 3, 6 };
+    const A = NamedArrayConst(NK, T){
+        .idx = .{ .shape = .{ .n = 2, .k = 3 }, .strides = .{ .n = 1, .k = 2 } },
+        .buf = &a_buf,
+    };
+
+    // C (2x2) row-major
+    var c_buf = [_]T{ 0, 0, 0, 0 };
+    const C = NamedArray(NN, T){
+        .idx = NamedIndex(NN).initContiguous(.{ .n = 2, .n2 = 2 }),
+        .buf = &c_buf,
+    };
+
+    // C = A * Aᵀ (upper):
+    // C[0,0] = 1+4+9 = 14, C[0,1] = 4+10+18 = 32, C[1,1] = 16+25+36 = 77
+    blas.syrk(T, NK, NN, A, .{ .triangle = .n2, .data = C }, .{ .alpha = 1.0, .beta = 0.0 });
+
+    try std.testing.expectApproxEqAbs(@as(T, 14), c_buf[0], 1e-10);
+    try std.testing.expectApproxEqAbs(@as(T, 32), c_buf[1], 1e-10);
+    try std.testing.expectApproxEqAbs(@as(T, 77), c_buf[3], 1e-10);
+}
+
+test "syr2k mixed layouts: A/B col, C row" {
+    const MK = enum { m, k };
+    const NK = enum { n, k };
+    const MN = enum { m, n };
+    const T = f64;
+
+    // A (2x2) = [[1, 2], [3, 4]] col-major
+    const a_buf = [_]T{ 1, 3, 2, 4 };
+    const A = NamedArrayConst(MK, T){
+        .idx = .{ .shape = .{ .m = 2, .k = 2 }, .strides = .{ .m = 1, .k = 2 } },
+        .buf = &a_buf,
+    };
+
+    // B (2x2) = [[5, 6], [7, 8]] col-major
+    const b_buf = [_]T{ 5, 7, 6, 8 };
+    const B = NamedArrayConst(NK, T){
+        .idx = .{ .shape = .{ .n = 2, .k = 2 }, .strides = .{ .n = 1, .k = 2 } },
+        .buf = &b_buf,
+    };
+
+    // C (2x2) row-major
+    var c_buf = [_]T{ 0, 0, 0, 0 };
+    const C = NamedArray(MN, T){
+        .idx = NamedIndex(MN).initContiguous(.{ .m = 2, .n = 2 }),
+        .buf = &c_buf,
+    };
+
+    // A*Bᵀ = [[17, 23], [39, 53]], B*Aᵀ = [[17, 39], [23, 53]]
+    // C = A*Bᵀ + B*Aᵀ = [[34, 62], [62, 106]] (upper: .n)
+    blas.syr2k(T, MK, NK, MN, A, B, .{ .triangle = .n, .data = C }, .{ .alpha = 1.0, .beta = 0.0 });
+
+    try std.testing.expectApproxEqAbs(@as(T, 34), c_buf[0], 1e-10);
+    try std.testing.expectApproxEqAbs(@as(T, 62), c_buf[1], 1e-10);
+    try std.testing.expectApproxEqAbs(@as(T, 106), c_buf[3], 1e-10);
+}
+
+test "trmm mixed layouts: A col, B row" {
+    const MK = enum { m, k };
+    const MN = enum { m, n };
+    const T = f64;
+
+    // A (2x2) upper triangular: [[1, 2], [0, 3]], triangle = .k (second axis)
+    // Col-major: col0=[1, 0], col1=[2, 3]
+    const a_buf = [_]T{ 1, 0, 2, 3 };
+    const A = NamedArrayConst(MK, T){
+        .idx = .{ .shape = .{ .m = 2, .k = 2 }, .strides = .{ .m = 1, .k = 2 } },
+        .buf = &a_buf,
+    };
+
+    // B (2x2) = [[5, 6], [7, 8]] row-major
+    var b_buf = [_]T{ 5, 6, 7, 8 };
+    const B = NamedArray(MN, T){
+        .idx = NamedIndex(MN).initContiguous(.{ .m = 2, .n = 2 }),
+        .buf = &b_buf,
+    };
+
+    // B := A * B:
+    // row0: 1*5+2*7=19, 1*6+2*8=22
+    // row1: 0*5+3*7=21, 0*6+3*8=24
+    blas.trmm(T, MK, MN, .{ .triangle = .k, .data = A }, .non_unit, B, .{ .alpha = 1.0 });
+
+    const expected = [_]T{ 19, 22, 21, 24 };
+    for (0..4) |i| {
+        try std.testing.expectApproxEqAbs(expected[i], b_buf[i], math.floatEpsAt(T, expected[i]));
+    }
+}
+
+test "trsm mixed layouts: A col, B row" {
+    const MK = enum { m, k };
+    const MN = enum { m, n };
+    const T = f64;
+
+    // A (2x2) upper triangular: [[2, 1], [0, 3]], triangle = .k (second axis)
+    // Col-major: col0=[2, 0], col1=[1, 3]
+    const a_buf = [_]T{ 2, 0, 1, 3 };
+    const A = NamedArrayConst(MK, T){
+        .idx = .{ .shape = .{ .m = 2, .k = 2 }, .strides = .{ .m = 1, .k = 2 } },
+        .buf = &a_buf,
+    };
+
+    // B (2x1) = [[5], [9]] row-major
+    var b_buf = [_]T{ 5, 9 };
+    const B = NamedArray(MN, T){
+        .idx = NamedIndex(MN).initContiguous(.{ .m = 2, .n = 1 }),
+        .buf = &b_buf,
+    };
+
+    // Solve A * X = B:
+    // [[2, 1], [0, 3]] * X = [[5], [9]]
+    // x1 = 9/3 = 3, x0 = (5 - 1*3)/2 = 1
+    blas.trsm(T, MK, MN, .{ .triangle = .k, .data = A }, .non_unit, B, .{ .alpha = 1.0 });
+
+    try std.testing.expectApproxEqAbs(@as(T, 1), b_buf[0], 1e-10);
+    try std.testing.expectApproxEqAbs(@as(T, 3), b_buf[1], 1e-10);
 }

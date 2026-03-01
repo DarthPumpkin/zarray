@@ -1617,6 +1617,584 @@ pub const blas = struct {
         );
     }
 
+    // ─────────────────────────────────────────────────────────────
+    //  Level 3 BLAS — matrix-matrix operations
+    // ─────────────────────────────────────────────────────────────
+
+    /// `sgemm`, `dgemm`, `cgemm` and `zgemm` in BLAS.
+    /// Computes `C := alpha * A * B + beta * C` (general matrix-matrix multiply).
+    /// The contraction axis is the axis name shared between `A` and `B` but absent from `C`.
+    /// `C`'s two axes must match the remaining (non-contraction) axes of `A` and `B`.
+    /// The scalars `alpha` and `beta` are optional and default to 1.
+    pub fn gemm(
+        comptime Scalar: type,
+        comptime AxisA: type,
+        comptime AxisB: type,
+        comptime AxisC: type,
+        A: NamedArrayConst(AxisA, Scalar),
+        B: NamedArrayConst(AxisB, Scalar),
+        C: NamedArray(AxisC, Scalar),
+        scalars: struct { alpha: Scalar = one(Scalar), beta: Scalar = one(Scalar) },
+    ) void {
+        const axes = comptime gemmAxisNames(AxisA, AxisB, AxisC);
+        const f = switch (Scalar) {
+            f32 => acc.cblas_sgemm,
+            f64 => acc.cblas_dgemm,
+            Complex(f32) => acc.cblas_cgemm,
+            Complex(f64) => acc.cblas_zgemm,
+            else => @compileError("gemm is incompatible with given Scalar type."),
+        };
+
+        _ = named_index.resolveDimensions(.{ A.idx.shape, B.idx.shape, C.idx.shape }) catch
+            @panic("gemm: dimension mismatch");
+
+        // C: i_name → rows (M), j_name → cols (N)
+        const C_blas = Blas2dMut(Scalar).fromNamedArray(AxisC, C, comptime nameIdx(AxisC, axes.i_name));
+        // A: i_name → rows (M), k_name → cols (K)
+        const A_blas = Blas2d(Scalar).fromNamedArray(AxisA, A, comptime nameIdx(AxisA, axes.i_name));
+        // B: k_name → rows (K), j_name → cols (N)
+        const B_blas = Blas2d(Scalar).fromNamedArray(AxisB, B, comptime nameIdx(AxisB, axes.k_name));
+
+        // Determine transpose flags based on layout comparison with C
+        const transA: acc.CBLAS_TRANSPOSE = if (A_blas.layout == C_blas.layout)
+            @intCast(acc.CblasNoTrans)
+        else
+            @intCast(acc.CblasTrans);
+        const transB: acc.CBLAS_TRANSPOSE = if (B_blas.layout == C_blas.layout)
+            @intCast(acc.CblasNoTrans)
+        else
+            @intCast(acc.CblasTrans);
+
+        const M = C_blas.rows;
+        const N = C_blas.cols;
+        const K = A_blas.cols; // K dimension
+
+        const alpha_blas = if (comptime isComplex(Scalar)) &scalars.alpha else scalars.alpha;
+        const beta_blas = if (comptime isComplex(Scalar)) &scalars.beta else scalars.beta;
+
+        f(
+            C_blas.layout,
+            transA,
+            transB,
+            M,
+            N,
+            K,
+            alpha_blas,
+            A_blas.ptr,
+            A_blas.leading,
+            B_blas.ptr,
+            B_blas.leading,
+            beta_blas,
+            C_blas.ptr,
+            C_blas.leading,
+        );
+    }
+
+    /// `ssymm`, `dsymm`, `csymm` and `zsymm` in BLAS.
+    /// Computes `C := alpha * A * B + beta * C` where `A` is a symmetric matrix.
+    /// Axis matching follows the `gemm` convention (one shared contraction axis between `A` and `B`,
+    /// remaining axes match `C`). `A` must be square (asserted at runtime).
+    /// Only the triangle of `A` where `triangle >= the other axis` is read.
+    /// `B` and `C` must have the same physical layout.
+    /// The scalars `alpha` and `beta` are optional and default to 1.
+    pub fn symm(
+        comptime Scalar: type,
+        comptime AxisA: type,
+        comptime AxisB: type,
+        comptime AxisC: type,
+        triangle: AxisA,
+        A: NamedArrayConst(AxisA, Scalar),
+        B: NamedArrayConst(AxisB, Scalar),
+        C: NamedArray(AxisC, Scalar),
+        scalars: struct { alpha: Scalar = one(Scalar), beta: Scalar = one(Scalar) },
+    ) void {
+        const axes = comptime gemmAxisNames(AxisA, AxisB, AxisC);
+        const f = switch (Scalar) {
+            f32 => acc.cblas_ssymm,
+            f64 => acc.cblas_dsymm,
+            Complex(f32) => acc.cblas_csymm,
+            Complex(f64) => acc.cblas_zsymm,
+            else => @compileError("symm is incompatible with given Scalar type."),
+        };
+
+        _ = named_index.resolveDimensions(.{ A.idx.shape, B.idx.shape, C.idx.shape }) catch
+            @panic("symm: dimension mismatch");
+
+        // A: preserve axis order for uploBlas correctness
+        const A_blas = Blas2d(Scalar).fromNamedArray(AxisA, A, 0);
+        assert(A_blas.rows == A_blas.cols); // square
+
+        // B: contraction axis → rows, j-axis → cols
+        const B_blas = Blas2d(Scalar).fromNamedArray(AxisB, B, comptime nameIdx(AxisB, axes.k_name));
+        // C: i-axis → rows (M), j-axis → cols (N)
+        const C_blas = Blas2dMut(Scalar).fromNamedArray(AxisC, C, comptime nameIdx(AxisC, axes.i_name));
+
+        assert(B_blas.layout == C_blas.layout); // B and C must have same layout
+
+        const alpha_blas = if (comptime isComplex(Scalar)) &scalars.alpha else scalars.alpha;
+        const beta_blas = if (comptime isComplex(Scalar)) &scalars.beta else scalars.beta;
+
+        f(
+            C_blas.layout,
+            @intCast(acc.CblasLeft), // always left via axis renaming
+            uploBlas(AxisA, triangle),
+            C_blas.rows, // M
+            C_blas.cols, // N
+            alpha_blas,
+            A_blas.ptr,
+            A_blas.leading,
+            B_blas.ptr,
+            B_blas.leading,
+            beta_blas,
+            C_blas.ptr,
+            C_blas.leading,
+        );
+    }
+
+    /// `chemm` and `zhemm` in BLAS.
+    /// Computes `C := alpha * A * B + beta * C` where `A` is a Hermitian matrix.
+    /// Axis matching follows the `gemm` convention. `A` must be square (asserted at runtime).
+    /// Only the triangle of `A` where `triangle >= the other axis` is read.
+    /// `B` and `C` must have the same physical layout.
+    /// The scalars `alpha` and `beta` are complex, optional and default to 1.
+    pub fn hemm(
+        comptime Scalar: type,
+        comptime AxisA: type,
+        comptime AxisB: type,
+        comptime AxisC: type,
+        triangle: AxisA,
+        A: NamedArrayConst(AxisA, Scalar),
+        B: NamedArrayConst(AxisB, Scalar),
+        C: NamedArray(AxisC, Scalar),
+        scalars: struct { alpha: Scalar = one(Scalar), beta: Scalar = one(Scalar) },
+    ) void {
+        const axes = comptime gemmAxisNames(AxisA, AxisB, AxisC);
+        const f = switch (Scalar) {
+            Complex(f32) => acc.cblas_chemm,
+            Complex(f64) => acc.cblas_zhemm,
+            else => @compileError("hemm requires Complex(f32) or Complex(f64)."),
+        };
+
+        _ = named_index.resolveDimensions(.{ A.idx.shape, B.idx.shape, C.idx.shape }) catch
+            @panic("hemm: dimension mismatch");
+
+        const A_blas = Blas2d(Scalar).fromNamedArray(AxisA, A, 0);
+        assert(A_blas.rows == A_blas.cols);
+
+        const B_blas = Blas2d(Scalar).fromNamedArray(AxisB, B, comptime nameIdx(AxisB, axes.k_name));
+        const C_blas = Blas2dMut(Scalar).fromNamedArray(AxisC, C, comptime nameIdx(AxisC, axes.i_name));
+
+        assert(B_blas.layout == C_blas.layout);
+
+        f(
+            C_blas.layout,
+            @intCast(acc.CblasLeft),
+            uploBlas(AxisA, triangle),
+            C_blas.rows,
+            C_blas.cols,
+            &scalars.alpha,
+            A_blas.ptr,
+            A_blas.leading,
+            B_blas.ptr,
+            B_blas.leading,
+            &scalars.beta,
+            C_blas.ptr,
+            C_blas.leading,
+        );
+    }
+
+    /// `ssyrk`, `dsyrk`, `csyrk` and `zsyrk` in BLAS.
+    /// Computes `C := alpha * A * Aᵀ + beta * C` (symmetric rank-k update).
+    /// `A` has one axis matching an axis of `C` (the N dimension) and one that does not (the K dimension).
+    /// `C` must be square (asserted at runtime).
+    /// Only the triangle of `C` where `triangle >= the other axis` is read and written.
+    /// The scalars `alpha` and `beta` are optional and default to 1.
+    pub fn syrk(
+        comptime Scalar: type,
+        comptime AxisA: type,
+        comptime AxisC: type,
+        triangle: AxisC,
+        A: NamedArrayConst(AxisA, Scalar),
+        C: NamedArray(AxisC, Scalar),
+        scalars: struct { alpha: Scalar = one(Scalar), beta: Scalar = one(Scalar) },
+    ) void {
+        const axes = comptime rankKAxisNames(AxisA, AxisC);
+        const f = switch (Scalar) {
+            f32 => acc.cblas_ssyrk,
+            f64 => acc.cblas_dsyrk,
+            Complex(f32) => acc.cblas_csyrk,
+            Complex(f64) => acc.cblas_zsyrk,
+            else => @compileError("syrk is incompatible with given Scalar type."),
+        };
+
+        _ = named_index.resolveDimensions(.{ A.idx.shape, C.idx.shape }) catch
+            @panic("syrk: dimension mismatch");
+
+        // C: preserve axis order for uploBlas correctness
+        const C_blas = Blas2dMut(Scalar).fromNamedArray(AxisC, C, 0);
+        assert(C_blas.rows == C_blas.cols); // square
+
+        // A: N-axis → rows, K-axis → cols
+        const A_blas = Blas2d(Scalar).fromNamedArray(AxisA, A, comptime nameIdx(AxisA, axes.n_name));
+
+        const trans: acc.CBLAS_TRANSPOSE = if (A_blas.layout == C_blas.layout)
+            @intCast(acc.CblasNoTrans)
+        else
+            @intCast(acc.CblasTrans);
+
+        const alpha_blas = if (comptime isComplex(Scalar)) &scalars.alpha else scalars.alpha;
+        const beta_blas = if (comptime isComplex(Scalar)) &scalars.beta else scalars.beta;
+
+        f(
+            C_blas.layout,
+            uploBlas(AxisC, triangle),
+            trans,
+            C_blas.rows, // N
+            A_blas.cols, // K
+            alpha_blas,
+            A_blas.ptr,
+            A_blas.leading,
+            beta_blas,
+            C_blas.ptr,
+            C_blas.leading,
+        );
+    }
+
+    /// `cherk` and `zherk` in BLAS.
+    /// Computes `C := alpha * A * Aᴴ + beta * C` (Hermitian rank-k update) for complex scalars.
+    /// `A` has one axis matching an axis of `C` (the N dimension) and one that does not (the K dimension).
+    /// `C` must be square (asserted at runtime).
+    /// Only the triangle of `C` where `triangle >= the other axis` is read and written.
+    /// Both `alpha` and `beta` are real scalars, optional and default to 1.
+    pub fn herk(
+        comptime RealScalar: type,
+        comptime AxisA: type,
+        comptime AxisC: type,
+        triangle: AxisC,
+        A: NamedArrayConst(AxisA, Complex(RealScalar)),
+        C: NamedArray(AxisC, Complex(RealScalar)),
+        scalars: struct { alpha: RealScalar = 1.0, beta: RealScalar = 1.0 },
+    ) void {
+        const Scalar = Complex(RealScalar);
+        const axes = comptime rankKAxisNames(AxisA, AxisC);
+        const f = switch (RealScalar) {
+            f32 => acc.cblas_cherk,
+            f64 => acc.cblas_zherk,
+            else => @compileError("herk requires f32 or f64 as RealScalar."),
+        };
+
+        _ = named_index.resolveDimensions(.{ A.idx.shape, C.idx.shape }) catch
+            @panic("herk: dimension mismatch");
+
+        const C_blas = Blas2dMut(Scalar).fromNamedArray(AxisC, C, 0);
+        assert(C_blas.rows == C_blas.cols);
+
+        const A_blas = Blas2d(Scalar).fromNamedArray(AxisA, A, comptime nameIdx(AxisA, axes.n_name));
+
+        const trans: acc.CBLAS_TRANSPOSE = if (A_blas.layout == C_blas.layout)
+            @intCast(acc.CblasNoTrans)
+        else
+            @intCast(acc.CblasTrans);
+
+        f(
+            C_blas.layout,
+            uploBlas(AxisC, triangle),
+            trans,
+            C_blas.rows, // N
+            A_blas.cols, // K
+            scalars.alpha,
+            A_blas.ptr,
+            A_blas.leading,
+            scalars.beta,
+            C_blas.ptr,
+            C_blas.leading,
+        );
+    }
+
+    /// `ssyr2k`, `dsyr2k`, `csyr2k` and `zsyr2k` in BLAS.
+    /// Computes `C := alpha * A * Bᵀ + alpha * B * Aᵀ + beta * C` (symmetric rank-2k update).
+    /// Axis matching follows the `gemm` convention (one shared contraction axis between `A` and `B`,
+    /// remaining axes match `C`). `C` must be square (asserted at runtime).
+    /// Only the triangle of `C` where `triangle >= the other axis` is read and written.
+    /// `A` and `B` must have the same physical layout.
+    /// The scalars `alpha` and `beta` are optional and default to 1.
+    pub fn syr2k(
+        comptime Scalar: type,
+        comptime AxisA: type,
+        comptime AxisB: type,
+        comptime AxisC: type,
+        triangle: AxisC,
+        A: NamedArrayConst(AxisA, Scalar),
+        B: NamedArrayConst(AxisB, Scalar),
+        C: NamedArray(AxisC, Scalar),
+        scalars: struct { alpha: Scalar = one(Scalar), beta: Scalar = one(Scalar) },
+    ) void {
+        const axes = comptime gemmAxisNames(AxisA, AxisB, AxisC);
+        const f = switch (Scalar) {
+            f32 => acc.cblas_ssyr2k,
+            f64 => acc.cblas_dsyr2k,
+            Complex(f32) => acc.cblas_csyr2k,
+            Complex(f64) => acc.cblas_zsyr2k,
+            else => @compileError("syr2k is incompatible with given Scalar type."),
+        };
+
+        _ = named_index.resolveDimensions(.{ A.idx.shape, B.idx.shape, C.idx.shape }) catch
+            @panic("syr2k: dimension mismatch");
+
+        // C: preserve axis order for uploBlas correctness
+        const C_blas = Blas2dMut(Scalar).fromNamedArray(AxisC, C, 0);
+        assert(C_blas.rows == C_blas.cols);
+
+        // A: axis matching C (i_name) → rows (N), contraction axis → cols (K)
+        const A_blas = Blas2d(Scalar).fromNamedArray(AxisA, A, comptime nameIdx(AxisA, axes.i_name));
+        // B: axis matching C (j_name) → rows (N), contraction axis → cols (K)
+        const B_blas = Blas2d(Scalar).fromNamedArray(AxisB, B, comptime nameIdx(AxisB, axes.j_name));
+
+        assert(A_blas.layout == B_blas.layout); // A and B must have same layout
+
+        const trans: acc.CBLAS_TRANSPOSE = if (A_blas.layout == C_blas.layout)
+            @intCast(acc.CblasNoTrans)
+        else
+            @intCast(acc.CblasTrans);
+
+        const alpha_blas = if (comptime isComplex(Scalar)) &scalars.alpha else scalars.alpha;
+        const beta_blas = if (comptime isComplex(Scalar)) &scalars.beta else scalars.beta;
+
+        f(
+            C_blas.layout,
+            uploBlas(AxisC, triangle),
+            trans,
+            C_blas.rows, // N
+            A_blas.cols, // K
+            alpha_blas,
+            A_blas.ptr,
+            A_blas.leading,
+            B_blas.ptr,
+            B_blas.leading,
+            beta_blas,
+            C_blas.ptr,
+            C_blas.leading,
+        );
+    }
+
+    /// `cher2k` and `zher2k` in BLAS.
+    /// Computes `C := alpha * A * Bᴴ + conj(alpha) * B * Aᴴ + beta * C` (Hermitian rank-2k update).
+    /// Axis matching follows the `gemm` convention. `C` must be square (asserted at runtime).
+    /// Only the triangle of `C` where `triangle >= the other axis` is read and written.
+    /// `A` and `B` must have the same physical layout.
+    /// `alpha` is complex, `beta` is real; both are optional and default to 1.
+    pub fn her2k(
+        comptime RealScalar: type,
+        comptime AxisA: type,
+        comptime AxisB: type,
+        comptime AxisC: type,
+        triangle: AxisC,
+        A: NamedArrayConst(AxisA, Complex(RealScalar)),
+        B: NamedArrayConst(AxisB, Complex(RealScalar)),
+        C: NamedArray(AxisC, Complex(RealScalar)),
+        scalars: struct { alpha: Complex(RealScalar) = .{ .re = 1.0, .im = 0.0 }, beta: RealScalar = 1.0 },
+    ) void {
+        const Scalar = Complex(RealScalar);
+        const axes = comptime gemmAxisNames(AxisA, AxisB, AxisC);
+        const f = switch (RealScalar) {
+            f32 => acc.cblas_cher2k,
+            f64 => acc.cblas_zher2k,
+            else => @compileError("her2k requires f32 or f64 as RealScalar."),
+        };
+
+        _ = named_index.resolveDimensions(.{ A.idx.shape, B.idx.shape, C.idx.shape }) catch
+            @panic("her2k: dimension mismatch");
+
+        const C_blas = Blas2dMut(Scalar).fromNamedArray(AxisC, C, 0);
+        assert(C_blas.rows == C_blas.cols);
+
+        const A_blas = Blas2d(Scalar).fromNamedArray(AxisA, A, comptime nameIdx(AxisA, axes.i_name));
+        const B_blas = Blas2d(Scalar).fromNamedArray(AxisB, B, comptime nameIdx(AxisB, axes.j_name));
+
+        assert(A_blas.layout == B_blas.layout);
+
+        const trans: acc.CBLAS_TRANSPOSE = if (A_blas.layout == C_blas.layout)
+            @intCast(acc.CblasNoTrans)
+        else
+            @intCast(acc.CblasTrans);
+
+        f(
+            C_blas.layout,
+            uploBlas(AxisC, triangle),
+            trans,
+            C_blas.rows, // N
+            A_blas.cols, // K
+            &scalars.alpha,
+            A_blas.ptr,
+            A_blas.leading,
+            B_blas.ptr,
+            B_blas.leading,
+            scalars.beta,
+            C_blas.ptr,
+            C_blas.leading,
+        );
+    }
+
+    /// `strmm`, `dtrmm`, `ctrmm` and `ztrmm` in BLAS.
+    /// Computes `B := alpha * A * B` in-place where `A` is a triangular matrix.
+    /// Exactly one axis of `A` must match one axis of `B`; this determines the side of multiplication.
+    /// `A` must be square (asserted at runtime).
+    /// Only the triangle of `A` where `triangle >= the other axis` is read.
+    /// If `diag` is `.unit`, the diagonal of `A` is assumed to be all ones and is not read.
+    /// The scalar `alpha` is optional and defaults to 1.
+    pub fn trmm(
+        comptime Scalar: type,
+        comptime AxisA: type,
+        comptime AxisB: type,
+        triangle: AxisA,
+        diag: Diag,
+        A: NamedArrayConst(AxisA, Scalar),
+        B: NamedArray(AxisB, Scalar),
+        scalars: struct { alpha: Scalar = one(Scalar) },
+    ) void {
+        const match = comptime trmmAxisMatch(AxisA, AxisB);
+        const f = switch (Scalar) {
+            f32 => acc.cblas_strmm,
+            f64 => acc.cblas_dtrmm,
+            Complex(f32) => acc.cblas_ctrmm,
+            Complex(f64) => acc.cblas_ztrmm,
+            else => @compileError("trmm is incompatible with given Scalar type."),
+        };
+
+        _ = named_index.resolveDimensions(.{ A.idx.shape, B.idx.shape }) catch
+            @panic("trmm: dimension mismatch");
+
+        // Preserve axis order for both A and B
+        const A_blas = Blas2d(Scalar).fromNamedArray(AxisA, A, 0);
+        assert(A_blas.rows == A_blas.cols); // square
+
+        const B_blas = Blas2dMut(Scalar).fromNamedArray(AxisB, B, 0);
+
+        // Determine side: which axis of B does A share with?
+        const side: acc.CBLAS_SIDE = @intCast(if (match.b_match_idx == 0)
+            acc.CblasLeft
+        else
+            acc.CblasRight);
+
+        // Determine transA: if A's layout differs from B's, we need Trans + uplo swap
+        const a_needs_trans = (A_blas.layout != B_blas.layout);
+        const transA: acc.CBLAS_TRANSPOSE = @intCast(if (a_needs_trans)
+            acc.CblasTrans
+        else
+            acc.CblasNoTrans);
+        const uplo: acc.CBLAS_UPLO = blk: {
+            const base = uploBlas(AxisA, triangle);
+            if (a_needs_trans) {
+                // Swap upper↔lower to compensate for the transpose
+                break :blk if (base == @as(acc.CBLAS_UPLO, @intCast(acc.CblasUpper)))
+                    @as(acc.CBLAS_UPLO, @intCast(acc.CblasLower))
+                else
+                    @as(acc.CBLAS_UPLO, @intCast(acc.CblasUpper));
+            }
+            break :blk base;
+        };
+
+        const diag_blas: acc.CBLAS_DIAG = switch (diag) {
+            .unit => @intCast(acc.CblasUnit),
+            .non_unit => @intCast(acc.CblasNonUnit),
+        };
+
+        const alpha_blas = if (comptime isComplex(Scalar)) &scalars.alpha else scalars.alpha;
+
+        f(
+            B_blas.layout,
+            side,
+            uplo,
+            transA,
+            diag_blas,
+            B_blas.rows, // M
+            B_blas.cols, // N
+            alpha_blas,
+            A_blas.ptr,
+            A_blas.leading,
+            B_blas.ptr,
+            B_blas.leading,
+        );
+    }
+
+    /// `strsm`, `dtrsm`, `ctrsm` and `ztrsm` in BLAS.
+    /// Solves `A * X = alpha * B` in-place (i.e. computes `B := alpha * A⁻¹ * B`) where `A` is triangular.
+    /// Exactly one axis of `A` must match one axis of `B`; this determines the side of the solve.
+    /// `A` must be square (asserted at runtime).
+    /// Only the triangle of `A` where `triangle >= the other axis` is read.
+    /// If `diag` is `.unit`, the diagonal of `A` is assumed to be all ones and is not read.
+    /// The scalar `alpha` is optional and defaults to 1.
+    pub fn trsm(
+        comptime Scalar: type,
+        comptime AxisA: type,
+        comptime AxisB: type,
+        triangle: AxisA,
+        diag: Diag,
+        A: NamedArrayConst(AxisA, Scalar),
+        B: NamedArray(AxisB, Scalar),
+        scalars: struct { alpha: Scalar = one(Scalar) },
+    ) void {
+        const match = comptime trmmAxisMatch(AxisA, AxisB);
+        const f = switch (Scalar) {
+            f32 => acc.cblas_strsm,
+            f64 => acc.cblas_dtrsm,
+            Complex(f32) => acc.cblas_ctrsm,
+            Complex(f64) => acc.cblas_ztrsm,
+            else => @compileError("trsm is incompatible with given Scalar type."),
+        };
+
+        _ = named_index.resolveDimensions(.{ A.idx.shape, B.idx.shape }) catch
+            @panic("trsm: dimension mismatch");
+
+        const A_blas = Blas2d(Scalar).fromNamedArray(AxisA, A, 0);
+        assert(A_blas.rows == A_blas.cols);
+
+        const B_blas = Blas2dMut(Scalar).fromNamedArray(AxisB, B, 0);
+
+        const side: acc.CBLAS_SIDE = @intCast(if (match.b_match_idx == 0)
+            acc.CblasLeft
+        else
+            acc.CblasRight);
+
+        const a_needs_trans = (A_blas.layout != B_blas.layout);
+        const transA: acc.CBLAS_TRANSPOSE = @intCast(if (a_needs_trans)
+            acc.CblasTrans
+        else
+            acc.CblasNoTrans);
+        const uplo: acc.CBLAS_UPLO = blk: {
+            const base = uploBlas(AxisA, triangle);
+            if (a_needs_trans) {
+                break :blk if (base == @as(acc.CBLAS_UPLO, @intCast(acc.CblasUpper)))
+                    @as(acc.CBLAS_UPLO, @intCast(acc.CblasLower))
+                else
+                    @as(acc.CBLAS_UPLO, @intCast(acc.CblasUpper));
+            }
+            break :blk base;
+        };
+
+        const diag_blas: acc.CBLAS_DIAG = switch (diag) {
+            .unit => @intCast(acc.CblasUnit),
+            .non_unit => @intCast(acc.CblasNonUnit),
+        };
+
+        const alpha_blas = if (comptime isComplex(Scalar)) &scalars.alpha else scalars.alpha;
+
+        f(
+            B_blas.layout,
+            side,
+            uplo,
+            transA,
+            diag_blas,
+            B_blas.rows, // M
+            B_blas.cols, // N
+            alpha_blas,
+            A_blas.ptr,
+            A_blas.leading,
+            B_blas.ptr,
+            B_blas.leading,
+        );
+    }
+
     pub fn GivensRotationReal(comptime Scalar: type) type {
         return struct {
             c: Scalar,
@@ -1718,6 +2296,131 @@ pub const blas = struct {
         assert(meta.fields(AxisX).len == 1);
         const x_name = meta.fields(AxisX)[0].name;
         assert(std.mem.eql(u8, x_name, a_names[0]) or std.mem.eql(u8, x_name, a_names[1]));
+    }
+
+    /// For gemm-family operations: validates that AxisA, AxisB, AxisC are all 2D.
+    /// Finds the contraction axis (shared between A and B, absent from C),
+    /// the i-axis (shared between A and C, absent from B → M dimension),
+    /// and the j-axis (shared between B and C, absent from A → N dimension).
+    fn gemmAxisNames(comptime AxisA: type, comptime AxisB: type, comptime AxisC: type) struct {
+        i_name: [:0]const u8, // A ∩ C \ B (M dim)
+        j_name: [:0]const u8, // B ∩ C \ A (N dim)
+        k_name: [:0]const u8, // A ∩ B \ C (contraction)
+    } {
+        const a_names = meta.fieldNames(AxisA);
+        const b_names = meta.fieldNames(AxisB);
+        const c_names = meta.fieldNames(AxisC);
+        assert(a_names.len == 2);
+        assert(b_names.len == 2);
+        assert(c_names.len == 2);
+
+        var i_name: ?[:0]const u8 = null;
+        var j_name: ?[:0]const u8 = null;
+        var k_name: ?[:0]const u8 = null;
+
+        // Find contraction axis: in A and B, not in C
+        for (a_names) |an| {
+            const in_b = nameIn(an, b_names);
+            const in_c = nameIn(an, c_names);
+            if (in_b and !in_c) {
+                assert(k_name == null); // at most one contraction axis
+                k_name = an;
+            } else if (!in_b and in_c) {
+                assert(i_name == null);
+                i_name = an;
+            } else {
+                assert(false); // axis must be in exactly one of {B, C}
+            }
+        }
+        // Find j_name: in B and C, not in A
+        for (b_names) |bn| {
+            const in_a = nameIn(bn, a_names);
+            const in_c = nameIn(bn, c_names);
+            if (!in_a and in_c) {
+                assert(j_name == null);
+                j_name = bn;
+            } else if (in_a and !in_c) {
+                // This is the contraction axis, already found
+                assert(std.mem.eql(u8, bn, k_name.?));
+            } else {
+                assert(false);
+            }
+        }
+
+        assert(i_name != null and j_name != null and k_name != null);
+        assert(!std.mem.eql(u8, i_name.?, j_name.?));
+        return .{ .i_name = i_name.?, .j_name = j_name.?, .k_name = k_name.? };
+    }
+
+    /// For rank-k operations (syrk, herk): validates that AxisA is 2D and AxisC is 2D.
+    /// Finds the N-axis (shared between A and C) and the K-axis (in A but not C).
+    fn rankKAxisNames(comptime AxisA: type, comptime AxisC: type) struct {
+        n_name: [:0]const u8,
+        k_name: [:0]const u8,
+    } {
+        const a_names = meta.fieldNames(AxisA);
+        const c_names = meta.fieldNames(AxisC);
+        assert(a_names.len == 2);
+        assert(c_names.len == 2);
+
+        var n_name: ?[:0]const u8 = null;
+        var k_name: ?[:0]const u8 = null;
+
+        for (a_names) |an| {
+            if (nameIn(an, c_names)) {
+                assert(n_name == null);
+                n_name = an;
+            } else {
+                assert(k_name == null);
+                k_name = an;
+            }
+        }
+        assert(n_name != null and k_name != null);
+        return .{ .n_name = n_name.?, .k_name = k_name.? };
+    }
+
+    /// For trmm/trsm: validates that AxisA is 2D and AxisB is 2D.
+    /// Finds which axis of A matches which axis of B.
+    /// Returns the index (0 or 1) of the matching axis in both A and B.
+    fn trmmAxisMatch(comptime AxisA: type, comptime AxisB: type) struct {
+        a_match_idx: usize,
+        b_match_idx: usize,
+    } {
+        const a_names = meta.fieldNames(AxisA);
+        const b_names = meta.fieldNames(AxisB);
+        assert(a_names.len == 2);
+        assert(b_names.len == 2);
+
+        var a_idx: ?usize = null;
+        var b_idx: ?usize = null;
+        for (a_names, 0..) |an, ai| {
+            for (b_names, 0..) |bn, bi| {
+                if (std.mem.eql(u8, an, bn)) {
+                    assert(a_idx == null); // at most one match
+                    a_idx = ai;
+                    b_idx = bi;
+                }
+            }
+        }
+        assert(a_idx != null and b_idx != null);
+        return .{ .a_match_idx = a_idx.?, .b_match_idx = b_idx.? };
+    }
+
+    /// Checks whether a name appears in a list of names (comptime).
+    fn nameIn(name: [:0]const u8, names: []const [:0]const u8) bool {
+        for (names) |n| {
+            if (std.mem.eql(u8, name, n)) return true;
+        }
+        return false;
+    }
+
+    /// Returns the ordinal index (0 or 1) of the given axis name within a 2D axis type.
+    fn nameIdx(comptime Axis: type, comptime name: [:0]const u8) usize {
+        const names = meta.fieldNames(Axis);
+        assert(names.len == 2);
+        if (std.mem.eql(u8, name, names[0])) return 0;
+        if (std.mem.eql(u8, name, names[1])) return 1;
+        unreachable;
     }
 
     fn Blas1d(comptime Scalar: type) type {
@@ -6613,3 +7316,1326 @@ test "hpr2 nontrivial alpha and strides" {
 //         }
 //     }
 // }
+
+// ─────────────────────────────────────────────────────────────
+//  Level 3 BLAS tests
+// ─────────────────────────────────────────────────────────────
+
+test "gemm real 3x3" {
+    const MK = enum { m, k };
+    const KN = enum { k, n };
+    const MN = enum { m, n };
+    const T = f64;
+
+    // A = [[1, 2, 3], [4, 5, 6], [7, 8, 9]]
+    const a_buf = [_]T{ 1, 2, 3, 4, 5, 6, 7, 8, 9 };
+    const A = NamedArrayConst(MK, T){
+        .idx = NamedIndex(MK).initContiguous(.{ .m = 3, .k = 3 }),
+        .buf = &a_buf,
+    };
+
+    // B = [[1, 0, 0], [0, 1, 0], [0, 0, 1]] (identity)
+    const b_buf = [_]T{ 1, 0, 0, 0, 1, 0, 0, 0, 1 };
+    const B = NamedArrayConst(KN, T){
+        .idx = NamedIndex(KN).initContiguous(.{ .k = 3, .n = 3 }),
+        .buf = &b_buf,
+    };
+
+    var c_buf = [_]T{ 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+    const C = NamedArray(MN, T){
+        .idx = NamedIndex(MN).initContiguous(.{ .m = 3, .n = 3 }),
+        .buf = &c_buf,
+    };
+
+    // C = 1*A*I + 0*C = A
+    blas.gemm(T, MK, KN, MN, A, B, C, .{ .alpha = 1.0, .beta = 0.0 });
+
+    for (0..9) |i| {
+        try std.testing.expectApproxEqAbs(a_buf[i], c_buf[i], math.floatEpsAt(T, a_buf[i]));
+    }
+}
+
+test "gemm real rectangular" {
+    const MK = enum { m, k };
+    const KN = enum { k, n };
+    const MN = enum { m, n };
+    const T = f64;
+
+    // A (2x3) = [[1, 2, 3], [4, 5, 6]]
+    const a_buf = [_]T{ 1, 2, 3, 4, 5, 6 };
+    const A = NamedArrayConst(MK, T){
+        .idx = NamedIndex(MK).initContiguous(.{ .m = 2, .k = 3 }),
+        .buf = &a_buf,
+    };
+
+    // B (3x2) = [[7, 8], [9, 10], [11, 12]]
+    const b_buf = [_]T{ 7, 8, 9, 10, 11, 12 };
+    const B = NamedArrayConst(KN, T){
+        .idx = NamedIndex(KN).initContiguous(.{ .k = 3, .n = 2 }),
+        .buf = &b_buf,
+    };
+
+    var c_buf = [_]T{ 0, 0, 0, 0 };
+    const C = NamedArray(MN, T){
+        .idx = NamedIndex(MN).initContiguous(.{ .m = 2, .n = 2 }),
+        .buf = &c_buf,
+    };
+
+    // C = A*B = [[58, 64], [139, 154]]
+    blas.gemm(T, MK, KN, MN, A, B, C, .{ .alpha = 1.0, .beta = 0.0 });
+
+    const expected = [_]T{ 58, 64, 139, 154 };
+    for (0..4) |i| {
+        try std.testing.expectApproxEqAbs(expected[i], c_buf[i], math.floatEpsAt(T, expected[i]));
+    }
+}
+
+test "gemm real nontrivial scalars" {
+    const MK = enum { m, k };
+    const KN = enum { k, n };
+    const MN = enum { m, n };
+    const T = f64;
+
+    // A (2x2) = [[1, 2], [3, 4]]
+    const a_buf = [_]T{ 1, 2, 3, 4 };
+    const A = NamedArrayConst(MK, T){
+        .idx = NamedIndex(MK).initContiguous(.{ .m = 2, .k = 2 }),
+        .buf = &a_buf,
+    };
+
+    // B (2x2) = [[5, 6], [7, 8]]
+    const b_buf = [_]T{ 5, 6, 7, 8 };
+    const B = NamedArrayConst(KN, T){
+        .idx = NamedIndex(KN).initContiguous(.{ .k = 2, .n = 2 }),
+        .buf = &b_buf,
+    };
+
+    // C (2x2) = [[1, 1], [1, 1]]
+    var c_buf = [_]T{ 1, 1, 1, 1 };
+    const C = NamedArray(MN, T){
+        .idx = NamedIndex(MN).initContiguous(.{ .m = 2, .n = 2 }),
+        .buf = &c_buf,
+    };
+
+    // C = 2*A*B + 3*C
+    // A*B = [[19, 22], [43, 50]]
+    // 2*A*B = [[38, 44], [86, 100]]
+    // 3*C = [[3, 3], [3, 3]]
+    // result = [[41, 47], [89, 103]]
+    blas.gemm(T, MK, KN, MN, A, B, C, .{ .alpha = 2.0, .beta = 3.0 });
+
+    const expected = [_]T{ 41, 47, 89, 103 };
+    for (0..4) |i| {
+        try std.testing.expectApproxEqAbs(expected[i], c_buf[i], math.floatEpsAt(T, expected[i]));
+    }
+}
+
+test "gemm real column-major C" {
+    const MK = enum { m, k };
+    const KN = enum { k, n };
+    const MN = enum { m, n };
+    const T = f64;
+
+    // A (2x2) row-major = [[1, 2], [3, 4]]
+    const a_buf = [_]T{ 1, 2, 3, 4 };
+    const A = NamedArrayConst(MK, T){
+        .idx = NamedIndex(MK).initContiguous(.{ .m = 2, .k = 2 }),
+        .buf = &a_buf,
+    };
+
+    // B (2x2) row-major = [[5, 6], [7, 8]]
+    const b_buf = [_]T{ 5, 6, 7, 8 };
+    const B = NamedArrayConst(KN, T){
+        .idx = NamedIndex(KN).initContiguous(.{ .k = 2, .n = 2 }),
+        .buf = &b_buf,
+    };
+
+    // C column-major: col0=[0,0], col1=[0,0]
+    var c_buf = [_]T{ 0, 0, 0, 0 };
+    const C = NamedArray(MN, T){
+        .idx = .{
+            .shape = .{ .m = 2, .n = 2 },
+            .strides = .{ .m = 1, .n = 2 },
+        },
+        .buf = &c_buf,
+    };
+
+    // C = A*B = [[19, 22], [43, 50]]
+    // Column-major storage: [19, 43, 22, 50]
+    blas.gemm(T, MK, KN, MN, A, B, C, .{ .alpha = 1.0, .beta = 0.0 });
+
+    const expected = [_]T{ 19, 43, 22, 50 };
+    for (0..4) |i| {
+        try std.testing.expectApproxEqAbs(expected[i], c_buf[i], math.floatEpsAt(T, expected[i]));
+    }
+}
+
+test "gemm complex" {
+    const MK = enum { m, k };
+    const KN = enum { k, n };
+    const MN = enum { m, n };
+    const T = Complex(f64);
+
+    // A (2x2): [[1+i, 2+0i], [0+i, 1+0i]]
+    const a_buf = [_]T{
+        .{ .re = 1, .im = 1 }, .{ .re = 2, .im = 0 },
+        .{ .re = 0, .im = 1 }, .{ .re = 1, .im = 0 },
+    };
+    const A = NamedArrayConst(MK, T){
+        .idx = NamedIndex(MK).initContiguous(.{ .m = 2, .k = 2 }),
+        .buf = &a_buf,
+    };
+
+    // B (2x2): [[1+0i, 0+i], [0+0i, 1+i]]
+    const b_buf = [_]T{
+        .{ .re = 1, .im = 0 }, .{ .re = 0, .im = 1 },
+        .{ .re = 0, .im = 0 }, .{ .re = 1, .im = 1 },
+    };
+    const B = NamedArrayConst(KN, T){
+        .idx = NamedIndex(KN).initContiguous(.{ .k = 2, .n = 2 }),
+        .buf = &b_buf,
+    };
+
+    var c_buf = [_]T{
+        .{ .re = 0, .im = 0 }, .{ .re = 0, .im = 0 },
+        .{ .re = 0, .im = 0 }, .{ .re = 0, .im = 0 },
+    };
+    const C = NamedArray(MN, T){
+        .idx = NamedIndex(MN).initContiguous(.{ .m = 2, .n = 2 }),
+        .buf = &c_buf,
+    };
+
+    // C = A*B:
+    // C[0,0] = (1+i)*1 + 2*0 = 1+i
+    // C[0,1] = (1+i)*(i) + 2*(1+i) = i+i² + 2+2i = -1+i + 2+2i = 1+3i
+    // C[1,0] = (i)*1 + 1*0 = i
+    // C[1,1] = (i)*(i) + 1*(1+i) = -1 + 1+i = i
+    blas.gemm(T, MK, KN, MN, A, B, C, .{
+        .alpha = .{ .re = 1, .im = 0 },
+        .beta = .{ .re = 0, .im = 0 },
+    });
+
+    const expected = [_]T{
+        .{ .re = 1, .im = 1 },
+        .{ .re = 1, .im = 3 },
+        .{ .re = 0, .im = 1 },
+        .{ .re = 0, .im = 1 },
+    };
+    const eps = 1e-10;
+    for (0..4) |i| {
+        try std.testing.expectApproxEqAbs(expected[i].re, c_buf[i].re, eps);
+        try std.testing.expectApproxEqAbs(expected[i].im, c_buf[i].im, eps);
+    }
+}
+
+test "gemm real 1x1" {
+    const MK = enum { m, k };
+    const KN = enum { k, n };
+    const MN = enum { m, n };
+    const T = f64;
+
+    const a_buf = [_]T{3.0};
+    const A = NamedArrayConst(MK, T){
+        .idx = NamedIndex(MK).initContiguous(.{ .m = 1, .k = 1 }),
+        .buf = &a_buf,
+    };
+    const b_buf = [_]T{4.0};
+    const B = NamedArrayConst(KN, T){
+        .idx = NamedIndex(KN).initContiguous(.{ .k = 1, .n = 1 }),
+        .buf = &b_buf,
+    };
+    var c_buf = [_]T{1.0};
+    const C = NamedArray(MN, T){
+        .idx = NamedIndex(MN).initContiguous(.{ .m = 1, .n = 1 }),
+        .buf = &c_buf,
+    };
+
+    // C = 2*3*4 + 5*1 = 24 + 5 = 29
+    blas.gemm(T, MK, KN, MN, A, B, C, .{ .alpha = 2.0, .beta = 5.0 });
+    try std.testing.expectApproxEqAbs(@as(T, 29.0), c_buf[0], 1e-10);
+}
+
+test "gemm all column-major" {
+    const MK = enum { m, k };
+    const KN = enum { k, n };
+    const MN = enum { m, n };
+    const T = f64;
+
+    // A (2x2) col-major: [[1, 3], [2, 4]] stored as [1, 2, 3, 4]
+    const a_buf = [_]T{ 1, 2, 3, 4 };
+    const A = NamedArrayConst(MK, T){
+        .idx = .{ .shape = .{ .m = 2, .k = 2 }, .strides = .{ .m = 1, .k = 2 } },
+        .buf = &a_buf,
+    };
+
+    // B (2x2) col-major: [[5, 7], [6, 8]] stored as [5, 6, 7, 8]
+    const b_buf = [_]T{ 5, 6, 7, 8 };
+    const B = NamedArrayConst(KN, T){
+        .idx = .{ .shape = .{ .k = 2, .n = 2 }, .strides = .{ .k = 1, .n = 2 } },
+        .buf = &b_buf,
+    };
+
+    // C (2x2) col-major
+    var c_buf = [_]T{ 0, 0, 0, 0 };
+    const C = NamedArray(MN, T){
+        .idx = .{ .shape = .{ .m = 2, .n = 2 }, .strides = .{ .m = 1, .n = 2 } },
+        .buf = &c_buf,
+    };
+
+    // A = [[1, 3], [2, 4]], B = [[5, 7], [6, 8]]
+    // A*B = [[1*5+3*6, 1*7+3*8], [2*5+4*6, 2*7+4*8]] = [[23, 31], [34, 46]]
+    // Col-major storage: [23, 34, 31, 46]
+    blas.gemm(T, MK, KN, MN, A, B, C, .{ .alpha = 1.0, .beta = 0.0 });
+
+    const expected = [_]T{ 23, 34, 31, 46 };
+    for (0..4) |i| {
+        try std.testing.expectApproxEqAbs(expected[i], c_buf[i], math.floatEpsAt(T, expected[i]));
+    }
+}
+
+test "symm real left (triangle = second axis)" {
+    const MK = enum { m, k };
+    const KN = enum { k, n };
+    const MN = enum { m, n };
+    const T = f64;
+
+    // A (3x3) symmetric upper: [[1, 2, 3], [2, 5, 6], [3, 6, 9]]
+    // Only upper triangle is read: 1, 2, 3, *, 5, 6, *, *, 9
+    const a_buf = [_]T{ 1, 2, 3, 2, 5, 6, 3, 6, 9 };
+    const A = NamedArrayConst(MK, T){
+        .idx = NamedIndex(MK).initContiguous(.{ .m = 3, .k = 3 }),
+        .buf = &a_buf,
+    };
+
+    // B (3x2) = [[1, 0], [0, 1], [1, 1]]
+    const b_buf = [_]T{ 1, 0, 0, 1, 1, 1 };
+    const B = NamedArrayConst(KN, T){
+        .idx = NamedIndex(KN).initContiguous(.{ .k = 3, .n = 2 }),
+        .buf = &b_buf,
+    };
+
+    var c_buf = [_]T{ 0, 0, 0, 0, 0, 0 };
+    const C = NamedArray(MN, T){
+        .idx = NamedIndex(MN).initContiguous(.{ .m = 3, .n = 2 }),
+        .buf = &c_buf,
+    };
+
+    // C = A*B:
+    // row0: 1*1+2*0+3*1=4, 1*0+2*1+3*1=5
+    // row1: 2*1+5*0+6*1=8, 2*0+5*1+6*1=11
+    // row2: 3*1+6*0+9*1=12, 3*0+6*1+9*1=15
+    blas.symm(T, MK, KN, MN, .k, A, B, C, .{ .alpha = 1.0, .beta = 0.0 });
+
+    const expected = [_]T{ 4, 5, 8, 11, 12, 15 };
+    for (0..6) |i| {
+        try std.testing.expectApproxEqAbs(expected[i], c_buf[i], math.floatEpsAt(T, expected[i]));
+    }
+}
+
+test "symm real nontrivial scalars" {
+    const MK = enum { m, k };
+    const KN = enum { k, n };
+    const MN = enum { m, n };
+    const T = f64;
+
+    // A (2x2) symmetric: [[2, 1], [1, 3]]
+    const a_buf = [_]T{ 2, 1, 1, 3 };
+    const A = NamedArrayConst(MK, T){
+        .idx = NamedIndex(MK).initContiguous(.{ .m = 2, .k = 2 }),
+        .buf = &a_buf,
+    };
+
+    // B (2x2) = [[1, 2], [3, 4]]
+    const b_buf = [_]T{ 1, 2, 3, 4 };
+    const B = NamedArrayConst(KN, T){
+        .idx = NamedIndex(KN).initContiguous(.{ .k = 2, .n = 2 }),
+        .buf = &b_buf,
+    };
+
+    // C (2x2) = [[10, 10], [10, 10]]
+    var c_buf = [_]T{ 10, 10, 10, 10 };
+    const C = NamedArray(MN, T){
+        .idx = NamedIndex(MN).initContiguous(.{ .m = 2, .n = 2 }),
+        .buf = &c_buf,
+    };
+
+    // A*B = [[2+3, 4+4], [1+9, 2+12]] = [[5, 8], [10, 14]]
+    // C = 2*A*B + 3*C = [[10+30, 16+30], [20+30, 28+30]] = [[40, 46], [50, 58]]
+    blas.symm(T, MK, KN, MN, .k, A, B, C, .{ .alpha = 2.0, .beta = 3.0 });
+
+    const expected = [_]T{ 40, 46, 50, 58 };
+    for (0..4) |i| {
+        try std.testing.expectApproxEqAbs(expected[i], c_buf[i], math.floatEpsAt(T, expected[i]));
+    }
+}
+
+test "symm real column-major" {
+    const MK = enum { m, k };
+    const KN = enum { k, n };
+    const MN = enum { m, n };
+    const T = f64;
+
+    // A (2x2) symmetric col-major: [[2, 1], [1, 3]] stored as [2, 1, 1, 3]
+    const a_buf = [_]T{ 2, 1, 1, 3 };
+    const A = NamedArrayConst(MK, T){
+        .idx = .{ .shape = .{ .m = 2, .k = 2 }, .strides = .{ .m = 1, .k = 2 } },
+        .buf = &a_buf,
+    };
+
+    // B (2x2) col-major: [[1, 3], [2, 4]] stored as [1, 2, 3, 4]
+    const b_buf = [_]T{ 1, 2, 3, 4 };
+    const B = NamedArrayConst(KN, T){
+        .idx = .{ .shape = .{ .k = 2, .n = 2 }, .strides = .{ .k = 1, .n = 2 } },
+        .buf = &b_buf,
+    };
+
+    // C (2x2) col-major
+    var c_buf = [_]T{ 0, 0, 0, 0 };
+    const C = NamedArray(MN, T){
+        .idx = .{ .shape = .{ .m = 2, .n = 2 }, .strides = .{ .m = 1, .n = 2 } },
+        .buf = &c_buf,
+    };
+
+    // A = [[2, 1], [1, 3]], B = [[1, 3], [2, 4]]
+    // A*B = [[2+2, 6+4], [1+6, 3+12]] = [[4, 10], [7, 15]]
+    // Col-major storage: [4, 7, 10, 15]
+    blas.symm(T, MK, KN, MN, .k, A, B, C, .{ .alpha = 1.0, .beta = 0.0 });
+
+    const expected = [_]T{ 4, 7, 10, 15 };
+    for (0..4) |i| {
+        try std.testing.expectApproxEqAbs(expected[i], c_buf[i], math.floatEpsAt(T, expected[i]));
+    }
+}
+
+test "hemm complex left (triangle = second axis)" {
+    const MK = enum { m, k };
+    const KN = enum { k, n };
+    const MN = enum { m, n };
+    const T = Complex(f64);
+
+    // A (2x2) Hermitian: [[2+0i, 1-i], [1+i, 3+0i]]
+    // Upper triangle: 2, 1-i, *, 3
+    const a_buf = [_]T{
+        .{ .re = 2, .im = 0 }, .{ .re = 1, .im = -1 },
+        .{ .re = 1, .im = 1 }, .{ .re = 3, .im = 0 },
+    };
+    const A = NamedArrayConst(MK, T){
+        .idx = NamedIndex(MK).initContiguous(.{ .m = 2, .k = 2 }),
+        .buf = &a_buf,
+    };
+
+    // B (2x1) = [[1+0i], [0+i]]
+    const b_buf = [_]T{
+        .{ .re = 1, .im = 0 },
+        .{ .re = 0, .im = 1 },
+    };
+    const B = NamedArrayConst(KN, T){
+        .idx = NamedIndex(KN).initContiguous(.{ .k = 2, .n = 1 }),
+        .buf = &b_buf,
+    };
+
+    var c_buf = [_]T{
+        .{ .re = 0, .im = 0 },
+        .{ .re = 0, .im = 0 },
+    };
+    const C = NamedArray(MN, T){
+        .idx = NamedIndex(MN).initContiguous(.{ .m = 2, .n = 1 }),
+        .buf = &c_buf,
+    };
+
+    // C = A*B:
+    // row0: 2*1 + (1-i)*(i) = 2 + i-i² = 2+i+1 = 3+i
+    // row1: (1+i)*1 + 3*(i) = 1+i+3i = 1+4i
+    blas.hemm(T, MK, KN, MN, .k, A, B, C, .{
+        .alpha = .{ .re = 1, .im = 0 },
+        .beta = .{ .re = 0, .im = 0 },
+    });
+
+    const eps = 1e-10;
+    try std.testing.expectApproxEqAbs(@as(f64, 3), c_buf[0].re, eps);
+    try std.testing.expectApproxEqAbs(@as(f64, 1), c_buf[0].im, eps);
+    try std.testing.expectApproxEqAbs(@as(f64, 1), c_buf[1].re, eps);
+    try std.testing.expectApproxEqAbs(@as(f64, 4), c_buf[1].im, eps);
+}
+
+test "hemm complex column-major" {
+    const MK = enum { m, k };
+    const KN = enum { k, n };
+    const MN = enum { m, n };
+    const T = Complex(f64);
+
+    // A (2x2) Hermitian col-major: [[2+0i, 1-i], [1+i, 3+0i]]
+    // stored col-major: [2, 1+i, 1-i, 3]
+    const a_buf = [_]T{
+        .{ .re = 2, .im = 0 },
+        .{ .re = 1, .im = 1 },
+        .{ .re = 1, .im = -1 },
+        .{ .re = 3, .im = 0 },
+    };
+    const A = NamedArrayConst(MK, T){
+        .idx = .{ .shape = .{ .m = 2, .k = 2 }, .strides = .{ .m = 1, .k = 2 } },
+        .buf = &a_buf,
+    };
+
+    // B (2x2) col-major: [[1, 0], [0, 1]] stored as [1, 0, 0, 1]
+    const b_buf = [_]T{
+        .{ .re = 1, .im = 0 },
+        .{ .re = 0, .im = 0 },
+        .{ .re = 0, .im = 0 },
+        .{ .re = 1, .im = 0 },
+    };
+    const B = NamedArrayConst(KN, T){
+        .idx = .{ .shape = .{ .k = 2, .n = 2 }, .strides = .{ .k = 1, .n = 2 } },
+        .buf = &b_buf,
+    };
+
+    var c_buf = [_]T{
+        .{ .re = 0, .im = 0 },
+        .{ .re = 0, .im = 0 },
+        .{ .re = 0, .im = 0 },
+        .{ .re = 0, .im = 0 },
+    };
+    const C = NamedArray(MN, T){
+        .idx = .{ .shape = .{ .m = 2, .n = 2 }, .strides = .{ .m = 1, .n = 2 } },
+        .buf = &c_buf,
+    };
+
+    // C = A * I = A (col-major storage)
+    // A = [[2, 1-i], [1+i, 3]]
+    // Col-major: [2, 1+i, 1-i, 3]
+    blas.hemm(T, MK, KN, MN, .k, A, B, C, .{
+        .alpha = .{ .re = 1, .im = 0 },
+        .beta = .{ .re = 0, .im = 0 },
+    });
+
+    const eps = 1e-10;
+    // Col-major: col0=[2, 1+i], col1=[1-i, 3]
+    try std.testing.expectApproxEqAbs(@as(f64, 2), c_buf[0].re, eps);
+    try std.testing.expectApproxEqAbs(@as(f64, 0), c_buf[0].im, eps);
+    try std.testing.expectApproxEqAbs(@as(f64, 1), c_buf[1].re, eps);
+    try std.testing.expectApproxEqAbs(@as(f64, 1), c_buf[1].im, eps);
+    try std.testing.expectApproxEqAbs(@as(f64, 1), c_buf[2].re, eps);
+    try std.testing.expectApproxEqAbs(@as(f64, -1), c_buf[2].im, eps);
+    try std.testing.expectApproxEqAbs(@as(f64, 3), c_buf[3].re, eps);
+    try std.testing.expectApproxEqAbs(@as(f64, 0), c_buf[3].im, eps);
+}
+
+test "syrk real upper (triangle = second axis)" {
+    const NK = enum { n, k };
+    const NN = enum { n, n2 };
+    const T = f64;
+
+    // A (2x3) = [[1, 2, 3], [4, 5, 6]]
+    const a_buf = [_]T{ 1, 2, 3, 4, 5, 6 };
+    const A = NamedArrayConst(NK, T){
+        .idx = NamedIndex(NK).initContiguous(.{ .n = 2, .k = 3 }),
+        .buf = &a_buf,
+    };
+
+    // C (2x2) = [[0, 0], [0, 0]]
+    var c_buf = [_]T{ 0, 0, 0, 0 };
+    const C = NamedArray(NN, T){
+        .idx = NamedIndex(NN).initContiguous(.{ .n = 2, .n2 = 2 }),
+        .buf = &c_buf,
+    };
+
+    // C = A * Aᵀ:
+    // C[0,0] = 1+4+9 = 14
+    // C[0,1] = 4+10+18 = 32
+    // C[1,0] = (not read/written in upper)
+    // C[1,1] = 16+25+36 = 77
+    blas.syrk(T, NK, NN, .n2, A, C, .{ .alpha = 1.0, .beta = 0.0 });
+
+    try std.testing.expectApproxEqAbs(@as(T, 14), c_buf[0], 1e-10);
+    try std.testing.expectApproxEqAbs(@as(T, 32), c_buf[1], 1e-10);
+    // c_buf[2] is in the lower triangle (not written with beta=0, but CBLAS may set it)
+    try std.testing.expectApproxEqAbs(@as(T, 77), c_buf[3], 1e-10);
+}
+
+test "syrk real lower (triangle = first axis)" {
+    const NK = enum { n, k };
+    const NN = enum { n, n2 };
+    const T = f64;
+
+    // A (2x3) = [[1, 2, 3], [4, 5, 6]]
+    const a_buf = [_]T{ 1, 2, 3, 4, 5, 6 };
+    const A = NamedArrayConst(NK, T){
+        .idx = NamedIndex(NK).initContiguous(.{ .n = 2, .k = 3 }),
+        .buf = &a_buf,
+    };
+
+    var c_buf = [_]T{ 0, 0, 0, 0 };
+    const C = NamedArray(NN, T){
+        .idx = NamedIndex(NN).initContiguous(.{ .n = 2, .n2 = 2 }),
+        .buf = &c_buf,
+    };
+
+    // C = A * Aᵀ (lower triangle):
+    // C[0,0] = 14, C[1,0] = 32, C[1,1] = 77
+    blas.syrk(T, NK, NN, .n, A, C, .{ .alpha = 1.0, .beta = 0.0 });
+
+    try std.testing.expectApproxEqAbs(@as(T, 14), c_buf[0], 1e-10);
+    try std.testing.expectApproxEqAbs(@as(T, 32), c_buf[2], 1e-10);
+    try std.testing.expectApproxEqAbs(@as(T, 77), c_buf[3], 1e-10);
+}
+
+test "syrk real nontrivial scalars" {
+    const NK = enum { n, k };
+    const NN = enum { n, n2 };
+    const T = f64;
+
+    // A (2x2) = [[1, 2], [3, 4]]
+    const a_buf = [_]T{ 1, 2, 3, 4 };
+    const A = NamedArrayConst(NK, T){
+        .idx = NamedIndex(NK).initContiguous(.{ .n = 2, .k = 2 }),
+        .buf = &a_buf,
+    };
+
+    // C (2x2) = [[1, 1], [1, 1]]
+    var c_buf = [_]T{ 1, 1, 1, 1 };
+    const C = NamedArray(NN, T){
+        .idx = NamedIndex(NN).initContiguous(.{ .n = 2, .n2 = 2 }),
+        .buf = &c_buf,
+    };
+
+    // A*Aᵀ = [[1+4, 3+8], [3+8, 9+16]] = [[5, 11], [11, 25]]
+    // C = 2*A*Aᵀ + 3*C = [[10+3, 22+3], [22+3, 50+3]] = [[13, 25], [25, 53]]
+    blas.syrk(T, NK, NN, .n2, A, C, .{ .alpha = 2.0, .beta = 3.0 });
+
+    try std.testing.expectApproxEqAbs(@as(T, 13), c_buf[0], 1e-10);
+    try std.testing.expectApproxEqAbs(@as(T, 25), c_buf[1], 1e-10);
+    try std.testing.expectApproxEqAbs(@as(T, 53), c_buf[3], 1e-10);
+}
+
+test "syrk column-major" {
+    const NK = enum { n, k };
+    const NN = enum { n, n2 };
+    const T = f64;
+
+    // A (2x2) col-major: [[1, 3], [2, 4]] stored as [1, 2, 3, 4]
+    const a_buf = [_]T{ 1, 2, 3, 4 };
+    const A = NamedArrayConst(NK, T){
+        .idx = .{ .shape = .{ .n = 2, .k = 2 }, .strides = .{ .n = 1, .k = 2 } },
+        .buf = &a_buf,
+    };
+
+    // C (2x2) col-major
+    var c_buf = [_]T{ 0, 0, 0, 0 };
+    const C = NamedArray(NN, T){
+        .idx = .{ .shape = .{ .n = 2, .n2 = 2 }, .strides = .{ .n = 1, .n2 = 2 } },
+        .buf = &c_buf,
+    };
+
+    // A = [[1, 3], [2, 4]]
+    // A*Aᵀ = [[1+9, 2+12], [2+12, 4+16]] = [[10, 14], [14, 20]]
+    // Use lower triangle (.n = first axis, ordinal 0) so that C[0,0], C[1,0], C[1,1] are written.
+    // Col-major storage: c_buf[0]=C[0,0]=10, c_buf[1]=C[1,0]=14, c_buf[3]=C[1,1]=20
+    blas.syrk(T, NK, NN, .n, A, C, .{ .alpha = 1.0, .beta = 0.0 });
+
+    try std.testing.expectApproxEqAbs(@as(T, 10), c_buf[0], 1e-10);
+    try std.testing.expectApproxEqAbs(@as(T, 14), c_buf[1], 1e-10);
+    // c_buf[2] = C[0,1] is upper triangle, not written
+    try std.testing.expectApproxEqAbs(@as(T, 20), c_buf[3], 1e-10);
+}
+
+test "herk complex upper" {
+    const NK = enum { n, k };
+    const NN = enum { n, n2 };
+    const T = Complex(f64);
+
+    // A (2x2) = [[1+i, 2+0i], [0+i, 1-i]]
+    const a_buf = [_]T{
+        .{ .re = 1, .im = 1 }, .{ .re = 2, .im = 0 },
+        .{ .re = 0, .im = 1 }, .{ .re = 1, .im = -1 },
+    };
+    const A = NamedArrayConst(NK, T){
+        .idx = NamedIndex(NK).initContiguous(.{ .n = 2, .k = 2 }),
+        .buf = &a_buf,
+    };
+
+    var c_buf = [_]T{
+        .{ .re = 0, .im = 0 }, .{ .re = 0, .im = 0 },
+        .{ .re = 0, .im = 0 }, .{ .re = 0, .im = 0 },
+    };
+    const C = NamedArray(NN, T){
+        .idx = NamedIndex(NN).initContiguous(.{ .n = 2, .n2 = 2 }),
+        .buf = &c_buf,
+    };
+
+    // C = A * Aᴴ:
+    // C[0,0] = (1+i)(1-i) + 2*2 = 1+1 + 4 = 6 (real, since diagonal of Hermitian)
+    // C[0,1] = (1+i)(0-i) + 2*(1+i) = (i-i²+0) + 2+2i = 1-i + 2+2i ... wait
+    // Let me recalculate:
+    // C[0,1] = (1+i)*conj(0+i) + (2+0i)*conj(1-i)
+    //        = (1+i)*(-i) + 2*(1+i)
+    //        = -i-i² + 2+2i = -i+1 + 2+2i = 3+i
+    // C[1,1] = (0+i)*conj(0+i) + (1-i)*conj(1-i)
+    //        = i*(-i) + (1-i)*(1+i)
+    //        = 1 + 1+1 = 1 + 2 = 3 (real)
+    blas.herk(f64, NK, NN, .n2, A, C, .{ .alpha = 1.0, .beta = 0.0 });
+
+    const eps = 1e-10;
+    try std.testing.expectApproxEqAbs(@as(f64, 6), c_buf[0].re, eps);
+    try std.testing.expectApproxEqAbs(@as(f64, 0), c_buf[0].im, eps);
+    try std.testing.expectApproxEqAbs(@as(f64, 3), c_buf[1].re, eps);
+    try std.testing.expectApproxEqAbs(@as(f64, 1), c_buf[1].im, eps);
+    try std.testing.expectApproxEqAbs(@as(f64, 3), c_buf[3].re, eps);
+    try std.testing.expectApproxEqAbs(@as(f64, 0), c_buf[3].im, eps);
+}
+
+test "herk complex lower" {
+    const NK = enum { n, k };
+    const NN = enum { n, n2 };
+    const T = Complex(f64);
+
+    // A (2x1) = [[1+i], [2+0i]]
+    const a_buf = [_]T{
+        .{ .re = 1, .im = 1 },
+        .{ .re = 2, .im = 0 },
+    };
+    const A = NamedArrayConst(NK, T){
+        .idx = NamedIndex(NK).initContiguous(.{ .n = 2, .k = 1 }),
+        .buf = &a_buf,
+    };
+
+    var c_buf = [_]T{
+        .{ .re = 0, .im = 0 }, .{ .re = 0, .im = 0 },
+        .{ .re = 0, .im = 0 }, .{ .re = 0, .im = 0 },
+    };
+    const C = NamedArray(NN, T){
+        .idx = NamedIndex(NN).initContiguous(.{ .n = 2, .n2 = 2 }),
+        .buf = &c_buf,
+    };
+
+    // C = A * Aᴴ (lower triangle):
+    // C[0,0] = (1+i)(1-i) = 2
+    // C[1,0] = 2*(1-i) = 2-2i
+    // C[1,1] = 2*2 = 4
+    blas.herk(f64, NK, NN, .n, A, C, .{ .alpha = 1.0, .beta = 0.0 });
+
+    const eps = 1e-10;
+    try std.testing.expectApproxEqAbs(@as(f64, 2), c_buf[0].re, eps);
+    try std.testing.expectApproxEqAbs(@as(f64, 0), c_buf[0].im, eps);
+    try std.testing.expectApproxEqAbs(@as(f64, 2), c_buf[2].re, eps);
+    try std.testing.expectApproxEqAbs(@as(f64, -2), c_buf[2].im, eps);
+    try std.testing.expectApproxEqAbs(@as(f64, 4), c_buf[3].re, eps);
+    try std.testing.expectApproxEqAbs(@as(f64, 0), c_buf[3].im, eps);
+}
+
+test "syr2k real upper (triangle = second axis)" {
+    const MK = enum { m, k };
+    const NK = enum { n, k };
+    const MN = enum { m, n };
+    const T = f64;
+
+    // A (2x2) = [[1, 2], [3, 4]]
+    const a_buf = [_]T{ 1, 2, 3, 4 };
+    const A = NamedArrayConst(MK, T){
+        .idx = NamedIndex(MK).initContiguous(.{ .m = 2, .k = 2 }),
+        .buf = &a_buf,
+    };
+
+    // B (2x2) = [[5, 6], [7, 8]]
+    const b_buf = [_]T{ 5, 6, 7, 8 };
+    const B = NamedArrayConst(NK, T){
+        .idx = NamedIndex(NK).initContiguous(.{ .n = 2, .k = 2 }),
+        .buf = &b_buf,
+    };
+
+    var c_buf = [_]T{ 0, 0, 0, 0 };
+    const C = NamedArray(MN, T){
+        .idx = NamedIndex(MN).initContiguous(.{ .m = 2, .n = 2 }),
+        .buf = &c_buf,
+    };
+
+    // C = A*Bᵀ + B*Aᵀ:
+    // A*Bᵀ = [[1*5+2*6, 1*7+2*8], [3*5+4*6, 3*7+4*8]] = [[17, 23], [39, 53]]
+    // B*Aᵀ = [[5*1+6*2, 5*3+6*4], [7*1+8*2, 7*3+8*4]] = [[17, 39], [23, 53]]
+    // C = [[34, 62], [62, 106]]
+    blas.syr2k(T, MK, NK, MN, .n, A, B, C, .{ .alpha = 1.0, .beta = 0.0 });
+
+    try std.testing.expectApproxEqAbs(@as(T, 34), c_buf[0], 1e-10);
+    try std.testing.expectApproxEqAbs(@as(T, 62), c_buf[1], 1e-10);
+    // c_buf[2] is lower triangle
+    try std.testing.expectApproxEqAbs(@as(T, 106), c_buf[3], 1e-10);
+}
+
+test "syr2k real nontrivial scalars" {
+    const MK = enum { m, k };
+    const NK = enum { n, k };
+    const MN = enum { m, n };
+    const T = f64;
+
+    // A (2x1) = [[1], [2]]
+    const a_buf = [_]T{ 1, 2 };
+    const A = NamedArrayConst(MK, T){
+        .idx = NamedIndex(MK).initContiguous(.{ .m = 2, .k = 1 }),
+        .buf = &a_buf,
+    };
+
+    // B (2x1) = [[3], [4]]
+    const b_buf = [_]T{ 3, 4 };
+    const B = NamedArrayConst(NK, T){
+        .idx = NamedIndex(NK).initContiguous(.{ .n = 2, .k = 1 }),
+        .buf = &b_buf,
+    };
+
+    // C (2x2) = [[1, 1], [1, 1]]
+    var c_buf = [_]T{ 1, 1, 1, 1 };
+    const C = NamedArray(MN, T){
+        .idx = NamedIndex(MN).initContiguous(.{ .m = 2, .n = 2 }),
+        .buf = &c_buf,
+    };
+
+    // A*Bᵀ = [[3], [6]] * [[3, 4]] ... wait no
+    // A is 2x1, Bᵀ is 1x2: A*Bᵀ = [[1*3, 1*4], [2*3, 2*4]] = [[3, 4], [6, 8]]
+    // B*Aᵀ = [[3*1, 3*2], [4*1, 4*2]] = [[3, 6], [4, 8]]
+    // A*Bᵀ + B*Aᵀ = [[6, 10], [10, 16]]
+    // C = 2*(sum) + 3*C = [[12+3, 20+3], [20+3, 32+3]] = [[15, 23], [23, 35]]
+    blas.syr2k(T, MK, NK, MN, .n, A, B, C, .{ .alpha = 2.0, .beta = 3.0 });
+
+    try std.testing.expectApproxEqAbs(@as(T, 15), c_buf[0], 1e-10);
+    try std.testing.expectApproxEqAbs(@as(T, 23), c_buf[1], 1e-10);
+    try std.testing.expectApproxEqAbs(@as(T, 35), c_buf[3], 1e-10);
+}
+
+test "syr2k column-major" {
+    const MK = enum { m, k };
+    const NK = enum { n, k };
+    const MN = enum { m, n };
+    const T = f64;
+
+    // A (2x1) col-major = [[1], [2]] stored as [1, 2]
+    const a_buf = [_]T{ 1, 2 };
+    const A = NamedArrayConst(MK, T){
+        .idx = .{ .shape = .{ .m = 2, .k = 1 }, .strides = .{ .m = 1, .k = 2 } },
+        .buf = &a_buf,
+    };
+
+    // B (2x1) col-major = [[3], [4]] stored as [3, 4]
+    const b_buf = [_]T{ 3, 4 };
+    const B = NamedArrayConst(NK, T){
+        .idx = .{ .shape = .{ .n = 2, .k = 1 }, .strides = .{ .n = 1, .k = 2 } },
+        .buf = &b_buf,
+    };
+
+    var c_buf = [_]T{ 0, 0, 0, 0 };
+    const C = NamedArray(MN, T){
+        .idx = .{ .shape = .{ .m = 2, .n = 2 }, .strides = .{ .m = 1, .n = 2 } },
+        .buf = &c_buf,
+    };
+
+    // A*Bᵀ + B*Aᵀ = [[6, 10], [10, 16]]
+    // Use lower triangle (.m = first axis, ordinal 0) so C[0,0], C[1,0], C[1,1] are written.
+    // Col-major: c_buf[0]=C[0,0]=6, c_buf[1]=C[1,0]=10, c_buf[3]=C[1,1]=16
+    blas.syr2k(T, MK, NK, MN, .m, A, B, C, .{ .alpha = 1.0, .beta = 0.0 });
+
+    try std.testing.expectApproxEqAbs(@as(T, 6), c_buf[0], 1e-10);
+    try std.testing.expectApproxEqAbs(@as(T, 10), c_buf[1], 1e-10);
+    // c_buf[2] = C[0,1] is upper triangle, not written
+    try std.testing.expectApproxEqAbs(@as(T, 16), c_buf[3], 1e-10);
+}
+
+test "her2k complex upper" {
+    const MK = enum { m, k };
+    const NK = enum { n, k };
+    const MN = enum { m, n };
+    const T = Complex(f64);
+
+    // A (2x1) = [[1+i], [2+0i]]
+    const a_buf = [_]T{
+        .{ .re = 1, .im = 1 },
+        .{ .re = 2, .im = 0 },
+    };
+    const A = NamedArrayConst(MK, T){
+        .idx = NamedIndex(MK).initContiguous(.{ .m = 2, .k = 1 }),
+        .buf = &a_buf,
+    };
+
+    // B (2x1) = [[1+0i], [0+i]]
+    const b_buf = [_]T{
+        .{ .re = 1, .im = 0 },
+        .{ .re = 0, .im = 1 },
+    };
+    const B = NamedArrayConst(NK, T){
+        .idx = NamedIndex(NK).initContiguous(.{ .n = 2, .k = 1 }),
+        .buf = &b_buf,
+    };
+
+    var c_buf = [_]T{
+        .{ .re = 0, .im = 0 }, .{ .re = 0, .im = 0 },
+        .{ .re = 0, .im = 0 }, .{ .re = 0, .im = 0 },
+    };
+    const C = NamedArray(MN, T){
+        .idx = NamedIndex(MN).initContiguous(.{ .m = 2, .n = 2 }),
+        .buf = &c_buf,
+    };
+
+    // C = alpha*A*Bᴴ + conj(alpha)*B*Aᴴ, alpha = 1+0i:
+    // A*Bᴴ = [[(1+i)*1, (1+i)*(-i)], [2*1, 2*(-i)]]
+    //       = [[1+i, -i+1], [2, -2i]]
+    //       = [[1+i, 1-i], [2, -2i]]
+    //
+    // B*Aᴴ = [[1*(1-i), 1*2], [i*(1-i), i*2]]
+    //       = [[1-i, 2], [1+i, 2i]]
+    //
+    // C = A*Bᴴ + B*Aᴴ = [[2, 3-i], [3+i, 0]]
+    // Upper triangle (.n = second axis): C[0,0]=2, C[0,1]=3-i, C[1,1]=0
+    // Row-major: c_buf[0]=C[0,0], c_buf[1]=C[0,1] (upper), c_buf[3]=C[1,1]
+    blas.her2k(f64, MK, NK, MN, .n, A, B, C, .{
+        .alpha = .{ .re = 1, .im = 0 },
+        .beta = 0.0,
+    });
+
+    const eps = 1e-10;
+    try std.testing.expectApproxEqAbs(@as(f64, 2), c_buf[0].re, eps);
+    try std.testing.expectApproxEqAbs(@as(f64, 0), c_buf[0].im, eps);
+    try std.testing.expectApproxEqAbs(@as(f64, 3), c_buf[1].re, eps);
+    try std.testing.expectApproxEqAbs(@as(f64, -1), c_buf[1].im, eps);
+    try std.testing.expectApproxEqAbs(@as(f64, 0), c_buf[3].re, eps);
+    try std.testing.expectApproxEqAbs(@as(f64, 0), c_buf[3].im, eps);
+}
+
+test "her2k column-major" {
+    const MK = enum { m, k };
+    const NK = enum { n, k };
+    const MN = enum { m, n };
+    const T = Complex(f64);
+
+    // A (2x1) col-major
+    const a_buf = [_]T{
+        .{ .re = 1, .im = 0 },
+        .{ .re = 0, .im = 1 },
+    };
+    const A = NamedArrayConst(MK, T){
+        .idx = .{ .shape = .{ .m = 2, .k = 1 }, .strides = .{ .m = 1, .k = 2 } },
+        .buf = &a_buf,
+    };
+
+    // B (2x1) col-major
+    const b_buf = [_]T{
+        .{ .re = 1, .im = 0 },
+        .{ .re = 1, .im = 0 },
+    };
+    const B = NamedArrayConst(NK, T){
+        .idx = .{ .shape = .{ .n = 2, .k = 1 }, .strides = .{ .n = 1, .k = 2 } },
+        .buf = &b_buf,
+    };
+
+    var c_buf = [_]T{
+        .{ .re = 0, .im = 0 }, .{ .re = 0, .im = 0 },
+        .{ .re = 0, .im = 0 }, .{ .re = 0, .im = 0 },
+    };
+    const C = NamedArray(MN, T){
+        .idx = .{ .shape = .{ .m = 2, .n = 2 }, .strides = .{ .m = 1, .n = 2 } },
+        .buf = &c_buf,
+    };
+
+    // A = [[1], [i]], B = [[1], [1]]
+    // A*Bᴴ = [[1, 1], [i, i]]
+    // B*Aᴴ = [[1, -i], [1, -i]]
+    // C = A*Bᴴ + B*Aᴴ = [[2, 1-i], [1+i, 0]]
+    // Use lower triangle (.m = first axis) so C[0,0], C[1,0], C[1,1] are written.
+    // Col-major: c_buf[0]=C[0,0]=2, c_buf[1]=C[1,0]=1+i, c_buf[3]=C[1,1]=0
+    blas.her2k(f64, MK, NK, MN, .m, A, B, C, .{
+        .alpha = .{ .re = 1, .im = 0 },
+        .beta = 0.0,
+    });
+
+    const eps = 1e-10;
+    try std.testing.expectApproxEqAbs(@as(f64, 2), c_buf[0].re, eps);
+    try std.testing.expectApproxEqAbs(@as(f64, 0), c_buf[0].im, eps);
+    try std.testing.expectApproxEqAbs(@as(f64, 1), c_buf[1].re, eps);
+    try std.testing.expectApproxEqAbs(@as(f64, 1), c_buf[1].im, eps);
+    // c_buf[2] = C[0,1] is upper triangle, not written
+    try std.testing.expectApproxEqAbs(@as(f64, 0), c_buf[3].re, eps);
+    try std.testing.expectApproxEqAbs(@as(f64, 0), c_buf[3].im, eps);
+}
+
+test "trmm real left (triangle = second axis)" {
+    const MK = enum { m, k };
+    const MN = enum { m, n };
+    const T = f64;
+
+    // A (3x3) upper triangular: [[1, 2, 3], [0, 4, 5], [0, 0, 6]]
+    const a_buf = [_]T{ 1, 2, 3, 0, 4, 5, 0, 0, 6 };
+    const A = NamedArrayConst(MK, T){
+        .idx = NamedIndex(MK).initContiguous(.{ .m = 3, .k = 3 }),
+        .buf = &a_buf,
+    };
+
+    // B (3x2) = [[1, 0], [0, 1], [1, 1]]
+    var b_buf = [_]T{ 1, 0, 0, 1, 1, 1 };
+    const B = NamedArray(MN, T){
+        .idx = NamedIndex(MN).initContiguous(.{ .m = 3, .n = 2 }),
+        .buf = &b_buf,
+    };
+
+    // B := A * B (left side):
+    // row0: 1*1+2*0+3*1=4, 1*0+2*1+3*1=5
+    // row1: 0+4*0+5*1=5, 0+4*1+5*1=9
+    // row2: 0+0+6*1=6, 0+0+6*1=6
+    blas.trmm(T, MK, MN, .k, .non_unit, A, B, .{ .alpha = 1.0 });
+
+    const expected = [_]T{ 4, 5, 5, 9, 6, 6 };
+    for (0..6) |i| {
+        try std.testing.expectApproxEqAbs(expected[i], b_buf[i], math.floatEpsAt(T, expected[i]));
+    }
+}
+
+test "trmm real right" {
+    const KN = enum { k, n };
+    const MN = enum { m, n };
+    const T = f64;
+
+    // A (2x2) upper triangular: [[1, 2], [0, 3]], triangle = second axis = n
+    const a_buf = [_]T{ 1, 2, 0, 3 };
+    const A = NamedArrayConst(KN, T){
+        .idx = NamedIndex(KN).initContiguous(.{ .k = 2, .n = 2 }),
+        .buf = &a_buf,
+    };
+
+    // B (3x2) = [[1, 0], [0, 1], [2, 3]]
+    var b_buf = [_]T{ 1, 0, 0, 1, 2, 3 };
+    const B = NamedArray(MN, T){
+        .idx = NamedIndex(MN).initContiguous(.{ .m = 3, .n = 2 }),
+        .buf = &b_buf,
+    };
+
+    // B := B * A (right side, A shares 'n' with B's second axis):
+    // col0 of result: B * A col0 = B * [1, 0]ᵀ = B[:,0] = [1, 0, 2]
+    // col1 of result: B * A col1 = B * [2, 3]ᵀ = [1*2+0*3, 0*2+1*3, 2*2+3*3] = [2, 3, 13]
+    // Result: [[1, 2], [0, 3], [2, 13]]
+    blas.trmm(T, KN, MN, .n, .non_unit, A, B, .{ .alpha = 1.0 });
+
+    const expected = [_]T{ 1, 2, 0, 3, 2, 13 };
+    for (0..6) |i| {
+        try std.testing.expectApproxEqAbs(expected[i], b_buf[i], math.floatEpsAt(T, expected[i]));
+    }
+}
+
+test "trmm real unit diagonal" {
+    const MK = enum { m, k };
+    const MN = enum { m, n };
+    const T = f64;
+
+    // A (2x2) upper triangular, unit diagonal: [[1, 3], [0, 1]] (diag assumed 1)
+    const a_buf = [_]T{ 99, 3, 0, 99 }; // diagonal values should be ignored
+    const A = NamedArrayConst(MK, T){
+        .idx = NamedIndex(MK).initContiguous(.{ .m = 2, .k = 2 }),
+        .buf = &a_buf,
+    };
+
+    // B (2x2) = [[1, 2], [3, 4]]
+    var b_buf = [_]T{ 1, 2, 3, 4 };
+    const B = NamedArray(MN, T){
+        .idx = NamedIndex(MN).initContiguous(.{ .m = 2, .n = 2 }),
+        .buf = &b_buf,
+    };
+
+    // B := A * B with unit diagonal → A = [[1, 3], [0, 1]]
+    // row0: 1*1+3*3=10, 1*2+3*4=14
+    // row1: 0+1*3=3, 0+1*4=4
+    blas.trmm(T, MK, MN, .k, .unit, A, B, .{ .alpha = 1.0 });
+
+    const expected = [_]T{ 10, 14, 3, 4 };
+    for (0..4) |i| {
+        try std.testing.expectApproxEqAbs(expected[i], b_buf[i], math.floatEpsAt(T, expected[i]));
+    }
+}
+
+test "trmm complex" {
+    const MK = enum { m, k };
+    const MN = enum { m, n };
+    const T = Complex(f64);
+
+    // A (2x2) upper triangular: [[1+i, 2], [0, 1-i]]
+    const a_buf = [_]T{
+        .{ .re = 1, .im = 1 }, .{ .re = 2, .im = 0 },
+        .{ .re = 0, .im = 0 }, .{ .re = 1, .im = -1 },
+    };
+    const A = NamedArrayConst(MK, T){
+        .idx = NamedIndex(MK).initContiguous(.{ .m = 2, .k = 2 }),
+        .buf = &a_buf,
+    };
+
+    // B (2x1) = [[1+0i], [0+i]]
+    var b_buf = [_]T{
+        .{ .re = 1, .im = 0 },
+        .{ .re = 0, .im = 1 },
+    };
+    const B = NamedArray(MN, T){
+        .idx = NamedIndex(MN).initContiguous(.{ .m = 2, .n = 1 }),
+        .buf = &b_buf,
+    };
+
+    // B := A * B:
+    // row0: (1+i)*1 + 2*(i) = 1+i+2i = 1+3i
+    // row1: 0 + (1-i)*(i) = i-i² = 1+i
+    blas.trmm(T, MK, MN, .k, .non_unit, A, B, .{
+        .alpha = .{ .re = 1, .im = 0 },
+    });
+
+    const eps = 1e-10;
+    try std.testing.expectApproxEqAbs(@as(f64, 1), b_buf[0].re, eps);
+    try std.testing.expectApproxEqAbs(@as(f64, 3), b_buf[0].im, eps);
+    try std.testing.expectApproxEqAbs(@as(f64, 1), b_buf[1].re, eps);
+    try std.testing.expectApproxEqAbs(@as(f64, 1), b_buf[1].im, eps);
+}
+
+test "trmm column-major" {
+    const MK = enum { m, k };
+    const MN = enum { m, n };
+    const T = f64;
+
+    // A (2x2) lower triangular col-major: [[2, 0], [3, 4]]
+    // Col-major storage: col0=[2, 3], col1=[0, 4] → [2, 3, 0, 4]
+    const a_buf = [_]T{ 2, 3, 0, 4 };
+    const A = NamedArrayConst(MK, T){
+        .idx = .{ .shape = .{ .m = 2, .k = 2 }, .strides = .{ .m = 1, .k = 2 } },
+        .buf = &a_buf,
+    };
+
+    // B (2x2) col-major: [[1, 5], [2, 6]] stored as [1, 2, 5, 6]
+    var b_buf = [_]T{ 1, 2, 5, 6 };
+    const B = NamedArray(MN, T){
+        .idx = .{ .shape = .{ .m = 2, .n = 2 }, .strides = .{ .m = 1, .n = 2 } },
+        .buf = &b_buf,
+    };
+
+    // B := A * B, A = [[2, 0], [3, 4]], B = [[1, 5], [2, 6]]
+    // row0: 2*1+0*2=2, 2*5+0*6=10
+    // row1: 3*1+4*2=11, 3*5+4*6=39
+    // Result: [[2, 10], [11, 39]]
+    // Col-major: [2, 11, 10, 39]
+    blas.trmm(T, MK, MN, .m, .non_unit, A, B, .{ .alpha = 1.0 });
+
+    const expected = [_]T{ 2, 11, 10, 39 };
+    for (0..4) |i| {
+        try std.testing.expectApproxEqAbs(expected[i], b_buf[i], math.floatEpsAt(T, expected[i]));
+    }
+}
+
+test "trsm real left (triangle = second axis)" {
+    const MK = enum { m, k };
+    const MN = enum { m, n };
+    const T = f64;
+
+    // A (2x2) upper triangular: [[2, 1], [0, 3]]
+    const a_buf = [_]T{ 2, 1, 0, 3 };
+    const A = NamedArrayConst(MK, T){
+        .idx = NamedIndex(MK).initContiguous(.{ .m = 2, .k = 2 }),
+        .buf = &a_buf,
+    };
+
+    // B (2x1) = [[5], [9]]
+    var b_buf = [_]T{ 5, 9 };
+    const B = NamedArray(MN, T){
+        .idx = NamedIndex(MN).initContiguous(.{ .m = 2, .n = 1 }),
+        .buf = &b_buf,
+    };
+
+    // Solve A * X = B:
+    // [[2, 1], [0, 3]] * X = [[5], [9]]
+    // x1 = 9/3 = 3, x0 = (5 - 1*3)/2 = 1
+    // X = [[1], [3]]
+    blas.trsm(T, MK, MN, .k, .non_unit, A, B, .{ .alpha = 1.0 });
+
+    try std.testing.expectApproxEqAbs(@as(T, 1), b_buf[0], 1e-10);
+    try std.testing.expectApproxEqAbs(@as(T, 3), b_buf[1], 1e-10);
+}
+
+test "trsm real right" {
+    const KN = enum { k, n };
+    const MN = enum { m, n };
+    const T = f64;
+
+    // A (2x2) upper triangular: [[2, 1], [0, 3]]
+    const a_buf = [_]T{ 2, 1, 0, 3 };
+    const A = NamedArrayConst(KN, T){
+        .idx = NamedIndex(KN).initContiguous(.{ .k = 2, .n = 2 }),
+        .buf = &a_buf,
+    };
+
+    // B (2x2) = [[4, 3], [8, 6]]
+    var b_buf = [_]T{ 4, 3, 8, 6 };
+    const B = NamedArray(MN, T){
+        .idx = NamedIndex(MN).initContiguous(.{ .m = 2, .n = 2 }),
+        .buf = &b_buf,
+    };
+
+    // Solve X * A = B (right side, A shares 'n' with B):
+    // X * [[2, 1], [0, 3]] = [[4, 3], [8, 6]]
+    // For row0 of X: [x0, x1] * [[2, 1], [0, 3]] = [4, 3]
+    //   2*x0 = 4 → x0 = 2
+    //   x0 + 3*x1 = 3 → 2 + 3*x1 = 3 → x1 = 1/3
+    // For row1: [x0, x1] * [[2, 1], [0, 3]] = [8, 6]
+    //   2*x0 = 8 → x0 = 4
+    //   x0 + 3*x1 = 6 → 4 + 3*x1 = 6 → x1 = 2/3
+    blas.trsm(T, KN, MN, .n, .non_unit, A, B, .{ .alpha = 1.0 });
+
+    const eps = 1e-10;
+    try std.testing.expectApproxEqAbs(@as(T, 2), b_buf[0], eps);
+    try std.testing.expectApproxEqAbs(@as(T, 1.0 / 3.0), b_buf[1], eps);
+    try std.testing.expectApproxEqAbs(@as(T, 4), b_buf[2], eps);
+    try std.testing.expectApproxEqAbs(@as(T, 2.0 / 3.0), b_buf[3], eps);
+}
+
+test "trsm real unit diagonal" {
+    const MK = enum { m, k };
+    const MN = enum { m, n };
+    const T = f64;
+
+    // A (2x2) upper triangular, unit diagonal: [[1, 4], [0, 1]]
+    const a_buf = [_]T{ 99, 4, 0, 99 }; // diagonal ignored
+    const A = NamedArrayConst(MK, T){
+        .idx = NamedIndex(MK).initContiguous(.{ .m = 2, .k = 2 }),
+        .buf = &a_buf,
+    };
+
+    // B (2x1) = [[7], [2]]
+    var b_buf = [_]T{ 7, 2 };
+    const B = NamedArray(MN, T){
+        .idx = NamedIndex(MN).initContiguous(.{ .m = 2, .n = 1 }),
+        .buf = &b_buf,
+    };
+
+    // Solve [[1, 4], [0, 1]] * X = [[7], [2]]
+    // x1 = 2, x0 = 7 - 4*2 = -1
+    blas.trsm(T, MK, MN, .k, .unit, A, B, .{ .alpha = 1.0 });
+
+    try std.testing.expectApproxEqAbs(@as(T, -1), b_buf[0], 1e-10);
+    try std.testing.expectApproxEqAbs(@as(T, 2), b_buf[1], 1e-10);
+}
+
+test "trsm complex" {
+    const MK = enum { m, k };
+    const MN = enum { m, n };
+    const T = Complex(f64);
+
+    // A (2x2) upper triangular: [[1+i, 2], [0, 1-i]]
+    const a_buf = [_]T{
+        .{ .re = 1, .im = 1 }, .{ .re = 2, .im = 0 },
+        .{ .re = 0, .im = 0 }, .{ .re = 1, .im = -1 },
+    };
+    const A = NamedArrayConst(MK, T){
+        .idx = NamedIndex(MK).initContiguous(.{ .m = 2, .k = 2 }),
+        .buf = &a_buf,
+    };
+
+    // Compute A * known_X, then solve to recover X.
+    // X = [[1+0i], [0+i]]
+    // A*X = [[(1+i)*1+2*(i)], [0+(1-i)*(i)]]
+    //     = [[1+i+2i], [i-i²]] = [[1+3i], [1+i]]
+    var b_buf = [_]T{
+        .{ .re = 1, .im = 3 },
+        .{ .re = 1, .im = 1 },
+    };
+    const B = NamedArray(MN, T){
+        .idx = NamedIndex(MN).initContiguous(.{ .m = 2, .n = 1 }),
+        .buf = &b_buf,
+    };
+
+    blas.trsm(T, MK, MN, .k, .non_unit, A, B, .{
+        .alpha = .{ .re = 1, .im = 0 },
+    });
+
+    const eps = 1e-10;
+    try std.testing.expectApproxEqAbs(@as(f64, 1), b_buf[0].re, eps);
+    try std.testing.expectApproxEqAbs(@as(f64, 0), b_buf[0].im, eps);
+    try std.testing.expectApproxEqAbs(@as(f64, 0), b_buf[1].re, eps);
+    try std.testing.expectApproxEqAbs(@as(f64, 1), b_buf[1].im, eps);
+}
+
+test "trsm column-major" {
+    const MK = enum { m, k };
+    const MN = enum { m, n };
+    const T = f64;
+
+    // A (2x2) lower triangular col-major: [[3, 0], [1, 2]]
+    // Col-major: [3, 1, 0, 2]
+    const a_buf = [_]T{ 3, 1, 0, 2 };
+    const A = NamedArrayConst(MK, T){
+        .idx = .{ .shape = .{ .m = 2, .k = 2 }, .strides = .{ .m = 1, .k = 2 } },
+        .buf = &a_buf,
+    };
+
+    // B (2x2) col-major: [[6, 3], [8, 6]] stored as [6, 8, 3, 6]
+    var b_buf = [_]T{ 6, 8, 3, 6 };
+    const B = NamedArray(MN, T){
+        .idx = .{ .shape = .{ .m = 2, .n = 2 }, .strides = .{ .m = 1, .n = 2 } },
+        .buf = &b_buf,
+    };
+
+    // Solve A * X = B, A = [[3, 0], [1, 2]]
+    // For col0: [[3,0],[1,2]] * x = [6, 8]
+    //   3*x0 = 6 → x0 = 2
+    //   x0 + 2*x1 = 8 → 2 + 2*x1 = 8 → x1 = 3
+    // For col1: [[3,0],[1,2]] * x = [3, 6]
+    //   3*x0 = 3 → x0 = 1
+    //   x0 + 2*x1 = 6 → 1 + 2*x1 = 6 → x1 = 5/2
+    // X = [[2, 1], [3, 5/2]], col-major: [2, 3, 1, 2.5]
+    blas.trsm(T, MK, MN, .m, .non_unit, A, B, .{ .alpha = 1.0 });
+
+    const eps = 1e-10;
+    try std.testing.expectApproxEqAbs(@as(T, 2), b_buf[0], eps);
+    try std.testing.expectApproxEqAbs(@as(T, 3), b_buf[1], eps);
+    try std.testing.expectApproxEqAbs(@as(T, 1), b_buf[2], eps);
+    try std.testing.expectApproxEqAbs(@as(T, 2.5), b_buf[3], eps);
+}
+
+test "trmm with alpha" {
+    const MK = enum { m, k };
+    const MN = enum { m, n };
+    const T = f64;
+
+    // A (2x2) lower triangular: [[2, 0], [1, 3]]
+    const a_buf = [_]T{ 2, 0, 1, 3 };
+    const A = NamedArrayConst(MK, T){
+        .idx = NamedIndex(MK).initContiguous(.{ .m = 2, .k = 2 }),
+        .buf = &a_buf,
+    };
+
+    // B (2x1) = [[1], [2]]
+    var b_buf = [_]T{ 1, 2 };
+    const B = NamedArray(MN, T){
+        .idx = NamedIndex(MN).initContiguous(.{ .m = 2, .n = 1 }),
+        .buf = &b_buf,
+    };
+
+    // B := alpha * A * B, alpha = 3
+    // A * B = [[2*1+0], [1*1+3*2]] = [[2], [7]]
+    // 3 * [[2], [7]] = [[6], [21]]
+    blas.trmm(T, MK, MN, .m, .non_unit, A, B, .{ .alpha = 3.0 });
+
+    try std.testing.expectApproxEqAbs(@as(T, 6), b_buf[0], 1e-10);
+    try std.testing.expectApproxEqAbs(@as(T, 21), b_buf[1], 1e-10);
+}
+
+test "trsm with alpha" {
+    const MK = enum { m, k };
+    const MN = enum { m, n };
+    const T = f64;
+
+    // A (2x2) lower triangular: [[2, 0], [0, 4]]
+    const a_buf = [_]T{ 2, 0, 0, 4 };
+    const A = NamedArrayConst(MK, T){
+        .idx = NamedIndex(MK).initContiguous(.{ .m = 2, .k = 2 }),
+        .buf = &a_buf,
+    };
+
+    // B (2x1) = [[6], [12]]
+    var b_buf = [_]T{ 6, 12 };
+    const B = NamedArray(MN, T){
+        .idx = NamedIndex(MN).initContiguous(.{ .m = 2, .n = 1 }),
+        .buf = &b_buf,
+    };
+
+    // Solve A * X = alpha * B, alpha = 2
+    // A * X = 2*B = [[12], [24]]
+    // X = A⁻¹ * [[12], [24]] = [[12/2], [24/4]] = [[6], [6]]
+    blas.trsm(T, MK, MN, .m, .non_unit, A, B, .{ .alpha = 2.0 });
+
+    try std.testing.expectApproxEqAbs(@as(T, 6), b_buf[0], 1e-10);
+    try std.testing.expectApproxEqAbs(@as(T, 6), b_buf[1], 1e-10);
+}

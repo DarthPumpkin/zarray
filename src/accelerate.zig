@@ -1784,25 +1784,35 @@ pub const blas = struct {
             ptr: *const Scalar,
 
             fn init(arr: NamedArrayConst(IJ, Scalar)) @This() {
-                assert(arr.idx.isContiguous());
                 assert(arr.idx.strides.i > 0);
                 assert(arr.idx.strides.j > 0);
-                const order = arr.idx.axisOrder();
-                const layout: acc.CBLAS_ORDER = switch (order[0]) {
-                    .i => @intCast(acc.CblasRowMajor),
-                    .j => @intCast(acc.CblasColMajor),
-                };
-                const leading = switch (order[0]) {
-                    .i => arr.idx.shape.j,
-                    .j => arr.idx.shape.i,
-                };
-                return .{
-                    .layout = layout,
-                    .rows = @intCast(arr.idx.shape.i),
-                    .cols = @intCast(arr.idx.shape.j),
-                    .leading = @intCast(leading),
-                    .ptr = @ptrCast(arr.buf.ptr),
-                };
+                const si: usize = @intCast(arr.idx.strides.i);
+                const sj: usize = @intCast(arr.idx.strides.j);
+
+                // The minor axis must have stride 1 (contiguous).
+                // The major axis stride is the leading dimension (lda),
+                // which may exceed the minor axis shape (submatrix view / padding).
+                if (sj == 1 and si >= arr.idx.shape.j) {
+                    // Row-major: j is contiguous, lda = stride along i
+                    return .{
+                        .layout = @intCast(acc.CblasRowMajor),
+                        .rows = @intCast(arr.idx.shape.i),
+                        .cols = @intCast(arr.idx.shape.j),
+                        .leading = @intCast(si),
+                        .ptr = @ptrCast(arr.buf.ptr),
+                    };
+                } else if (si == 1 and sj >= arr.idx.shape.i) {
+                    // Col-major: i is contiguous, lda = stride along j
+                    return .{
+                        .layout = @intCast(acc.CblasColMajor),
+                        .rows = @intCast(arr.idx.shape.i),
+                        .cols = @intCast(arr.idx.shape.j),
+                        .leading = @intCast(sj),
+                        .ptr = @ptrCast(arr.buf.ptr),
+                    };
+                } else {
+                    @panic("Blas2d: minor axis must have stride 1, and major axis stride must be >= minor axis shape");
+                }
             }
 
             /// Creates a Blas2d from an arbitrary 2D NamedArrayConst by renaming axes to IJ.
@@ -1828,25 +1838,30 @@ pub const blas = struct {
             ptr: *Scalar,
 
             fn init(arr: NamedArray(IJ, Scalar)) @This() {
-                assert(arr.idx.isContiguous());
                 assert(arr.idx.strides.i > 0);
                 assert(arr.idx.strides.j > 0);
-                const order = arr.idx.axisOrder();
-                const layout: acc.CBLAS_ORDER = switch (order[0]) {
-                    .i => @intCast(acc.CblasRowMajor),
-                    .j => @intCast(acc.CblasColMajor),
-                };
-                const leading = switch (order[0]) {
-                    .i => arr.idx.shape.j,
-                    .j => arr.idx.shape.i,
-                };
-                return .{
-                    .layout = layout,
-                    .rows = @intCast(arr.idx.shape.i),
-                    .cols = @intCast(arr.idx.shape.j),
-                    .leading = @intCast(leading),
-                    .ptr = @ptrCast(arr.buf.ptr),
-                };
+                const si: usize = @intCast(arr.idx.strides.i);
+                const sj: usize = @intCast(arr.idx.strides.j);
+
+                if (sj == 1 and si >= arr.idx.shape.j) {
+                    return .{
+                        .layout = @intCast(acc.CblasRowMajor),
+                        .rows = @intCast(arr.idx.shape.i),
+                        .cols = @intCast(arr.idx.shape.j),
+                        .leading = @intCast(si),
+                        .ptr = @ptrCast(arr.buf.ptr),
+                    };
+                } else if (si == 1 and sj >= arr.idx.shape.i) {
+                    return .{
+                        .layout = @intCast(acc.CblasColMajor),
+                        .rows = @intCast(arr.idx.shape.i),
+                        .cols = @intCast(arr.idx.shape.j),
+                        .leading = @intCast(sj),
+                        .ptr = @ptrCast(arr.buf.ptr),
+                    };
+                } else {
+                    @panic("Blas2dMut: minor axis must have stride 1, and major axis stride must be >= minor axis shape");
+                }
             }
 
             /// Creates a Blas2dMut from an arbitrary 2D NamedArray by renaming axes to IJ.
@@ -2583,6 +2598,173 @@ test "rotm" {
             );
         }
     }
+}
+
+test "gemv real padded row-major" {
+    // 2×3 submatrix of a wider 2×5 row-major buffer.
+    // A = [1 2 3 . .]    x = [1]    y = A*x = [ 14]
+    //     [4 5 6 . .]        [2]               [ 32]
+    //                         [3]
+    // lda = 5 (stride of the m axis), shape.k = 3.
+    const MK = enum { m, k };
+    const M = enum { m };
+    const K = enum { k };
+    const T = f64;
+
+    const a_buf = [_]T{
+        1, 2, 3, 99, 99,
+        4, 5, 6, 99, 99,
+    };
+    const A = NamedArrayConst(MK, T){
+        .idx = .{ .shape = .{ .m = 2, .k = 3 }, .strides = .{ .m = 5, .k = 1 } },
+        .buf = &a_buf,
+    };
+
+    const x_buf = [_]T{ 1, 2, 3 };
+    const x = NamedArrayConst(K, T){
+        .idx = NamedIndex(K).initContiguous(.{ .k = 3 }),
+        .buf = &x_buf,
+    };
+
+    var y_buf = [_]T{ 0, 0 };
+    const y = NamedArray(M, T){
+        .idx = NamedIndex(M).initContiguous(.{ .m = 2 }),
+        .buf = &y_buf,
+    };
+
+    blas.gemv(T, MK, K, M, A, x, y, .{ .alpha = 1.0, .beta = 0.0 });
+
+    try std.testing.expectApproxEqAbs(@as(T, 14.0), y_buf[0], 1e-10);
+    try std.testing.expectApproxEqAbs(@as(T, 32.0), y_buf[1], 1e-10);
+}
+
+test "gemv real padded column-major" {
+    // 2×3 submatrix in a taller 4×3 column-major buffer.
+    // A = [1 3 5]    x = [1]    y = A*x = [ 22]
+    //     [2 4 6]        [2]               [ 28]
+    //  (padding row)     [3]
+    //  (padding row)
+    // lda = 4 (stride of the k axis), shape.m = 2.
+    const MK = enum { m, k };
+    const M = enum { m };
+    const K = enum { k };
+    const T = f64;
+
+    const a_buf = [_]T{
+        1, 2, 99, 99,
+        3, 4, 99, 99,
+        5, 6, 99, 99,
+    };
+    const A = NamedArrayConst(MK, T){
+        .idx = .{ .shape = .{ .m = 2, .k = 3 }, .strides = .{ .m = 1, .k = 4 } },
+        .buf = &a_buf,
+    };
+
+    const x_buf = [_]T{ 1, 2, 3 };
+    const x = NamedArrayConst(K, T){
+        .idx = NamedIndex(K).initContiguous(.{ .k = 3 }),
+        .buf = &x_buf,
+    };
+
+    var y_buf = [_]T{ 0, 0 };
+    const y = NamedArray(M, T){
+        .idx = NamedIndex(M).initContiguous(.{ .m = 2 }),
+        .buf = &y_buf,
+    };
+
+    blas.gemv(T, MK, K, M, A, x, y, .{ .alpha = 1.0, .beta = 0.0 });
+
+    try std.testing.expectApproxEqAbs(@as(T, 22.0), y_buf[0], 1e-10);
+    try std.testing.expectApproxEqAbs(@as(T, 28.0), y_buf[1], 1e-10);
+}
+
+test "symv padded row-major" {
+    // 3×3 symmetric matrix in a 3×5 row-major buffer (lda=5).
+    // A = [1 2 3 . .]    x = [1]    y = A*x = [14]
+    //     [2 5 6 . .]        [2]               [30]
+    //     [3 6 9 . .]        [3]               [42]
+    const MK = enum { m, k };
+    const K = enum { k };
+    const M = enum { m };
+    const T = f64;
+
+    const a_buf = [_]T{
+        1, 2, 3, 99, 99,
+        2, 5, 6, 99, 99,
+        3, 6, 9, 99, 99,
+    };
+    const A = NamedArrayConst(MK, T){
+        .idx = .{ .shape = .{ .m = 3, .k = 3 }, .strides = .{ .m = 5, .k = 1 } },
+        .buf = &a_buf,
+    };
+
+    const x_buf = [_]T{ 1, 2, 3 };
+    const x = NamedArrayConst(K, T){
+        .idx = NamedIndex(K).initContiguous(.{ .k = 3 }),
+        .buf = &x_buf,
+    };
+
+    var y_buf = [_]T{ 0, 0, 0 };
+    const y = NamedArray(M, T){
+        .idx = NamedIndex(M).initContiguous(.{ .m = 3 }),
+        .buf = &y_buf,
+    };
+
+    // triangle = .k (second axis) → Upper
+    blas.symv(T, MK, K, M, .k, A, x, y, .{ .alpha = 1.0, .beta = 0.0 });
+
+    const expected = [_]T{ 14.0, 30.0, 42.0 };
+    for (0..3) |i| {
+        try std.testing.expectApproxEqAbs(expected[i], y_buf[i], math.floatEpsAt(T, expected[i]));
+    }
+}
+
+test "ger padded row-major" {
+    // Rank-1 update on a 2×3 matrix in a 2×5 row-major buffer (lda=5).
+    // A_init = [1 2 3 . .]    x = [1]    y = [4 5 6]
+    //          [4 5 6 . .]        [2]
+    //
+    // A_new = A_init + x*y^T = [1+4  2+5   3+6  . .] = [5  7   9  . .]
+    //                           [4+8  5+10  6+12 . .]   [12 15  18 . .]
+    const MK = enum { m, k };
+    const M = enum { m };
+    const K = enum { k };
+    const T = f64;
+
+    var a_buf = [_]T{
+        1, 2, 3, 99, 99,
+        4, 5, 6, 99, 99,
+    };
+    const A = NamedArray(MK, T){
+        .idx = .{ .shape = .{ .m = 2, .k = 3 }, .strides = .{ .m = 5, .k = 1 } },
+        .buf = &a_buf,
+    };
+
+    const x_buf = [_]T{ 1, 2 };
+    const x = NamedArrayConst(M, T){
+        .idx = NamedIndex(M).initContiguous(.{ .m = 2 }),
+        .buf = &x_buf,
+    };
+
+    const y_buf = [_]T{ 4, 5, 6 };
+    const y = NamedArrayConst(K, T){
+        .idx = NamedIndex(K).initContiguous(.{ .k = 3 }),
+        .buf = &y_buf,
+    };
+
+    blas.ger(T, MK, M, K, A, x, y, .{});
+
+    // Check result values (padding must be untouched)
+    try std.testing.expectApproxEqAbs(@as(T, 5.0), a_buf[0], 1e-10);
+    try std.testing.expectApproxEqAbs(@as(T, 7.0), a_buf[1], 1e-10);
+    try std.testing.expectApproxEqAbs(@as(T, 9.0), a_buf[2], 1e-10);
+    try std.testing.expectApproxEqAbs(@as(T, 99.0), a_buf[3], 1e-10); // padding untouched
+    try std.testing.expectApproxEqAbs(@as(T, 99.0), a_buf[4], 1e-10); // padding untouched
+    try std.testing.expectApproxEqAbs(@as(T, 12.0), a_buf[5], 1e-10);
+    try std.testing.expectApproxEqAbs(@as(T, 15.0), a_buf[6], 1e-10);
+    try std.testing.expectApproxEqAbs(@as(T, 18.0), a_buf[7], 1e-10);
+    try std.testing.expectApproxEqAbs(@as(T, 99.0), a_buf[8], 1e-10); // padding untouched
+    try std.testing.expectApproxEqAbs(@as(T, 99.0), a_buf[9], 1e-10); // padding untouched
 }
 
 test "gemv real" {

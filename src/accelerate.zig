@@ -8895,3 +8895,202 @@ test "trsm mixed layouts: A col, B row" {
     try std.testing.expectApproxEqAbs(@as(T, 1), b_buf[0], 1e-10);
     try std.testing.expectApproxEqAbs(@as(T, 3), b_buf[1], 1e-10);
 }
+
+test "gemm padded strides" {
+    const MK = enum { m, k };
+    const KN = enum { k, n };
+    const MN = enum { m, n };
+    const T = f64;
+
+    // A (2×3) row-major, lda=5
+    const a_buf = [_]T{ 1, 2, 3, 99, 99, 4, 5, 6, 99, 99 };
+    const A = NamedArrayConst(MK, T){
+        .idx = .{ .shape = .{ .m = 2, .k = 3 }, .strides = .{ .m = 5, .k = 1 } },
+        .buf = &a_buf,
+    };
+
+    // B (3×2) row-major, ldb=4
+    const b_buf = [_]T{ 7, 8, 99, 99, 9, 10, 99, 99, 11, 12, 99, 99 };
+    const B = NamedArrayConst(KN, T){
+        .idx = .{ .shape = .{ .k = 3, .n = 2 }, .strides = .{ .k = 4, .n = 1 } },
+        .buf = &b_buf,
+    };
+
+    // C (2×2) row-major, ldc=3
+    var c_buf = [_]T{ 0, 0, 99, 0, 0, 99 };
+    const C = NamedArray(MN, T){
+        .idx = .{ .shape = .{ .m = 2, .n = 2 }, .strides = .{ .m = 3, .n = 1 } },
+        .buf = &c_buf,
+    };
+
+    // C = A*B = [[58, 64], [139, 154]]
+    blas.gemm(T, MK, KN, MN, A, B, C, .{ .alpha = 1.0, .beta = 0.0 });
+
+    try std.testing.expectApproxEqAbs(@as(T, 58), c_buf[0], 1e-10);
+    try std.testing.expectApproxEqAbs(@as(T, 64), c_buf[1], 1e-10);
+    try std.testing.expectApproxEqAbs(@as(T, 99), c_buf[2], 1e-10); // padding untouched
+    try std.testing.expectApproxEqAbs(@as(T, 139), c_buf[3], 1e-10);
+    try std.testing.expectApproxEqAbs(@as(T, 154), c_buf[4], 1e-10);
+    try std.testing.expectApproxEqAbs(@as(T, 99), c_buf[5], 1e-10); // padding untouched
+}
+
+test "symm padded strides" {
+    const MK = enum { m, k };
+    const KN = enum { k, n };
+    const MN = enum { m, n };
+    const T = f64;
+
+    // A (2×2) symmetric, row-major, lda=4
+    // A = [[2, 1], [1, 3]]
+    const a_buf = [_]T{ 2, 1, 99, 99, 1, 3, 99, 99 };
+    const A = NamedArrayConst(MK, T){
+        .idx = .{ .shape = .{ .m = 2, .k = 2 }, .strides = .{ .m = 4, .k = 1 } },
+        .buf = &a_buf,
+    };
+
+    // B (2×2) row-major, ldb=3
+    const b_buf = [_]T{ 1, 2, 99, 3, 4, 99 };
+    const B = NamedArrayConst(KN, T){
+        .idx = .{ .shape = .{ .k = 2, .n = 2 }, .strides = .{ .k = 3, .n = 1 } },
+        .buf = &b_buf,
+    };
+
+    // C (2×2) row-major, ldc=3
+    var c_buf = [_]T{ 0, 0, 99, 0, 0, 99 };
+    const C = NamedArray(MN, T){
+        .idx = .{ .shape = .{ .m = 2, .n = 2 }, .strides = .{ .m = 3, .n = 1 } },
+        .buf = &c_buf,
+    };
+
+    // C = A*B = [[5, 8], [10, 14]]
+    blas.symm(T, MK, KN, MN, .{ .triangle = .k, .data = A }, B, C, .{ .alpha = 1.0, .beta = 0.0 });
+
+    try std.testing.expectApproxEqAbs(@as(T, 5), c_buf[0], 1e-10);
+    try std.testing.expectApproxEqAbs(@as(T, 8), c_buf[1], 1e-10);
+    try std.testing.expectApproxEqAbs(@as(T, 99), c_buf[2], 1e-10); // padding untouched
+    try std.testing.expectApproxEqAbs(@as(T, 10), c_buf[3], 1e-10);
+    try std.testing.expectApproxEqAbs(@as(T, 14), c_buf[4], 1e-10);
+    try std.testing.expectApproxEqAbs(@as(T, 99), c_buf[5], 1e-10); // padding untouched
+}
+
+test "syrk padded strides" {
+    const NK = enum { n, k };
+    const NN = enum { n, n2 };
+    const T = f64;
+
+    // A (2×3) row-major, lda=5
+    const a_buf = [_]T{ 1, 2, 3, 99, 99, 4, 5, 6, 99, 99 };
+    const A = NamedArrayConst(NK, T){
+        .idx = .{ .shape = .{ .n = 2, .k = 3 }, .strides = .{ .n = 5, .k = 1 } },
+        .buf = &a_buf,
+    };
+
+    // C (2×2) row-major, ldc=3
+    var c_buf = [_]T{ 0, 0, 99, 0, 0, 99 };
+    const C = NamedArray(NN, T){
+        .idx = .{ .shape = .{ .n = 2, .n2 = 2 }, .strides = .{ .n = 3, .n2 = 1 } },
+        .buf = &c_buf,
+    };
+
+    // C = A*Aᵀ (upper): [[14, 32], [32, 77]]
+    blas.syrk(T, NK, NN, A, .{ .triangle = .n2, .data = C }, .{ .alpha = 1.0, .beta = 0.0 });
+
+    try std.testing.expectApproxEqAbs(@as(T, 14), c_buf[0], 1e-10);
+    try std.testing.expectApproxEqAbs(@as(T, 32), c_buf[1], 1e-10);
+    try std.testing.expectApproxEqAbs(@as(T, 77), c_buf[4], 1e-10);
+}
+
+test "syr2k padded strides" {
+    const MK = enum { m, k };
+    const NK = enum { n, k };
+    const MN = enum { m, n };
+    const T = f64;
+
+    // A (2×2) row-major, lda=3
+    const a_buf = [_]T{ 1, 2, 99, 3, 4, 99 };
+    const A = NamedArrayConst(MK, T){
+        .idx = .{ .shape = .{ .m = 2, .k = 2 }, .strides = .{ .m = 3, .k = 1 } },
+        .buf = &a_buf,
+    };
+
+    // B (2×2) row-major, ldb=4
+    const b_buf = [_]T{ 5, 6, 99, 99, 7, 8, 99, 99 };
+    const B = NamedArrayConst(NK, T){
+        .idx = .{ .shape = .{ .n = 2, .k = 2 }, .strides = .{ .n = 4, .k = 1 } },
+        .buf = &b_buf,
+    };
+
+    // C (2×2) row-major, ldc=3
+    var c_buf = [_]T{ 0, 0, 99, 0, 0, 99 };
+    const C = NamedArray(MN, T){
+        .idx = .{ .shape = .{ .m = 2, .n = 2 }, .strides = .{ .m = 3, .n = 1 } },
+        .buf = &c_buf,
+    };
+
+    // A*Bᵀ + B*Aᵀ = [[34, 62], [62, 106]] (upper: .n)
+    blas.syr2k(T, MK, NK, MN, A, B, .{ .triangle = .n, .data = C }, .{ .alpha = 1.0, .beta = 0.0 });
+
+    try std.testing.expectApproxEqAbs(@as(T, 34), c_buf[0], 1e-10);
+    try std.testing.expectApproxEqAbs(@as(T, 62), c_buf[1], 1e-10);
+    try std.testing.expectApproxEqAbs(@as(T, 106), c_buf[4], 1e-10);
+}
+
+test "trmm padded strides" {
+    const MK = enum { m, k };
+    const MN = enum { m, n };
+    const T = f64;
+
+    // A (2×2) upper triangular, row-major, lda=3
+    // A = [[1, 2], [0, 3]]
+    const a_buf = [_]T{ 1, 2, 99, 0, 3, 99 };
+    const A = NamedArrayConst(MK, T){
+        .idx = .{ .shape = .{ .m = 2, .k = 2 }, .strides = .{ .m = 3, .k = 1 } },
+        .buf = &a_buf,
+    };
+
+    // B (2×2) row-major, ldb=3
+    var b_buf = [_]T{ 5, 6, 99, 7, 8, 99 };
+    const B = NamedArray(MN, T){
+        .idx = .{ .shape = .{ .m = 2, .n = 2 }, .strides = .{ .m = 3, .n = 1 } },
+        .buf = &b_buf,
+    };
+
+    // B := A * B = [[19, 22], [21, 24]]
+    blas.trmm(T, MK, MN, .{ .triangle = .k, .data = A }, .non_unit, B, .{ .alpha = 1.0 });
+
+    try std.testing.expectApproxEqAbs(@as(T, 19), b_buf[0], 1e-10);
+    try std.testing.expectApproxEqAbs(@as(T, 22), b_buf[1], 1e-10);
+    try std.testing.expectApproxEqAbs(@as(T, 99), b_buf[2], 1e-10); // padding untouched
+    try std.testing.expectApproxEqAbs(@as(T, 21), b_buf[3], 1e-10);
+    try std.testing.expectApproxEqAbs(@as(T, 24), b_buf[4], 1e-10);
+    try std.testing.expectApproxEqAbs(@as(T, 99), b_buf[5], 1e-10); // padding untouched
+}
+
+test "trsm padded strides" {
+    const MK = enum { m, k };
+    const MN = enum { m, n };
+    const T = f64;
+
+    // A (2×2) upper triangular, row-major, lda=3
+    // A = [[2, 1], [0, 3]]
+    const a_buf = [_]T{ 2, 1, 99, 0, 3, 99 };
+    const A = NamedArrayConst(MK, T){
+        .idx = .{ .shape = .{ .m = 2, .k = 2 }, .strides = .{ .m = 3, .k = 1 } },
+        .buf = &a_buf,
+    };
+
+    // B (2×1) row-major, ldb=2
+    var b_buf = [_]T{ 5, 99, 9, 99 };
+    const B = NamedArray(MN, T){
+        .idx = .{ .shape = .{ .m = 2, .n = 1 }, .strides = .{ .m = 2, .n = 1 } },
+        .buf = &b_buf,
+    };
+
+    // Solve A * X = B: x1 = 9/3 = 3, x0 = (5 - 1*3)/2 = 1
+    blas.trsm(T, MK, MN, .{ .triangle = .k, .data = A }, .non_unit, B, .{ .alpha = 1.0 });
+
+    try std.testing.expectApproxEqAbs(@as(T, 1), b_buf[0], 1e-10);
+    try std.testing.expectApproxEqAbs(@as(T, 99), b_buf[1], 1e-10); // padding untouched
+    try std.testing.expectApproxEqAbs(@as(T, 3), b_buf[2], 1e-10);
+    try std.testing.expectApproxEqAbs(@as(T, 99), b_buf[3], 1e-10); // padding untouched
+}

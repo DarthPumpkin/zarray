@@ -513,16 +513,15 @@ pub const blas = struct {
 
     /// `chemv` and `zhemv` in BLAS.
     /// Computes `y = alpha * A * x + beta * y` where `A` is a Hermitian matrix.
-    /// Only the triangle of `A` where `triangle >= the other axis` is read.
-    /// `x`'s axis must match one axis of `A` and `y`'s axis must match the other.
+    /// Only the triangle of `A` specified by `A.triangle` is read.
+    /// `x`'s axis must match one axis of `A.data` and `y`'s axis must match the other.
     /// The scalars `alpha` and `beta` are optional and default to 1.
     pub fn hemv(
         comptime Scalar: type,
         comptime AxisA: type,
         comptime AxisX: type,
         comptime AxisY: type,
-        triangle: AxisA,
-        A: NamedArrayConst(AxisA, Scalar),
+        A: BlasTriangular(Scalar, AxisA),
         x: NamedArrayConst(AxisX, Scalar),
         y: NamedArray(AxisY, Scalar),
         scalars: struct { alpha: Scalar = one(Scalar), beta: Scalar = one(Scalar) },
@@ -534,10 +533,10 @@ pub const blas = struct {
             else => @compileError("hemv requires Complex(f32) or Complex(f64)."),
         };
 
-        _ = named_index.resolveDimensions(.{ A.idx.shape, x.idx.shape, y.idx.shape }) catch
+        _ = named_index.resolveDimensions(.{ A.data.idx.shape, x.idx.shape, y.idx.shape }) catch
             @panic("hemv: dimension mismatch");
 
-        const A_blas = Blas2d(Scalar).fromNamedArray(AxisA, A, 0);
+        const A_blas = Blas2d(Scalar).fromNamedArray(AxisA, A.data, 0);
         assert(A_blas.rows == A_blas.cols);
 
         const x_blas = Blas1d(Scalar).init(AxisX, x);
@@ -545,7 +544,7 @@ pub const blas = struct {
 
         f(
             A_blas.layout,
-            uploBlas(AxisA, triangle),
+            A.uplo(),
             A_blas.rows, // N
             &scalars.alpha,
             A_blas.ptr,
@@ -560,16 +559,15 @@ pub const blas = struct {
 
     /// `ssymv` and `dsymv` in BLAS.
     /// Computes `y = alpha * A * x + beta * y` where `A` is a real symmetric matrix.
-    /// Only the triangle of `A` where `triangle >= the other axis` is read.
-    /// `x`'s axis must match one axis of `A` and `y`'s axis must match the other.
+    /// Only the triangle of `A` specified by `A.triangle` is read.
+    /// `x`'s axis must match one axis of `A.data` and `y`'s axis must match the other.
     /// The scalars `alpha` and `beta` are optional and default to 1.
     pub fn symv(
         comptime Scalar: type,
         comptime AxisA: type,
         comptime AxisX: type,
         comptime AxisY: type,
-        triangle: AxisA,
-        A: NamedArrayConst(AxisA, Scalar),
+        A: BlasTriangular(Scalar, AxisA),
         x: NamedArrayConst(AxisX, Scalar),
         y: NamedArray(AxisY, Scalar),
         scalars: struct { alpha: Scalar = one(Scalar), beta: Scalar = one(Scalar) },
@@ -581,10 +579,10 @@ pub const blas = struct {
             else => @compileError("symv requires f32 or f64."),
         };
 
-        _ = named_index.resolveDimensions(.{ A.idx.shape, x.idx.shape, y.idx.shape }) catch
+        _ = named_index.resolveDimensions(.{ A.data.idx.shape, x.idx.shape, y.idx.shape }) catch
             @panic("symv: dimension mismatch");
 
-        const A_blas = Blas2d(Scalar).fromNamedArray(AxisA, A, 0);
+        const A_blas = Blas2d(Scalar).fromNamedArray(AxisA, A.data, 0);
         assert(A_blas.rows == A_blas.cols);
 
         const x_blas = Blas1d(Scalar).init(AxisX, x);
@@ -592,7 +590,7 @@ pub const blas = struct {
 
         f(
             A_blas.layout,
-            uploBlas(AxisA, triangle),
+            A.uplo(),
             A_blas.rows, // N
             scalars.alpha,
             A_blas.ptr,
@@ -607,15 +605,14 @@ pub const blas = struct {
 
     /// `strmv`, `dtrmv`, `ctrmv` and `ztrmv` in BLAS.
     /// Computes `x = A * x` in-place where `A` is a triangular matrix.
-    /// Only the triangle of `A` where `triangle >= the other axis` is read.
+    /// Only the triangle of `A` specified by `A.triangle` is read.
     /// If `diag` is `.unit`, the diagonal of `A` is assumed to be all ones and is not read.
     pub fn trmv(
         comptime Scalar: type,
         comptime AxisA: type,
         comptime AxisX: type,
-        triangle: AxisA,
+        A: BlasTriangular(Scalar, AxisA),
         diag: Diag,
-        A: NamedArrayConst(AxisA, Scalar),
         x: NamedArray(AxisX, Scalar),
     ) void {
         comptime assertMatchingAxis(AxisA, AxisX);
@@ -627,10 +624,10 @@ pub const blas = struct {
             else => @compileError("trmv is incompatible with given Scalar type."),
         };
 
-        _ = named_index.resolveDimensions(.{ A.idx.shape, x.idx.shape }) catch
+        _ = named_index.resolveDimensions(.{ A.data.idx.shape, x.idx.shape }) catch
             @panic("trmv: dimension mismatch");
 
-        const A_blas = Blas2d(Scalar).fromNamedArray(AxisA, A, 0);
+        const A_blas = Blas2d(Scalar).fromNamedArray(AxisA, A.data, 0);
         assert(A_blas.rows == A_blas.cols);
 
         const x_blas = Blas1dMut(Scalar).init(AxisX, x);
@@ -642,7 +639,7 @@ pub const blas = struct {
 
         f(
             A_blas.layout,
-            uploBlas(AxisA, triangle),
+            A.uplo(),
             @intCast(acc.CblasNoTrans),
             diag_blas,
             A_blas.rows, // N
@@ -656,15 +653,14 @@ pub const blas = struct {
     /// `strsv`, `dtrsv`, `ctrsv` and `ztrsv` in BLAS.
     /// Solves `A * x_new = x_old` in-place, i.e. computes `x := A⁻¹ * x`,
     /// where `A` is a triangular matrix.
-    /// Only the triangle of `A` where `triangle >= the other axis` is read.
+    /// Only the triangle of `A` specified by `A.triangle` is read.
     /// If `diag` is `.unit`, the diagonal of `A` is assumed to be all ones and is not read.
     pub fn trsv(
         comptime Scalar: type,
         comptime AxisA: type,
         comptime AxisX: type,
-        triangle: AxisA,
+        A: BlasTriangular(Scalar, AxisA),
         diag: Diag,
-        A: NamedArrayConst(AxisA, Scalar),
         x: NamedArray(AxisX, Scalar),
     ) void {
         comptime assertMatchingAxis(AxisA, AxisX);
@@ -676,10 +672,10 @@ pub const blas = struct {
             else => @compileError("trsv is incompatible with given Scalar type."),
         };
 
-        _ = named_index.resolveDimensions(.{ A.idx.shape, x.idx.shape }) catch
+        _ = named_index.resolveDimensions(.{ A.data.idx.shape, x.idx.shape }) catch
             @panic("trsv: dimension mismatch");
 
-        const A_blas = Blas2d(Scalar).fromNamedArray(AxisA, A, 0);
+        const A_blas = Blas2d(Scalar).fromNamedArray(AxisA, A.data, 0);
         assert(A_blas.rows == A_blas.cols);
 
         const x_blas = Blas1dMut(Scalar).init(AxisX, x);
@@ -691,7 +687,7 @@ pub const blas = struct {
 
         f(
             A_blas.layout,
-            uploBlas(AxisA, triangle),
+            A.uplo(),
             @intCast(acc.CblasNoTrans),
             diag_blas,
             A_blas.rows, // N
@@ -763,9 +759,9 @@ pub const blas = struct {
     /// `ssbmv` and `dsbmv` in BLAS.
     /// Computes `y = alpha * A * x + beta * y` where `A` is an N×N real symmetric band matrix
     /// with bandwidth `K`, stored in BLAS band format.
-    /// `A` is a 2D array with a band axis (size `K + 1`) and a vector axis
+    /// `A.data` is a 2D array with a band axis (size `K + 1`) and a vector axis
     /// matching `x`'s axis (size N). `K` is inferred from the band axis size.
-    /// `triangle` selects the stored triangle (second axis → upper, first axis → lower).
+    /// `A.triangle` selects the stored triangle (second axis → upper, first axis → lower).
     /// The scalars `alpha` and `beta` are optional and default to 1.
     ///
     /// **Storage requirement**: The band axis of `A` must be contiguous (stride 1)
@@ -775,8 +771,7 @@ pub const blas = struct {
         comptime Scalar: type,
         comptime AxisA: type,
         comptime AxisX: type,
-        triangle: AxisA,
-        A: BlasBand(Scalar, AxisA, AxisX),
+        A: BlasTriangular(Scalar, AxisA),
         x: NamedArrayConst(AxisX, Scalar),
         y: NamedArray(AxisX, Scalar),
         scalars: struct { alpha: Scalar = one(Scalar), beta: Scalar = one(Scalar) },
@@ -788,17 +783,18 @@ pub const blas = struct {
             else => @compileError("sbmv requires f32 or f64."),
         };
 
+        const A_band = BlasBand(Scalar, AxisA, AxisX).init(A.data);
         const x_blas = Blas1d(Scalar).init(AxisX, x);
         const y_blas = Blas1dMut(Scalar).init(AxisX, y);
 
         f(
             @intCast(acc.CblasColMajor),
-            uploBlas(AxisA, triangle),
-            A.n, // N
-            A.k(),
+            A.uplo(),
+            A_band.n, // N
+            A_band.k(),
             scalars.alpha,
-            A.ptr,
-            A.leading, // LDA
+            A_band.ptr,
+            A_band.leading, // LDA
             x_blas.ptr,
             x_blas.inc,
             scalars.beta,
@@ -810,9 +806,9 @@ pub const blas = struct {
     /// `chbmv` and `zhbmv` in BLAS.
     /// Computes `y = alpha * A * x + beta * y` where `A` is an N×N Hermitian band matrix
     /// with bandwidth `K`, stored in BLAS band format.
-    /// `A` is a 2D array with a band axis (size `K + 1`) and a vector axis
+    /// `A.data` is a 2D array with a band axis (size `K + 1`) and a vector axis
     /// matching `x`'s axis (size N). `K` is inferred from the band axis size.
-    /// `triangle` selects the stored triangle (second axis → upper, first axis → lower).
+    /// `A.triangle` selects the stored triangle (second axis → upper, first axis → lower).
     /// The scalars `alpha` and `beta` are optional and default to 1.
     ///
     /// **Storage requirement**: The band axis of `A` must be contiguous (stride 1)
@@ -822,8 +818,7 @@ pub const blas = struct {
         comptime Scalar: type,
         comptime AxisA: type,
         comptime AxisX: type,
-        triangle: AxisA,
-        A: BlasBand(Scalar, AxisA, AxisX),
+        A: BlasTriangular(Scalar, AxisA),
         x: NamedArrayConst(AxisX, Scalar),
         y: NamedArray(AxisX, Scalar),
         scalars: struct { alpha: Scalar = one(Scalar), beta: Scalar = one(Scalar) },
@@ -835,17 +830,18 @@ pub const blas = struct {
             else => @compileError("hbmv requires Complex(f32) or Complex(f64)."),
         };
 
+        const A_band = BlasBand(Scalar, AxisA, AxisX).init(A.data);
         const x_blas = Blas1d(Scalar).init(AxisX, x);
         const y_blas = Blas1dMut(Scalar).init(AxisX, y);
 
         f(
             @intCast(acc.CblasColMajor),
-            uploBlas(AxisA, triangle),
-            A.n, // N
-            A.k(),
+            A.uplo(),
+            A_band.n, // N
+            A_band.k(),
             &scalars.alpha,
-            A.ptr,
-            A.leading, // LDA
+            A_band.ptr,
+            A_band.leading, // LDA
             x_blas.ptr,
             x_blas.inc,
             &scalars.beta,
@@ -857,9 +853,9 @@ pub const blas = struct {
     /// `stbmv`, `dtbmv`, `ctbmv` and `ztbmv` in BLAS.
     /// Computes `x = A * x` in-place where `A` is a triangular band matrix
     /// with bandwidth `K`, stored in BLAS band format.
-    /// `A` is a 2D array with a band axis (size `K + 1`) and a vector axis
+    /// `A.data` is a 2D array with a band axis (size `K + 1`) and a vector axis
     /// matching `x`'s axis (size N). `K` is inferred from the band axis size.
-    /// `triangle` selects the stored triangle (second axis → upper, first axis → lower).
+    /// `A.triangle` selects the stored triangle (second axis → upper, first axis → lower).
     /// If `diag` is `.unit`, the diagonal of `A` is assumed to be all ones and is not read.
     ///
     /// **Storage requirement**: The band axis of `A` must be contiguous (stride 1)
@@ -869,9 +865,8 @@ pub const blas = struct {
         comptime Scalar: type,
         comptime AxisA: type,
         comptime AxisX: type,
-        triangle: AxisA,
+        A: BlasTriangular(Scalar, AxisA),
         diag: Diag,
-        A: BlasBand(Scalar, AxisA, AxisX),
         x: NamedArray(AxisX, Scalar),
     ) void {
         comptime assertMatchingAxis(AxisA, AxisX);
@@ -883,6 +878,7 @@ pub const blas = struct {
             else => @compileError("tbmv is incompatible with given Scalar type."),
         };
 
+        const A_band = BlasBand(Scalar, AxisA, AxisX).init(A.data);
         const x_blas = Blas1dMut(Scalar).init(AxisX, x);
 
         const diag_blas: acc.CBLAS_DIAG = switch (diag) {
@@ -892,13 +888,13 @@ pub const blas = struct {
 
         f(
             @intCast(acc.CblasColMajor),
-            uploBlas(AxisA, triangle),
+            A.uplo(),
             @intCast(acc.CblasNoTrans),
             diag_blas,
-            A.n, // N
-            A.k(),
-            A.ptr,
-            A.leading, // LDA
+            A_band.n, // N
+            A_band.k(),
+            A_band.ptr,
+            A_band.leading, // LDA
             x_blas.ptr,
             x_blas.inc,
         );
@@ -907,9 +903,9 @@ pub const blas = struct {
     /// `stbsv`, `dtbsv`, `ctbsv` and `ztbsv` in BLAS.
     /// Solves `A * x_new = x_old` in-place, i.e. computes `x := A⁻¹ * x`,
     /// where `A` is a triangular band matrix with bandwidth `K`, stored in BLAS band format.
-    /// `A` is a 2D array with a band axis (size `K + 1`) and a vector axis
+    /// `A.data` is a 2D array with a band axis (size `K + 1`) and a vector axis
     /// matching `x`'s axis (size N). `K` is inferred from the band axis size.
-    /// `triangle` selects the stored triangle (second axis → upper, first axis → lower).
+    /// `A.triangle` selects the stored triangle (second axis → upper, first axis → lower).
     /// If `diag` is `.unit`, the diagonal of `A` is assumed to be all ones and is not read.
     ///
     /// **Storage requirement**: The band axis of `A` must be contiguous (stride 1)
@@ -919,9 +915,8 @@ pub const blas = struct {
         comptime Scalar: type,
         comptime AxisA: type,
         comptime AxisX: type,
-        triangle: AxisA,
+        A: BlasTriangular(Scalar, AxisA),
         diag: Diag,
-        A: BlasBand(Scalar, AxisA, AxisX),
         x: NamedArray(AxisX, Scalar),
     ) void {
         comptime assertMatchingAxis(AxisA, AxisX);
@@ -933,6 +928,7 @@ pub const blas = struct {
             else => @compileError("tbsv is incompatible with given Scalar type."),
         };
 
+        const A_band = BlasBand(Scalar, AxisA, AxisX).init(A.data);
         const x_blas = Blas1dMut(Scalar).init(AxisX, x);
 
         const diag_blas: acc.CBLAS_DIAG = switch (diag) {
@@ -942,13 +938,13 @@ pub const blas = struct {
 
         f(
             @intCast(acc.CblasColMajor),
-            uploBlas(AxisA, triangle),
+            A.uplo(),
             @intCast(acc.CblasNoTrans),
             diag_blas,
-            A.n, // N
-            A.k(),
-            A.ptr,
-            A.leading, // LDA
+            A_band.n, // N
+            A_band.k(),
+            A_band.ptr,
+            A_band.leading, // LDA
             x_blas.ptr,
             x_blas.inc,
         );
@@ -1444,15 +1440,14 @@ pub const blas = struct {
 
     /// `ssyr` and `dsyr` in BLAS.
     /// Computes `A := alpha * x * xᵀ + A` (symmetric rank-1 update) for real scalars.
-    /// Only the triangle of `A` where `triangle >= the other axis` is read and written.
-    /// `x`'s axis must match one axis of `A`.
+    /// Only the triangle of `A` specified by `A.triangle` is read and written.
+    /// `x`'s axis must match one axis of `A.data`.
     /// The scalar `alpha` is optional and defaults to 1.
     pub fn syr(
         comptime Scalar: type,
         comptime AxisA: type,
         comptime AxisX: type,
-        triangle: AxisA,
-        A: NamedArray(AxisA, Scalar),
+        A: BlasTriangularMut(Scalar, AxisA),
         x: NamedArrayConst(AxisX, Scalar),
         scalars: struct { alpha: Scalar = one(Scalar) },
     ) void {
@@ -1463,17 +1458,17 @@ pub const blas = struct {
             else => @compileError("syr requires f32 or f64."),
         };
 
-        _ = named_index.resolveDimensions(.{ A.idx.shape, x.idx.shape }) catch
+        _ = named_index.resolveDimensions(.{ A.data.idx.shape, x.idx.shape }) catch
             @panic("syr: dimension mismatch");
 
-        const A_blas = Blas2dMut(Scalar).fromNamedArray(AxisA, A, 0);
+        const A_blas = Blas2dMut(Scalar).fromNamedArray(AxisA, A.data, 0);
         assert(A_blas.rows == A_blas.cols);
 
         const x_blas = Blas1d(Scalar).init(AxisX, x);
 
         f(
             A_blas.layout,
-            uploBlas(AxisA, triangle),
+            A.uplo(),
             A_blas.rows, // N
             scalars.alpha,
             x_blas.ptr,
@@ -1485,15 +1480,14 @@ pub const blas = struct {
 
     /// `cher` and `zher` in BLAS.
     /// Computes `A := alpha * x * xᴴ + A` (Hermitian rank-1 update) for complex scalars.
-    /// Only the triangle of `A` where `triangle >= the other axis` is read and written.
-    /// `x`'s axis must match one axis of `A`.
+    /// Only the triangle of `A` specified by `A.triangle` is read and written.
+    /// `x`'s axis must match one axis of `A.data`.
     /// The scalar `alpha` is real and optional, defaulting to 1.
     pub fn her(
         comptime RealScalar: type,
         comptime AxisA: type,
         comptime AxisX: type,
-        triangle: AxisA,
-        A: NamedArray(AxisA, Complex(RealScalar)),
+        A: BlasTriangularMut(Complex(RealScalar), AxisA),
         x: NamedArrayConst(AxisX, Complex(RealScalar)),
         scalars: struct { alpha: RealScalar = 1.0 },
     ) void {
@@ -1505,17 +1499,17 @@ pub const blas = struct {
             else => @compileError("her requires f32 or f64 as RealScalar."),
         };
 
-        _ = named_index.resolveDimensions(.{ A.idx.shape, x.idx.shape }) catch
+        _ = named_index.resolveDimensions(.{ A.data.idx.shape, x.idx.shape }) catch
             @panic("her: dimension mismatch");
 
-        const A_blas = Blas2dMut(Scalar).fromNamedArray(AxisA, A, 0);
+        const A_blas = Blas2dMut(Scalar).fromNamedArray(AxisA, A.data, 0);
         assert(A_blas.rows == A_blas.cols);
 
         const x_blas = Blas1d(Scalar).init(AxisX, x);
 
         f(
             A_blas.layout,
-            uploBlas(AxisA, triangle),
+            A.uplo(),
             A_blas.rows, // N
             scalars.alpha,
             x_blas.ptr,
@@ -1527,16 +1521,15 @@ pub const blas = struct {
 
     /// `ssyr2` and `dsyr2` in BLAS.
     /// Computes `A := alpha * x * yᵀ + alpha * y * xᵀ + A` (symmetric rank-2 update) for real scalars.
-    /// Only the triangle of `A` where `triangle >= the other axis` is read and written.
-    /// `x`'s axis must match one axis of `A` and `y`'s axis must match the other.
+    /// Only the triangle of `A` specified by `A.triangle` is read and written.
+    /// `x`'s axis must match one axis of `A.data` and `y`'s axis must match the other.
     /// The scalar `alpha` is optional and defaults to 1.
     pub fn syr2(
         comptime Scalar: type,
         comptime AxisA: type,
         comptime AxisX: type,
         comptime AxisY: type,
-        triangle: AxisA,
-        A: NamedArray(AxisA, Scalar),
+        A: BlasTriangularMut(Scalar, AxisA),
         x: NamedArrayConst(AxisX, Scalar),
         y: NamedArrayConst(AxisY, Scalar),
         scalars: struct { alpha: Scalar = one(Scalar) },
@@ -1548,10 +1541,10 @@ pub const blas = struct {
             else => @compileError("syr2 requires f32 or f64."),
         };
 
-        _ = named_index.resolveDimensions(.{ A.idx.shape, x.idx.shape, y.idx.shape }) catch
+        _ = named_index.resolveDimensions(.{ A.data.idx.shape, x.idx.shape, y.idx.shape }) catch
             @panic("syr2: dimension mismatch");
 
-        const A_blas = Blas2dMut(Scalar).fromNamedArray(AxisA, A, 0);
+        const A_blas = Blas2dMut(Scalar).fromNamedArray(AxisA, A.data, 0);
         assert(A_blas.rows == A_blas.cols);
 
         const x_blas = Blas1d(Scalar).init(AxisX, x);
@@ -1559,7 +1552,7 @@ pub const blas = struct {
 
         f(
             A_blas.layout,
-            uploBlas(AxisA, triangle),
+            A.uplo(),
             A_blas.rows, // N
             scalars.alpha,
             x_blas.ptr,
@@ -1573,16 +1566,15 @@ pub const blas = struct {
 
     /// `cher2` and `zher2` in BLAS.
     /// Computes `A := alpha * x * yᴴ + conj(alpha) * y * xᴴ + A` (Hermitian rank-2 update) for complex scalars.
-    /// Only the triangle of `A` where `triangle >= the other axis` is read and written.
-    /// `x`'s axis must match one axis of `A` and `y`'s axis must match the other.
+    /// Only the triangle of `A` specified by `A.triangle` is read and written.
+    /// `x`'s axis must match one axis of `A.data` and `y`'s axis must match the other.
     /// The scalar `alpha` is complex and optional, defaulting to 1.
     pub fn her2(
         comptime Scalar: type,
         comptime AxisA: type,
         comptime AxisX: type,
         comptime AxisY: type,
-        triangle: AxisA,
-        A: NamedArray(AxisA, Scalar),
+        A: BlasTriangularMut(Scalar, AxisA),
         x: NamedArrayConst(AxisX, Scalar),
         y: NamedArrayConst(AxisY, Scalar),
         scalars: struct { alpha: Scalar = one(Scalar) },
@@ -1594,10 +1586,10 @@ pub const blas = struct {
             else => @compileError("her2 requires Complex(f32) or Complex(f64)."),
         };
 
-        _ = named_index.resolveDimensions(.{ A.idx.shape, x.idx.shape, y.idx.shape }) catch
+        _ = named_index.resolveDimensions(.{ A.data.idx.shape, x.idx.shape, y.idx.shape }) catch
             @panic("her2: dimension mismatch");
 
-        const A_blas = Blas2dMut(Scalar).fromNamedArray(AxisA, A, 0);
+        const A_blas = Blas2dMut(Scalar).fromNamedArray(AxisA, A.data, 0);
         assert(A_blas.rows == A_blas.cols);
 
         const x_blas = Blas1d(Scalar).init(AxisX, x);
@@ -1605,7 +1597,7 @@ pub const blas = struct {
 
         f(
             A_blas.layout,
-            uploBlas(AxisA, triangle),
+            A.uplo(),
             A_blas.rows, // N
             &scalars.alpha,
             x_blas.ptr,
@@ -3439,7 +3431,7 @@ test "symv padded row-major" {
     };
 
     // triangle = .k (second axis) → Upper
-    blas.symv(T, MK, K, M, .k, A, x, y, .{ .alpha = 1.0, .beta = 0.0 });
+    blas.symv(T, MK, K, M, .{ .triangle = .k, .data = A }, x, y, .{ .alpha = 1.0, .beta = 0.0 });
 
     const expected = [_]T{ 14.0, 30.0, 42.0 };
     for (0..3) |i| {
@@ -3868,7 +3860,7 @@ test "hemv upper (triangle = second axis)" {
     //   y[0] = 2*(1) + (1-i)*(i) + (3+2i)*(1) = 2 + i+1 + 3+2i = 6+3i
     //   y[1] = (1+i)*(1) + 5*(i) + (2-i)*(1) = 1+i + 5i + 2-i = 3+5i
     //   y[2] = (3-2i)*(1) + (2+i)*(i) + 4*(1) = 3-2i + 2i-1 + 4 = 6+0i
-    blas.hemv(T, MK, K, M, .k, A, x, y, .{
+    blas.hemv(T, MK, K, M, .{ .triangle = .k, .data = A }, x, y, .{
         .alpha = .{ .re = 1, .im = 0 },
         .beta = .{ .re = 0, .im = 0 },
     });
@@ -3927,7 +3919,7 @@ test "hemv lower (triangle = first axis)" {
     };
 
     // Same result as the upper test: y = [6+3i, 3+5i, 6+0i]
-    blas.hemv(T, MK, K, M, .m, A, x, y, .{
+    blas.hemv(T, MK, K, M, .{ .triangle = .m, .data = A }, x, y, .{
         .alpha = .{ .re = 1, .im = 0 },
         .beta = .{ .re = 0, .im = 0 },
     });
@@ -4000,7 +3992,7 @@ test "hemv nontrivial scalars and strides" {
     //   (1+i)(7+i)  = 7+i+7i+i²   = 6+8i
     //   y[0] = 2+8i + 2   = 4+8i
     //   y[1] = 6+8i + 4+2i = 10+10i
-    blas.hemv(T, AB, B, A_, .b, A, x, y, .{
+    blas.hemv(T, AB, B, A_, .{ .triangle = .b, .data = A }, x, y, .{
         .alpha = .{ .re = 1, .im = 1 },
         .beta = .{ .re = 2, .im = 0 },
     });
@@ -4057,7 +4049,7 @@ test "hemv column-major matrix" {
     // y = A*x:
     //   y[0] = 2*1 + (1-i)*(i) = 2 + i+1 = 3+i
     //   y[1] = (1+i)*1 + 3*(i) = 1+i+3i = 1+4i
-    blas.hemv(T, IJ, J, I, .j, A, x, y, .{
+    blas.hemv(T, IJ, J, I, .{ .triangle = .j, .data = A }, x, y, .{
         .alpha = .{ .re = 1, .im = 0 },
         .beta = .{ .re = 0, .im = 0 },
     });
@@ -4106,7 +4098,7 @@ test "symv upper (triangle = second axis)" {
     //   y[0] = 2*1 + 3*2 + 5*3  = 2 + 6 + 15  = 23
     //   y[1] = 3*1 + 7*2 + 11*3 = 3 + 14 + 33 = 50
     //   y[2] = 5*1 + 11*2 + 13*3 = 5 + 22 + 39 = 66
-    blas.symv(T, MK, K, M, .k, A, x, y, .{ .alpha = 1.0, .beta = 0.0 });
+    blas.symv(T, MK, K, M, .{ .triangle = .k, .data = A }, x, y, .{ .alpha = 1.0, .beta = 0.0 });
 
     const expected = [_]T{ 23.0, 50.0, 66.0 };
     for (0..3) |i| {
@@ -4148,7 +4140,7 @@ test "symv lower (triangle = first axis)" {
     };
 
     // Same result as the upper test: y = [23, 50, 66]
-    blas.symv(T, MK, K, M, .m, A, x, y, .{ .alpha = 1.0, .beta = 0.0 });
+    blas.symv(T, MK, K, M, .{ .triangle = .m, .data = A }, x, y, .{ .alpha = 1.0, .beta = 0.0 });
 
     const expected = [_]T{ 23.0, 50.0, 66.0 };
     for (0..3) |i| {
@@ -4198,7 +4190,7 @@ test "symv nontrivial scalars and strides" {
     //   row1: 3*2 + 7*1 = 13
     //
     // y = 2.5 * [11, 13] + (-1) * [10, 20] = [27.5-10, 32.5-20] = [17.5, 12.5]
-    blas.symv(T, AB, B, A_, .b, A, x, y, .{ .alpha = 2.5, .beta = -1.0 });
+    blas.symv(T, AB, B, A_, .{ .triangle = .b, .data = A }, x, y, .{ .alpha = 2.5, .beta = -1.0 });
 
     const eps: f32 = 1e-5;
     try std.testing.expectApproxEqAbs(@as(f32, 17.5), y_buf[0], eps);
@@ -4238,7 +4230,7 @@ test "symv column-major matrix" {
     };
 
     // y = A*x = [4*1+3*2, 3*1+7*2] = [10, 17]
-    blas.symv(T, IJ, J, I, .j, A, x, y, .{ .alpha = 1.0, .beta = 0.0 });
+    blas.symv(T, IJ, J, I, .{ .triangle = .j, .data = A }, x, y, .{ .alpha = 1.0, .beta = 0.0 });
 
     const expected = [_]T{ 10.0, 17.0 };
     for (0..2) |i| {
@@ -4276,7 +4268,7 @@ test "trmv real" {
     //   x[0] = 2*1 + 3*2 + 5*3  = 23
     //   x[1] = 0*1 + 7*2 + 11*3 = 47
     //   x[2] = 0*1 + 0*2 + 13*3 = 39
-    blas.trmv(T, MK, K, .k, .non_unit, A, x);
+    blas.trmv(T, MK, K, .{ .triangle = .k, .data = A }, .non_unit, x);
 
     const expected = [_]T{ 23.0, 47.0, 39.0 };
     for (0..3) |i| {
@@ -4314,7 +4306,7 @@ test "trmv real unit diagonal" {
     //   x[0] = 1*1 + 0*2 + 0*3 = 1
     //   x[1] = 4*1 + 1*2 + 0*3 = 6
     //   x[2] = 5*1 + 6*2 + 1*3 = 20
-    blas.trmv(T, MK, K, .m, .unit, A, x);
+    blas.trmv(T, MK, K, .{ .triangle = .m, .data = A }, .unit, x);
 
     const expected = [_]T{ 1.0, 6.0, 20.0 };
     for (0..3) |i| {
@@ -4351,7 +4343,7 @@ test "trmv complex" {
     // x := A * x:
     //   x[0] = (1+i)(1) + (2+3i)(i) = 1+i + 2i+3i² = 1+i+2i-3 = -2+3i
     //   x[1] = 0*(1) + (4-i)(i) = 4i-i² = 1+4i
-    blas.trmv(T, MK, K, .k, .non_unit, A, x);
+    blas.trmv(T, MK, K, .{ .triangle = .k, .data = A }, .non_unit, x);
 
     const eps = 1e-10;
     try std.testing.expectApproxEqAbs(@as(f64, -2), x_buf[0].re, eps);
@@ -4396,7 +4388,7 @@ test "trmv nontrivial strides" {
     // x := A * x:
     //   x[0] = (3)(1+i) + 0*(2) = 3+3i
     //   x[1] = (1+2i)(1+i) + (5)(2) = 1+i+2i+2i² + 10 = 9+3i
-    blas.trmv(T, AB, B, .a, .non_unit, A, x);
+    blas.trmv(T, AB, B, .{ .triangle = .a, .data = A }, .non_unit, x);
 
     const eps: f32 = 1e-5;
     try std.testing.expectApproxEqAbs(@as(f32, 3), x_buf[0].re, eps);
@@ -4436,7 +4428,7 @@ test "trmv column-major matrix" {
         .buf = &x_buf,
     };
 
-    blas.trmv(T, IJ, J, .j, .non_unit, A, x);
+    blas.trmv(T, IJ, J, .{ .triangle = .j, .data = A }, .non_unit, x);
 
     const expected = [_]T{ 8.0, 10.0 };
     for (0..2) |i| {
@@ -4472,7 +4464,7 @@ test "trsv real" {
         .buf = &x_buf,
     };
 
-    blas.trsv(T, MK, K, .k, .non_unit, A, x);
+    blas.trsv(T, MK, K, .{ .triangle = .k, .data = A }, .non_unit, x);
 
     const expected = [_]T{ 1.0, 2.0, 3.0 };
     for (0..3) |i| {
@@ -4508,7 +4500,7 @@ test "trsv real unit diagonal" {
         .buf = &x_buf,
     };
 
-    blas.trsv(T, MK, K, .m, .unit, A, x);
+    blas.trsv(T, MK, K, .{ .triangle = .m, .data = A }, .unit, x);
 
     const expected = [_]T{ 1.0, 2.0, 3.0 };
     for (0..3) |i| {
@@ -4544,7 +4536,7 @@ test "trsv complex" {
         .buf = &x_buf,
     };
 
-    blas.trsv(T, MK, K, .k, .non_unit, A, x);
+    blas.trsv(T, MK, K, .{ .triangle = .k, .data = A }, .non_unit, x);
 
     const eps = 1e-10;
     try std.testing.expectApproxEqAbs(@as(f64, 1), x_buf[0].re, eps);
@@ -4588,7 +4580,7 @@ test "trsv nontrivial strides" {
         .buf = &x_buf,
     };
 
-    blas.trsv(T, AB, B, .a, .non_unit, A, x);
+    blas.trsv(T, AB, B, .{ .triangle = .a, .data = A }, .non_unit, x);
 
     const eps: f32 = 1e-5;
     try std.testing.expectApproxEqAbs(@as(f32, 1), x_buf[0].re, eps);
@@ -4626,7 +4618,7 @@ test "trsv column-major matrix" {
         .buf = &x_buf,
     };
 
-    blas.trsv(T, IJ, J, .j, .non_unit, A, x);
+    blas.trsv(T, IJ, J, .{ .triangle = .j, .data = A }, .non_unit, x);
 
     const expected = [_]T{ 1.0, 2.0 };
     for (0..2) |i| {
@@ -5077,7 +5069,7 @@ test "syr real (triangle = second axis)" {
     //   [0,0] = 1+1=2,  [0,1] = 2+2=4,  [0,2] = 3+3=6
     //                    [1,1] = 4+5=9,   [1,2] = 6+6=12
     //                                     [2,2] = 9+9=18
-    blas.syr(T, MK, K, .k, A, x, .{});
+    blas.syr(T, MK, K, .{ .triangle = .k, .data = A }, x, .{});
 
     const eps = 1e-10;
     // Row 0
@@ -5123,7 +5115,7 @@ test "syr real nontrivial strides" {
     // A_new lower = 2 * [[4,_],[2,1]] + [[3,_],[1,7]]
     //            = [[8,_],[4,2]] + [[3,_],[1,7]]
     //            = [[11,_],[5,9]]
-    blas.syr(T, AB, B, .a, A, x, .{ .alpha = 2.0 });
+    blas.syr(T, AB, B, .{ .triangle = .a, .data = A }, x, .{ .alpha = 2.0 });
 
     const eps: f32 = 1e-5;
     try std.testing.expectApproxEqAbs(@as(f32, 11), a_buf[0], eps);
@@ -5158,7 +5150,7 @@ test "syr column-major matrix" {
     // x*x^T = [[1, 2], [2, 4]]
     // A_new lower = [[1+1, _], [2+2, 3+4]] = [[2, _], [4, 7]]
     // Column-major buffer: [2, 4, sentinel, 7]
-    blas.syr(T, IJ, J, .i, A, x, .{});
+    blas.syr(T, IJ, J, .{ .triangle = .i, .data = A }, x, .{});
 
     const eps = 1e-10;
     try std.testing.expectApproxEqAbs(@as(T, 2), a_buf[0], eps);
@@ -5200,7 +5192,7 @@ test "her complex (triangle = second axis)" {
     // Upper part: [[2, 2+2i], [_, 4]]
     // A_new upper = [[2, 2+2i], [_, 4]] + [[1, 2+i], [_, 3]]
     //            = [[3+0i, 4+3i], [_, 7+0i]]
-    blas.her(f64, MK, K, .k, A, x, .{});
+    blas.her(f64, MK, K, .{ .triangle = .k, .data = A }, x, .{});
 
     const eps = 1e-10;
     try std.testing.expectApproxEqAbs(@as(f64, 3), a_buf[0].re, eps);
@@ -5253,7 +5245,7 @@ test "her complex nontrivial strides" {
     // A_new lower = 2*[[1,_],[1-i,2]] + [[5,_],[1-i,3]]
     //            = [[2,_],[2-2i,4]] + [[5,_],[1-i,3]]
     //            = [[7+0i, _], [3-3i, 7+0i]]
-    blas.her(f32, AB, A_, .a, A, x, .{ .alpha = 2.0 });
+    blas.her(f32, AB, A_, .{ .triangle = .a, .data = A }, x, .{ .alpha = 2.0 });
 
     const eps: f32 = 1e-5;
     try std.testing.expectApproxEqAbs(@as(f32, 7), a_buf[0].re, eps);
@@ -5302,7 +5294,7 @@ test "her column-major matrix" {
     // Lower part: [[1, _], [1+i, 2]]
     // A_new lower = [[3+1, _], [1+i+1+i, 5+2]] = [[4+0i, _], [2+2i, 7+0i]]
     // Column-major buffer: [4+0i, 2+2i, sentinel, 7+0i]
-    blas.her(f64, IJ, J, .i, A, x, .{});
+    blas.her(f64, IJ, J, .{ .triangle = .i, .data = A }, x, .{});
 
     const eps = 1e-10;
     try std.testing.expectApproxEqAbs(@as(f64, 4), a_buf[0].re, eps);
@@ -5355,7 +5347,7 @@ test "syr2 real (triangle = second axis)" {
     // x*y^T + y*x^T = [[8,13,18],[13,20,27],[18,27,36]]
     // A_new upper = [[8,13,18],[_,20,27],[_,_,36]] + [[1,2,3],[_,5,6],[_,_,9]]
     //            = [[9,15,21],[_,25,33],[_,_,45]]
-    blas.syr2(T, MK, M, K, .k, A, x, y, .{});
+    blas.syr2(T, MK, M, K, .{ .triangle = .k, .data = A }, x, y, .{});
 
     const eps = 1e-10;
     // Row 0
@@ -5411,7 +5403,7 @@ test "syr2 real nontrivial strides" {
     // A_new lower = 2 * [[12, _], [11, 8]] + [[3, _], [1, 7]]
     //            = [[24, _], [22, 16]] + [[3, _], [1, 7]]
     //            = [[27, _], [23, 23]]
-    blas.syr2(T, AB, B, A_, .a, A, x, y, .{ .alpha = 2.0 });
+    blas.syr2(T, AB, B, A_, .{ .triangle = .a, .data = A }, x, y, .{ .alpha = 2.0 });
 
     const eps: f32 = 1e-5;
     try std.testing.expectApproxEqAbs(@as(f32, 27), a_buf[0], eps);
@@ -5456,7 +5448,7 @@ test "syr2 column-major matrix" {
     // Lower part: [[6,_],[10,16]]
     // A_new lower = [[1+6,_],[2+10,5+16]] = [[7,_],[12,21]]
     // Column-major buffer: [7, 12, sentinel, 21]
-    blas.syr2(T, IJ, I, J, .i, A, x, y, .{});
+    blas.syr2(T, IJ, I, J, .{ .triangle = .i, .data = A }, x, y, .{});
 
     const eps = 1e-10;
     try std.testing.expectApproxEqAbs(@as(T, 7), a_buf[0], eps);
@@ -5522,7 +5514,7 @@ test "her2 complex (triangle = second axis)" {
     // Upper part: [[2, 4i], [_, 4]]
     // A_new upper = [[2, 4i], [_, 4]] + [[1, 2+i], [_, 3]]
     //            = [[3+0i, 2+5i], [_, 7+0i]]
-    blas.her2(T, MK, M, K, .k, A, x, y, .{});
+    blas.her2(T, MK, M, K, .{ .triangle = .k, .data = A }, x, y, .{});
 
     const eps = 1e-10;
     try std.testing.expectApproxEqAbs(@as(f64, 3), a_buf[0].re, eps);
@@ -5610,7 +5602,7 @@ test "her2 complex nontrivial strides" {
     // Lower part: [[-2, _], [3+2i, 6]]
     // A_new lower = [[-2,_],[3+2i,6]] + [[5,_],[1-i,3]]
     //            = [[3+0i, _], [4+i, 9+0i]]
-    blas.her2(T, AB, B, A_, .a, A, x, y, .{ .alpha = .{ .re = 2, .im = 1 } });
+    blas.her2(T, AB, B, A_, .{ .triangle = .a, .data = A }, x, y, .{ .alpha = .{ .re = 2, .im = 1 } });
 
     const eps: f32 = 1e-4;
     try std.testing.expectApproxEqAbs(@as(f32, 3), a_buf[0].re, eps);
@@ -5805,7 +5797,7 @@ test "sbmv real upper" {
     };
 
     // triangle = .k (second axis, ordinal 1) → Upper
-    blas.sbmv(T, BK, K, .k, blas.BlasBand(T, BK, K).init(AB), x, y, .{ .alpha = 1.0, .beta = 0.0 });
+    blas.sbmv(T, BK, K, .{ .triangle = .k, .data = AB }, x, y, .{ .alpha = 1.0, .beta = 0.0 });
 
     const expected = [_]T{ 4.0, 8.0, 12.0, 11.0 };
     for (0..4) |i| {
@@ -5846,7 +5838,7 @@ test "sbmv column-major matrix" {
         .buf = &y_buf,
     };
 
-    blas.sbmv(T, BK, K, .k, blas.BlasBand(T, BK, K).init(AB), x, y, .{ .alpha = 1.0, .beta = 0.0 });
+    blas.sbmv(T, BK, K, .{ .triangle = .k, .data = AB }, x, y, .{ .alpha = 1.0, .beta = 0.0 });
 
     const expected = [_]T{ 4.0, 8.0, 12.0, 11.0 };
     for (0..4) |i| {
@@ -5902,7 +5894,7 @@ test "hbmv complex upper" {
         .buf = &y_buf,
     };
 
-    blas.hbmv(T, BK, K, .k, blas.BlasBand(T, BK, K).init(AB), x, y, .{
+    blas.hbmv(T, BK, K, .{ .triangle = .k, .data = AB }, x, y, .{
         .alpha = .{ .re = 1, .im = 0 },
         .beta = .{ .re = 0, .im = 0 },
     });
@@ -5963,7 +5955,7 @@ test "hbmv column-major matrix" {
         .buf = &y_buf,
     };
 
-    blas.hbmv(T, BK, K, .k, blas.BlasBand(T, BK, K).init(AB), x, y, .{
+    blas.hbmv(T, BK, K, .{ .triangle = .k, .data = AB }, x, y, .{
         .alpha = .{ .re = 1, .im = 0 },
         .beta = .{ .re = 0, .im = 0 },
     });
@@ -6014,7 +6006,7 @@ test "tbmv real upper" {
     };
 
     // triangle = .k (second axis) → Upper
-    blas.tbmv(T, BK, K, .k, .non_unit, blas.BlasBand(T, BK, K).init(AB), x);
+    blas.tbmv(T, BK, K, .{ .triangle = .k, .data = AB }, .non_unit, x);
 
     const expected = [_]T{ 4.0, 9.0, 16.0, 20.0 };
     for (0..4) |i| {
@@ -6049,7 +6041,7 @@ test "tbmv column-major matrix" {
         .buf = &x_buf,
     };
 
-    blas.tbmv(T, BK, K, .k, .non_unit, blas.BlasBand(T, BK, K).init(AB), x);
+    blas.tbmv(T, BK, K, .{ .triangle = .k, .data = AB }, .non_unit, x);
 
     const expected = [_]T{ 4.0, 9.0, 16.0, 20.0 };
     for (0..4) |i| {
@@ -6089,7 +6081,7 @@ test "tbsv real upper" {
         .buf = &x_buf,
     };
 
-    blas.tbsv(T, BK, K, .k, .non_unit, blas.BlasBand(T, BK, K).init(AB), x);
+    blas.tbsv(T, BK, K, .{ .triangle = .k, .data = AB }, .non_unit, x);
 
     const expected = [_]T{ 1.0, 2.0, 3.0, 4.0 };
     for (0..4) |i| {
@@ -6123,7 +6115,7 @@ test "tbsv column-major matrix" {
         .buf = &x_buf,
     };
 
-    blas.tbsv(T, BK, K, .k, .non_unit, blas.BlasBand(T, BK, K).init(AB), x);
+    blas.tbsv(T, BK, K, .{ .triangle = .k, .data = AB }, .non_unit, x);
 
     const expected = [_]T{ 1.0, 2.0, 3.0, 4.0 };
     for (0..4) |i| {
@@ -6190,7 +6182,7 @@ test "her2 column-major matrix" {
     // Lower part: [[2, _], [1+2i, 2]]
     // A_new lower = [[2+2, _], [1-i+1+2i, 4+2]] = [[4+0i, _], [2+i, 6+0i]]
     // Column-major buffer: [4+0i, 2+i, sentinel, 6+0i]
-    blas.her2(T, IJ, I, J, .i, A, x, y, .{});
+    blas.her2(T, IJ, I, J, .{ .triangle = .i, .data = A }, x, y, .{});
 
     const eps = 1e-10;
     try std.testing.expectApproxEqAbs(@as(f64, 4), a_buf[0].re, eps);

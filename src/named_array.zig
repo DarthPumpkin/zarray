@@ -6,6 +6,8 @@ const named_index = @import("named_index.zig");
 const NamedIndex = named_index.NamedIndex;
 const AxisRenamePair = named_index.AxisRenamePair;
 
+const Writer = std.Io.Writer;
+
 pub fn NamedArray(comptime Axis: type, comptime Scalar: type) type {
     const Index = NamedIndex(Axis);
     return struct {
@@ -105,6 +107,21 @@ pub fn NamedArray(comptime Axis: type, comptime Scalar: type) type {
                 .buf = self.buf,
             };
         }
+
+        /// Pretty-print the array. Invoked with the `{f}` format specifier.
+        pub fn format(self: @This(), w: *Writer) Writer.Error!void {
+            return formatArrayGeneric(self, w);
+        }
+
+        fn formatDebug(self: @This(), w: *Writer) Writer.Error!void {
+            return formatArrayDebugGeneric(self, w);
+        }
+
+        /// Returns a `{f}`-printable wrapper that renders shape/strides/offset
+        /// diagnostics in addition to the data.
+        pub fn fmtDebug(self: @This()) std.fmt.Alt(@This(), formatDebug) {
+            return .{ .data = self };
+        }
     };
 }
 
@@ -171,6 +188,21 @@ pub fn NamedArrayConst(comptime Axis: type, comptime Scalar: type) type {
                 .buf = self.buf,
             };
         }
+
+        /// Pretty-print the array. Invoked with the `{f}` format specifier.
+        pub fn format(self: @This(), w: *Writer) Writer.Error!void {
+            return formatArrayGeneric(self, w);
+        }
+
+        fn formatDebug(self: @This(), w: *Writer) Writer.Error!void {
+            return formatArrayDebugGeneric(self, w);
+        }
+
+        /// Returns a `{f}`-printable wrapper that renders shape/strides/offset
+        /// diagnostics in addition to the data.
+        pub fn fmtDebug(self: @This()) std.fmt.Alt(@This(), formatDebug) {
+            return .{ .data = self };
+        }
     };
 }
 
@@ -223,6 +255,267 @@ fn getPtrCheckedGeneric(self: anytype, key: @TypeOf(self.idx).Axes) ?@TypeOf(&se
         return &self.buf[key_];
     }
     return null;
+}
+
+// ---------------------------------------------------------------------------
+// Formatting
+//
+// Shared by NamedArray and NamedArrayConst. All traversal goes through
+// `iterKeys`/`scalarAt`, so reversed, broadcast and otherwise non-contiguous
+// views render in correct logical order. No allocation is performed: column
+// alignment uses a single upfront pass plus a fixed stack buffer per scalar.
+// ---------------------------------------------------------------------------
+
+/// Format specifier used for a single scalar. Numeric scalars use `{d}`;
+/// anything else falls back to `{any}`.
+fn scalarFmtSpec(comptime Scalar: type) []const u8 {
+    return switch (@typeInfo(Scalar)) {
+        .int, .comptime_int, .float, .comptime_float => "{d}",
+        else => "{any}",
+    };
+}
+
+/// Rendered width of a scalar, without allocating.
+fn scalarWidth(comptime Scalar: type, v: Scalar) usize {
+    var buf: [128]u8 = undefined;
+    const s = std.fmt.bufPrint(&buf, scalarFmtSpec(Scalar), .{v}) catch return buf.len;
+    return s.len;
+}
+
+/// Right-align a scalar within `col_width` columns.
+fn writePadded(comptime Scalar: type, w: *Writer, v: Scalar, col_width: usize) Writer.Error!void {
+    const wdt = scalarWidth(Scalar, v);
+    if (col_width > wdt) try w.splatByteAll(' ', col_width - wdt);
+    try w.print(scalarFmtSpec(Scalar), .{v});
+}
+
+/// Number of head/tail elements shown along a truncated axis. An axis is
+/// truncated only when its length exceeds `2 * trunc_edge`, so that the
+/// ellipsis always stands in for at least one hidden element.
+const trunc_edge: usize = 3;
+
+fn truncated(len: usize) bool {
+    return len > 2 * trunc_edge;
+}
+
+/// Write the `...` placeholder for a hidden column, right-aligned so that the
+/// tail columns stay aligned with the head columns.
+fn writeEllipsisCell(w: *Writer, col_width: usize) Writer.Error!void {
+    if (col_width > 3) try w.splatByteAll(' ', col_width - 3);
+    try w.writeAll("...");
+}
+
+/// `NamedArray(axis: size, ...) Scalar`
+fn writeHeaderGeneric(self: anytype, w: *Writer) Writer.Error!void {
+    const Scalar = @typeInfo(@TypeOf(self.buf)).pointer.child;
+    const is_const = @typeInfo(@TypeOf(self.buf)).pointer.is_const;
+    const field_names = comptime std.meta.fieldNames(@TypeOf(self.idx).Axis);
+    try w.writeAll(if (is_const) "NamedArrayConst(" else "NamedArray(");
+    inline for (field_names, 0..) |fname, i| {
+        if (i > 0) try w.writeAll(", ");
+        try w.print("{s}: {d}", .{ fname, @field(self.idx.shape, fname) });
+    }
+    try w.print(") {s}", .{@typeName(Scalar)});
+}
+
+/// Render the innermost row (the last axis) as `[v0 v1 ...]`, truncating the
+/// column axis with an inline ellipsis when it is long. All other axes must
+/// already be fixed in `key`.
+fn writeRowGeneric(self: anytype, w: *Writer, key: *@TypeOf(self.idx).Axes, col_width: usize) Writer.Error!void {
+    const Scalar = @typeInfo(@TypeOf(self.buf)).pointer.child;
+    const field_names = comptime std.meta.fieldNames(@TypeOf(self.idx).Axis);
+    const rank = field_names.len;
+    const col_axis = field_names[rank - 1];
+    const cols = @field(self.idx.shape, col_axis);
+
+    try w.writeByte('[');
+    if (truncated(cols)) {
+        var c: usize = 0;
+        while (c < trunc_edge) : (c += 1) {
+            if (c > 0) try w.writeByte(' ');
+            @field(key.*, col_axis) = c;
+            try writePadded(Scalar, w, self.scalarAt(key.*), col_width);
+        }
+        try w.writeByte(' ');
+        try writeEllipsisCell(w, col_width);
+        c = cols - trunc_edge;
+        while (c < cols) : (c += 1) {
+            try w.writeByte(' ');
+            @field(key.*, col_axis) = c;
+            try writePadded(Scalar, w, self.scalarAt(key.*), col_width);
+        }
+    } else {
+        var c: usize = 0;
+        while (c < cols) : (c += 1) {
+            if (c > 0) try w.writeByte(' ');
+            @field(key.*, col_axis) = c;
+            try writePadded(Scalar, w, self.scalarAt(key.*), col_width);
+        }
+    }
+    try w.writeByte(']');
+}
+
+/// Render the innermost 1D row or 2D grid (the last one or two axes), with
+/// `outer` axes already fixed in `key`. Both the row and column axes are
+/// truncated with an ellipsis when long.
+fn writeBlockGeneric(self: anytype, w: *Writer, key: *@TypeOf(self.idx).Axes, col_width: usize, indent: usize) Writer.Error!void {
+    const field_names = comptime std.meta.fieldNames(@TypeOf(self.idx).Axis);
+    const rank = field_names.len;
+    const inner = @min(rank, 2);
+    if (inner == 1) {
+        try w.splatByteAll(' ', indent);
+        try writeRowGeneric(self, w, key, col_width);
+    } else {
+        const row_axis = field_names[rank - 2];
+        const rows = @field(self.idx.shape, row_axis);
+        try w.splatByteAll(' ', indent);
+        try w.writeByte('[');
+        if (truncated(rows)) {
+            var r: usize = 0;
+            while (r < trunc_edge) : (r += 1) {
+                if (r > 0) {
+                    try w.writeByte('\n');
+                    try w.splatByteAll(' ', indent + 1);
+                }
+                @field(key.*, row_axis) = r;
+                try writeRowGeneric(self, w, key, col_width);
+            }
+            try w.writeByte('\n');
+            try w.splatByteAll(' ', indent + 1);
+            try w.writeAll("...");
+            r = rows - trunc_edge;
+            while (r < rows) : (r += 1) {
+                try w.writeByte('\n');
+                try w.splatByteAll(' ', indent + 1);
+                @field(key.*, row_axis) = r;
+                try writeRowGeneric(self, w, key, col_width);
+            }
+        } else {
+            var r: usize = 0;
+            while (r < rows) : (r += 1) {
+                if (r > 0) {
+                    try w.writeByte('\n');
+                    try w.splatByteAll(' ', indent + 1);
+                }
+                @field(key.*, row_axis) = r;
+                try writeRowGeneric(self, w, key, col_width);
+            }
+        }
+        try w.writeByte(']');
+    }
+}
+
+/// Render the data body: a single bracketed block for rank <= 2, or one
+/// labeled block per outer-axis combination for rank >= 3.
+fn writeBodyGeneric(self: anytype, w: *Writer) Writer.Error!void {
+    const Index = @TypeOf(self.idx);
+    const Axes = Index.Axes;
+    const Scalar = @typeInfo(@TypeOf(self.buf)).pointer.child;
+    const field_names = comptime std.meta.fieldNames(Index.Axis);
+    const rank = field_names.len;
+
+    if (rank == 0) {
+        const key: Axes = undefined;
+        try w.print(scalarFmtSpec(Scalar), .{self.scalarAt(key)});
+        return;
+    }
+    if (self.idx.count() == 0) {
+        try w.writeAll("[]");
+        return;
+    }
+
+    // Single upfront pass to size the value column for aligned output.
+    const col_width = blk: {
+        var maxw: usize = 0;
+        var it = self.idx.iterKeys();
+        while (it.next()) |key| {
+            const wdt = scalarWidth(Scalar, self.scalarAt(key));
+            if (wdt > maxw) maxw = wdt;
+        }
+        break :blk maxw;
+    };
+
+    if (rank <= 2) {
+        var key: Axes = undefined;
+        try writeBlockGeneric(self, w, &key, col_width, 0);
+    } else {
+        const num_outer = rank - 2;
+        var outer_shape: [num_outer]usize = undefined;
+        inline for (0..num_outer) |oi| outer_shape[oi] = @field(self.idx.shape, field_names[oi]);
+
+        var total: usize = 1;
+        for (outer_shape) |s| total *= s;
+
+        var key: Axes = undefined;
+        const truncate = truncated(total);
+        var first = true;
+        var i: usize = 0;
+        while (i < total) : (i += 1) {
+            // Treat the outer-axis combinations as one flat sequence and elide
+            // its middle. The per-slice labels keep the shown indices explicit.
+            if (truncate and i == trunc_edge) {
+                try w.writeAll("\n\n...");
+                first = false;
+                i = total - trunc_edge;
+            }
+
+            // Decompose the flat index into per-outer-axis indices (row-major,
+            // last outer axis fastest).
+            var outer: [num_outer]usize = undefined;
+            var rem = i;
+            var d = num_outer;
+            while (d > 0) {
+                d -= 1;
+                outer[d] = rem % outer_shape[d];
+                rem /= outer_shape[d];
+            }
+            inline for (0..num_outer) |oi| @field(key, field_names[oi]) = outer[oi];
+
+            if (!first) try w.writeAll("\n\n");
+            first = false;
+
+            // Label the fixed outer axes, e.g. `[batch=0, chan=1]`.
+            try w.writeByte('[');
+            inline for (0..num_outer) |oi| {
+                if (oi > 0) try w.writeAll(", ");
+                try w.print("{s}={d}", .{ field_names[oi], outer[oi] });
+            }
+            try w.writeAll("]\n");
+
+            try writeBlockGeneric(self, w, &key, col_width, 2);
+        }
+    }
+}
+
+fn formatArrayGeneric(self: anytype, w: *Writer) Writer.Error!void {
+    try writeHeaderGeneric(self, w);
+    try w.writeByte('\n');
+    try writeBodyGeneric(self, w);
+}
+
+fn formatArrayDebugGeneric(self: anytype, w: *Writer) Writer.Error!void {
+    const field_names = comptime std.meta.fieldNames(@TypeOf(self.idx).Axis);
+    try writeHeaderGeneric(self, w);
+    try w.writeByte('\n');
+
+    try w.writeAll("  shape:      {");
+    inline for (field_names, 0..) |fname, i| {
+        if (i > 0) try w.writeByte(',');
+        try w.print(" {s}: {d}", .{ fname, @field(self.idx.shape, fname) });
+    }
+    try w.writeAll(" }\n");
+
+    try w.writeAll("  strides:    {");
+    inline for (field_names, 0..) |fname, i| {
+        if (i > 0) try w.writeByte(',');
+        try w.print(" {s}: {d}", .{ fname, @field(self.idx.strides, fname) });
+    }
+    try w.writeAll(" }\n");
+
+    try w.print("  offset:     {d}\n", .{self.idx.offset});
+    try w.print("  contiguous: {}\n", .{self.idx.isContiguous()});
+
+    try writeBodyGeneric(self, w);
 }
 
 test "fill" {
@@ -733,3 +1026,168 @@ test "mergeAxes" {
 //     try std.testing.expectEqual(1, arr0d.buf.len);
 //     try std.testing.expectEqual(217, arr0d.buf[0]);
 // }
+
+test "format 1d" {
+    const Axis = enum { i };
+    const allocator = std.testing.allocator;
+    const arr = try NamedArray(Axis, i32).initAlloc(allocator, .{ .i = 3 });
+    defer arr.deinit(allocator);
+    _ = arr.fillArange();
+    try std.testing.expectFmt("NamedArray(i: 3) i32\n[0 1 2]", "{f}", .{arr});
+}
+
+test "format 2d aligned" {
+    const Axis = enum { i, j };
+    const allocator = std.testing.allocator;
+    const arr = try NamedArray(Axis, i32).initAlloc(allocator, .{ .i = 2, .j = 5 });
+    defer arr.deinit(allocator);
+    _ = arr.fillArange();
+    try std.testing.expectFmt(
+        "NamedArray(i: 2, j: 5) i32\n[[0 1 2 3 4]\n [5 6 7 8 9]]",
+        "{f}",
+        .{arr},
+    );
+}
+
+test "format 3d labeled slices" {
+    const Axis = enum { b, i, j };
+    const allocator = std.testing.allocator;
+    const arr = try NamedArray(Axis, i32).initAlloc(allocator, .{ .b = 2, .i = 2, .j = 2 });
+    defer arr.deinit(allocator);
+    _ = arr.fillArange();
+    try std.testing.expectFmt(
+        "NamedArray(b: 2, i: 2, j: 2) i32\n" ++
+            "[b=0]\n  [[0 1]\n   [2 3]]\n\n" ++
+            "[b=1]\n  [[4 5]\n   [6 7]]",
+        "{f}",
+        .{arr},
+    );
+}
+
+test "format debug" {
+    const Axis = enum { i, j };
+    const allocator = std.testing.allocator;
+    const arr = try NamedArray(Axis, i32).initAlloc(allocator, .{ .i = 2, .j = 3 });
+    defer arr.deinit(allocator);
+    _ = arr.fillArange();
+    try std.testing.expectFmt(
+        "NamedArray(i: 2, j: 3) i32\n" ++
+            "  shape:      { i: 2, j: 3 }\n" ++
+            "  strides:    { i: 3, j: 1 }\n" ++
+            "  offset:     0\n" ++
+            "  contiguous: true\n" ++
+            "[[0 1 2]\n [3 4 5]]",
+        "{f}",
+        .{arr.fmtDebug()},
+    );
+}
+
+test "format const alignment with wide values" {
+    const Axis = enum { i, j };
+    const allocator = std.testing.allocator;
+    const arr = try NamedArray(Axis, i32).initAlloc(allocator, .{ .i = 2, .j = 2 });
+    defer arr.deinit(allocator);
+    arr.at(.{ .i = 0, .j = 0 }).* = 1;
+    arr.at(.{ .i = 0, .j = 1 }).* = 20;
+    arr.at(.{ .i = 1, .j = 0 }).* = 300;
+    arr.at(.{ .i = 1, .j = 1 }).* = 4;
+    try std.testing.expectFmt(
+        "NamedArrayConst(i: 2, j: 2) i32\n[[  1  20]\n [300   4]]",
+        "{f}",
+        .{arr.asConst()},
+    );
+}
+
+test "format truncates long 1d column axis" {
+    const Axis = enum { i };
+    const allocator = std.testing.allocator;
+    const arr = try NamedArray(Axis, i32).initAlloc(allocator, .{ .i = 10 });
+    defer arr.deinit(allocator);
+    _ = arr.fillArange();
+    try std.testing.expectFmt("NamedArray(i: 10) i32\n[0 1 2 ... 7 8 9]", "{f}", .{arr});
+}
+
+test "format truncates long 2d column axis with alignment" {
+    const Axis = enum { i, j };
+    const allocator = std.testing.allocator;
+    const arr = try NamedArray(Axis, i32).initAlloc(allocator, .{ .i = 2, .j = 10 });
+    defer arr.deinit(allocator);
+    _ = arr.fillArange();
+    try std.testing.expectFmt(
+        "NamedArray(i: 2, j: 10) i32\n[[ 0  1  2 ...  7  8  9]\n [10 11 12 ... 17 18 19]]",
+        "{f}",
+        .{arr},
+    );
+}
+
+test "format truncates long 2d row axis" {
+    const Axis = enum { i, j };
+    const allocator = std.testing.allocator;
+    const arr = try NamedArray(Axis, i32).initAlloc(allocator, .{ .i = 8, .j = 2 });
+    defer arr.deinit(allocator);
+    _ = arr.fillArange();
+    try std.testing.expectFmt(
+        "NamedArray(i: 8, j: 2) i32\n" ++
+            "[[ 0  1]\n [ 2  3]\n [ 4  5]\n ...\n [10 11]\n [12 13]\n [14 15]]",
+        "{f}",
+        .{arr},
+    );
+}
+
+test "format truncates long outer slice sequence" {
+    const Axis = enum { b, i, j };
+    const allocator = std.testing.allocator;
+    const arr = try NamedArray(Axis, i32).initAlloc(allocator, .{ .b = 8, .i = 1, .j = 1 });
+    defer arr.deinit(allocator);
+    _ = arr.fillArange();
+    try std.testing.expectFmt(
+        "NamedArray(b: 8, i: 1, j: 1) i32\n" ++
+            "[b=0]\n  [[0]]\n\n[b=1]\n  [[1]]\n\n[b=2]\n  [[2]]\n\n" ++
+            "...\n\n" ++
+            "[b=5]\n  [[5]]\n\n[b=6]\n  [[6]]\n\n[b=7]\n  [[7]]",
+        "{f}",
+        .{arr},
+    );
+}
+
+test "format does not truncate at the boundary length" {
+    const Axis = enum { i };
+    const allocator = std.testing.allocator;
+    const arr = try NamedArray(Axis, i32).initAlloc(allocator, .{ .i = 6 });
+    defer arr.deinit(allocator);
+    _ = arr.fillArange();
+    try std.testing.expectFmt("NamedArray(i: 6) i32\n[0 1 2 3 4 5]", "{f}", .{arr});
+}
+
+test "format 4d with two labeled outer axes" {
+    const Axis = enum { a, b, r, c };
+    const allocator = std.testing.allocator;
+    const arr = try NamedArray(Axis, i32).initAlloc(allocator, .{ .a = 2, .b = 2, .r = 2, .c = 2 });
+    defer arr.deinit(allocator);
+    _ = arr.fillArange();
+    try std.testing.expectFmt(
+        "NamedArray(a: 2, b: 2, r: 2, c: 2) i32\n" ++
+            "[a=0, b=0]\n  [[ 0  1]\n   [ 2  3]]\n\n" ++
+            "[a=0, b=1]\n  [[ 4  5]\n   [ 6  7]]\n\n" ++
+            "[a=1, b=0]\n  [[ 8  9]\n   [10 11]]\n\n" ++
+            "[a=1, b=1]\n  [[12 13]\n   [14 15]]",
+        "{f}",
+        .{arr},
+    );
+}
+
+test "format 4d truncates flattened outer sequence across axes" {
+    const Axis = enum { a, b, r, c };
+    const allocator = std.testing.allocator;
+    const arr = try NamedArray(Axis, i32).initAlloc(allocator, .{ .a = 2, .b = 8, .r = 1, .c = 1 });
+    defer arr.deinit(allocator);
+    _ = arr.fillArange();
+    try std.testing.expectFmt(
+        "NamedArray(a: 2, b: 8, r: 1, c: 1) i32\n" ++
+            "[a=0, b=0]\n  [[ 0]]\n\n[a=0, b=1]\n  [[ 1]]\n\n[a=0, b=2]\n  [[ 2]]\n\n" ++
+            "...\n\n" ++
+            "[a=1, b=5]\n  [[13]]\n\n[a=1, b=6]\n  [[14]]\n\n[a=1, b=7]\n  [[15]]",
+        "{f}",
+        .{arr},
+    );
+}

@@ -15,13 +15,20 @@ pub const Config = struct {
 // for defining build steps and express dependencies between them, allowing the
 // build runner to parallelize the build automatically (and the cache system to
 // know when a step doesn't need to be re-run).
-pub fn build(b: *std.Build) void {
+pub fn build(b: *std.Build) !void {
     const build_config = config.config;
     // Standard target options allow the person running `zig build` to choose
     // what target to build for. Here we do not override the defaults, which
     // means any target is allowed, and the default is native. Other options
     // for restricting supported target set are available.
     const target = b.standardTargetOptions(.{});
+    // This library links against the macOS Accelerate framework for BLAS/LAPACK,
+    // so it currently only builds on macOS. Fail the build early with a clear
+    // message rather than surfacing a confusing translate-c or linker error later.
+    if (target.result.os.tag != .macos) {
+        std.log.err("zarray currently requires macOS (Accelerate framework)", .{});
+        return error.UnsupportedTarget;
+    }
     // Standard optimization options allow the person running `zig build` to select
     // between Debug, ReleaseSafe, ReleaseFast, and ReleaseSmall. Here we do not
     // set a preferred release mode, allowing the user to decide how to optimize.

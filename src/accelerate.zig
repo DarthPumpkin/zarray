@@ -10,7 +10,14 @@ const NamedIndex = named_index.NamedIndex;
 const NamedArray = named_array.NamedArray;
 const NamedArrayConst = named_array.NamedArrayConst;
 
-const acc = @cImport(@cInclude("Accelerate/Accelerate.h"));
+const acc = @cImport({
+    // Include only the BLAS/LAPACK headers from the vecLib subframework rather
+    // than the umbrella `Accelerate/Accelerate.h`. The umbrella header pulls in
+    // `<vImage/vImage.h>`, and Zig 0.16's Aro-based translate-c cannot resolve
+    // that subframework include, which we don't need anyway.
+    @cInclude("vecLib/cblas.h");
+    @cInclude("vecLib/clapack.h");
+});
 
 pub const blas = struct {
     /// `sdot` and `ddot` in BLAS (`sdsdot` with `internal_double_precision`).

@@ -11,55 +11,20 @@ pub const NamedIndexError = error{
 
 // Generic struct factory for axis collections of arbitrary scalar type.
 pub fn AxesStructOf(comptime names: []const [:0]const u8, comptime T: type) type {
-    const rank = names.len;
-    const fields = comptime blk: {
-        var fields_: [rank]Type.StructField = undefined;
-        for (0..rank) |i| {
-            fields_[i] = .{
-                .name = names[i],
-                .type = T,
-                .default_value_ptr = null,
-                .is_comptime = false,
-                .alignment = 0,
-            };
-        }
-        break :blk fields_;
-    };
-    const s: Type.Struct = .{
-        .layout = .@"packed",
-        .backing_integer = null,
-        .fields = &fields,
-        .decls = &.{},
-        .is_tuple = false,
-    };
-    return @Type(Type{ .@"struct" = s });
+    return @Struct(.@"packed", null, names, &@splat(T), &@splat(.{}));
 }
 
 // Optional variant
 pub fn AxesOptionalStructOf(comptime names: []const [:0]const u8, comptime T: type) type {
     const optT = ?T;
     const default_val: optT = null;
-    const rank = names.len;
-    const fields = comptime blk: {
-        var fields_: [rank]Type.StructField = undefined;
-        for (0..rank) |i| {
-            fields_[i] = .{
-                .name = names[i],
-                .type = optT,
-                .default_value_ptr = &default_val,
-                .is_comptime = false,
-                .alignment = @alignOf(optT),
-            };
-        }
-        break :blk fields_;
-    };
-    const s: Type.Struct = .{
-        .layout = .auto,
-        .fields = &fields,
-        .decls = &.{},
-        .is_tuple = false,
-    };
-    return @Type(Type{ .@"struct" = s });
+    return @Struct(
+        .auto,
+        null,
+        names,
+        &@splat(optT),
+        &@splat(.{ .default_value_ptr = &default_val }),
+    );
 }
 
 pub fn AxesStruct(comptime names: []const [:0]const u8) type {
@@ -768,23 +733,17 @@ fn fnames_gt_signed(strides_arr: []const isize, lhs: usize, rhs: usize) bool {
 
 pub fn KeyEnum(comptime names: []const [:0]const u8) type {
     const rank = names.len;
-    const fields = comptime blk: {
-        var f: [rank]Type.EnumField = undefined;
-        for (0..rank) |i| f[i] = .{ .name = names[i], .value = i };
-        break :blk f;
-    };
     const bits = switch (rank) {
         0 => 0,
         else => std.math.log2_int_ceil(usize, rank),
     };
-    const TagType = @Type(.{ .int = .{ .bits = bits, .signedness = .unsigned } });
-    const enum_type: Type.Enum = .{
-        .tag_type = TagType,
-        .fields = &fields,
-        .decls = &.{},
-        .is_exhaustive = true,
+    const TagType = @Int(.unsigned, bits);
+    const field_values = comptime blk: {
+        var fv_: [rank]TagType = undefined;
+        for (0..rank) |i| fv_[i] = i;
+        break :blk fv_;
     };
-    return @Type(Type{ .@"enum" = enum_type });
+    return @Enum(TagType, .exhaustive, names, &field_values);
 }
 
 fn Renamed(comptime OldKey: type, old_name: [:0]const u8, new_name: [:0]const u8) type {

@@ -565,31 +565,17 @@ pub fn NamedIndex(comptime AxisEnum: type) type {
             const new_axis_name = compile_phase.new_axis_name;
             const source_in_target = compile_phase.source_in_target;
 
-            var merged_idxs: [source_names.len]usize = undefined;
-            var merged_count: usize = 0;
-            inline for (source_in_target, 0..) |keep, si| {
-                if (!keep) {
-                    merged_idxs[merged_count] = si;
-                    merged_count += 1;
-                }
-            }
-
             const strides_arr = structToArray(isize, self.strides);
             const shapes_arr = structToArray(usize, self.shape);
 
+            // Collect the axes being merged (those absent from the target) in
+            // buffer order, so adjacency/contiguity can be checked pairwise.
             const order = self.axisOrder();
             var ordered_merge: [source_names.len]usize = undefined;
             var om_count: usize = 0;
             inline for (order) |ax| {
                 const si = @intFromEnum(ax);
-                var is_merged = false;
-                var k: usize = 0;
-                while (k < merged_count) : (k += 1)
-                    if (merged_idxs[k] == si) {
-                        is_merged = true;
-                        break;
-                    };
-                if (is_merged) {
+                if (!source_in_target[si]) {
                     ordered_merge[om_count] = si;
                     om_count += 1;
                 }
@@ -694,10 +680,22 @@ pub fn KeyIterator(comptime ShapeKey: type, comptime StrideKey: type) type {
         dims_desc: [fnames.len]usize,
 
         pub fn init(shape: ShapeKey, strides: StrideKey) @This() {
-            const start = [_]usize{0} ** fnames.len;
+            var start = [_]usize{0} ** fnames.len;
             const shape_arr = structToArray(usize, shape);
             const strides_arr = structToArray(isize, strides);
             const argsort = argsortAbsStrideDesc(fnames.len, strides_arr);
+            // If any axis is empty the iteration space is empty, so force the
+            // terminal state up front. `next` only inspects the slowest-varying
+            // axis (`argsort[0]`) to detect exhaustion, so a zero-sized *faster*
+            // axis would otherwise yield phantom keys.
+            if (fnames.len > 0) {
+                for (shape_arr) |s| {
+                    if (s == 0) {
+                        start[argsort[0]] = shape_arr[argsort[0]];
+                        break;
+                    }
+                }
+            }
             return .{ .next_arr = start, .shape_arr = shape_arr, .dims_desc = argsort };
         }
 
@@ -1319,6 +1317,38 @@ test "KeyIterator ordering ignores sign (negative fastest varying)" {
         seen += 1;
     }
     try std.testing.expectEqual(reversed_c.shape.r * reversed_c.shape.c, seen);
+}
+
+test "KeyIterator yields nothing when a non-slowest axis is empty" {
+    const Axes = enum { x, y, z };
+    const NI = NamedIndex(Axes);
+    // `y` (a middle / non-slowest axis) has size 0, so the iteration space is
+    // empty. Regression test: the iterator previously only checked the
+    // slowest-varying axis for exhaustion and would emit phantom keys here.
+    const idx: NI = .{
+        .shape = .{ .x = 2, .y = 0, .z = 3 },
+        .strides = .{ .x = 0, .y = 3, .z = 1 },
+        .offset = 0,
+    };
+    var it = idx.iterKeys();
+    try std.testing.expectEqual(@as(?NI.Axes, null), it.next());
+
+    // Also confirm it holds regardless of which axis is empty.
+    const idx_fastest_empty: NI = .{
+        .shape = .{ .x = 2, .y = 3, .z = 0 },
+        .strides = .{ .x = 3, .y = 1, .z = 0 },
+        .offset = 0,
+    };
+    var it2 = idx_fastest_empty.iterKeys();
+    try std.testing.expectEqual(@as(?NI.Axes, null), it2.next());
+
+    const idx_slowest_empty: NI = .{
+        .shape = .{ .x = 0, .y = 2, .z = 3 },
+        .strides = .{ .x = 6, .y = 3, .z = 1 },
+        .offset = 0,
+    };
+    var it3 = idx_slowest_empty.iterKeys();
+    try std.testing.expectEqual(@as(?NI.Axes, null), it3.next());
 }
 
 test "axisOrder" {

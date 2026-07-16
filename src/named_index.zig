@@ -9,12 +9,20 @@ pub const NamedIndexError = error{
     StrideMisalignment,
 };
 
-// Generic struct factory for axis collections of arbitrary scalar type.
+// Axis-keyed struct factories.
+//
+// These are conceptually the same as `std.enums.EnumFieldStruct`, but keyed by a
+// list of field names (rather than an enum) and, crucially, laid out `packed` so
+// that a value can be reinterpreted as a fixed-size array with `@bitCast` (see
+// `axisOrder`, `isContiguous`, `KeyIterator`, and `accelerate.zig`). The names
+// always originate from an axis enum via `std.meta.fieldNames`.
 pub fn AxesStructOf(comptime names: []const [:0]const u8, comptime T: type) type {
     return @Struct(.@"packed", null, names, &@splat(T), &@splat(.{}));
 }
 
-// Optional variant
+// Optional variant, used for partial specifications (e.g. per-axis steps). It is
+// never `@bitCast`, so it uses the default `auto` layout, matching
+// `std.enums.EnumFieldStruct(E, ?T, null)`.
 pub fn AxesOptionalStructOf(comptime names: []const [:0]const u8, comptime T: type) type {
     const optT = ?T;
     const default_val: optT = null;
@@ -102,7 +110,7 @@ pub fn NamedIndex(comptime AxisEnum: type) type {
             var new_strides = self.strides;
             var new_offset: isize = @intCast(self.offset);
 
-            const axis_name = field_names[@intFromEnum(axis)];
+            const axis_name = @tagName(axis);
             const dim_ptr = &@field(new_shape, axis_name);
             const stride_ptr = &@field(new_strides, axis_name);
 
@@ -162,26 +170,9 @@ pub fn NamedIndex(comptime AxisEnum: type) type {
             };
         }
 
-        /// (Internal) Old helper kept for compatibility; now returns offset delta.
-        fn strideInplace(step: isize, out_dim: *usize, out_stride: *isize) isize {
-            if (step == 0) @panic("step must be non-zero");
-            const orig_dim = out_dim.*;
-            const orig_stride = out_stride.*;
-
-            const abs_step: usize = @intCast(@abs(step));
-            out_dim.* = if (orig_dim == 0) 0 else (orig_dim + abs_step - 1) / abs_step;
-            out_stride.* = orig_stride * step;
-
-            if (step < 0 and orig_dim > 0) {
-                const last_index = orig_dim - 1;
-                return @as(isize, @intCast(last_index)) * orig_stride;
-            }
-            return 0;
-        }
-
         /// Slice axis (start:end). Does not itself reverse; combine with strideAxis(step = -1).
         pub fn sliceAxis(self: *const @This(), comptime axis: Axis, start: usize, end: usize) @This() {
-            const axis_name = field_names[@intFromEnum(axis)];
+            const axis_name = @tagName(axis);
             const old_size = @field(self.shape, axis_name);
             if (end > old_size) @panic("sliceAxis: end out of bounds");
             if (start >= end) @panic("sliceAxis: start must be < end");
@@ -201,8 +192,8 @@ pub fn NamedIndex(comptime AxisEnum: type) type {
             };
         }
 
-        pub fn squeezeAxis(self: *const @This(), comptime axis: Axis) NamedIndex(Removed(Axis, field_names[@intFromEnum(axis)])) {
-            const axis_name = field_names[@intFromEnum(axis)];
+        pub fn squeezeAxis(self: *const @This(), comptime axis: Axis) NamedIndex(Removed(Axis, @tagName(axis))) {
+            const axis_name = @tagName(axis);
             if (@field(self.shape, axis_name) != 1) @panic("squeezeAxis: axis size must be 1");
             const NewEnum = Removed(Axis, axis_name);
             const NewKey = AxesStruct(meta.fieldNames(NewEnum));
@@ -323,11 +314,7 @@ pub fn NamedIndex(comptime AxisEnum: type) type {
 
         pub fn axisOrder(self: *const @This()) [field_names.len]Axis {
             const strides_arr: [field_names.len]isize = @bitCast(self.strides);
-            // argsort by descending absolute stride
-            var idxs: [field_names.len]usize = undefined;
-            inline for (0..field_names.len) |i| idxs[i] = i;
-            const strides_slice: []const isize = strides_arr[0..];
-            mem.sort(usize, idxs[0..], strides_slice, fnames_gt_signed);
+            const idxs = argsortAbsStrideDesc(field_names.len, strides_arr);
             var axes: [field_names.len]Axis = undefined;
             inline for (0..field_names.len) |i| axes[i] = @enumFromInt(idxs[i]);
             return axes;
@@ -431,7 +418,7 @@ pub fn NamedIndex(comptime AxisEnum: type) type {
         }
 
         pub fn broadcastAxis(self: *const @This(), comptime axis: Axis, new_size: usize) @This() {
-            const axis_name = field_names[@intFromEnum(axis)];
+            const axis_name = @tagName(axis);
             if (@field(self.shape, axis_name) != 1) @panic("broadcastAxis: axis must have size 1");
             var new_shape = self.shape;
             var new_strides = self.strides;
@@ -618,8 +605,8 @@ pub fn NamedIndex(comptime AxisEnum: type) type {
             return .{ .shape = new_shape, .strides = new_strides, .offset = self.offset };
         }
 
-        pub fn rename_old(self: *const @This(), comptime axis: Axis, comptime new_name: [:0]const u8) NamedIndex(Renamed(Axis, field_names[@intFromEnum(axis)], new_name)) {
-            const old_name = field_names[@intFromEnum(axis)];
+        pub fn rename_old(self: *const @This(), comptime axis: Axis, comptime new_name: [:0]const u8) NamedIndex(Renamed(Axis, @tagName(axis), new_name)) {
+            const old_name = @tagName(axis);
             const NewEnum = Renamed(Axis, old_name, new_name);
             const NewShape = AxesStruct(meta.fieldNames(NewEnum));
             const NewStrides = AxesStructOf(meta.fieldNames(NewEnum), isize);
@@ -681,11 +668,7 @@ pub fn KeyIterator(comptime ShapeKey: type, comptime StrideKey: type) type {
             const start = [_]usize{0} ** fnames.len;
             const shape_arr: [fnames.len]usize = @bitCast(shape);
             const strides_arr: [fnames.len]isize = @bitCast(strides);
-
-            var argsort: [fnames.len]usize = undefined;
-            inline for (0..fnames.len) |i| argsort[i] = i;
-            const strides_slice: []const isize = strides_arr[0..];
-            mem.sort(usize, argsort[0..], strides_slice, fnames_gt_signed);
+            const argsort = argsortAbsStrideDesc(fnames.len, strides_arr);
             return .{ .next_arr = start, .shape_arr = shape_arr, .dims_desc = argsort };
         }
 
@@ -715,21 +698,23 @@ pub fn KeyIterator(comptime ShapeKey: type, comptime StrideKey: type) type {
     };
 }
 
-// Comparator for axis sorting (descending absolute stride)
+// Comparator for axis sorting (descending absolute stride, enum order as tiebreak).
 fn fnames_gt_signed(strides_arr: []const isize, lhs: usize, rhs: usize) bool {
     const al = @abs(strides_arr[lhs]);
     const ar = @abs(strides_arr[rhs]);
     return al > ar or (al == ar and lhs < rhs); // tie-breaker by enum order
 }
 
-// (Old unsigned variant left for legacy code paths, if any)
-// fn fnames_gt(_unused: []const usize, _lhs: usize, _rhs: usize) bool {
-//     @panic("fnames_gt (unsigned) should not be used with negative strides");
-// }
-
-// pub fn AxesOptionalStruct(comptime names: []const [:0]const u8) type {
-//     return AxesOptionalStructOf(names, usize);
-// }
+/// Return the axis indices sorted by descending absolute stride (i.e. buffer
+/// order), breaking ties by enum declaration order. Shared by `axisOrder` and
+/// `KeyIterator` so both agree on traversal order.
+fn argsortAbsStrideDesc(comptime n: usize, strides_arr: [n]isize) [n]usize {
+    var idxs: [n]usize = undefined;
+    for (0..n) |i| idxs[i] = i;
+    const strides_slice: []const isize = &strides_arr;
+    mem.sort(usize, idxs[0..], strides_slice, fnames_gt_signed);
+    return idxs;
+}
 
 pub fn KeyEnum(comptime names: []const [:0]const u8) type {
     const rank = names.len;

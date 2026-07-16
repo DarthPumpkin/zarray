@@ -2203,27 +2203,67 @@ pub const blas = struct {
 
     pub fn ModifiedGivensRotation(comptime Scalar: type) type {
         return struct {
+            const Self = @This();
+
+            /// BLAS modified-Givens `param` array, laid out exactly as the
+            /// reference `?rotm`/`?rotmg` routines expect so it can be passed
+            /// straight to the C interface with no conversion:
+            ///   data[0] = flag, data[1] = h11, data[2] = h21,
+            ///   data[3] = h12, data[4] = h22.
             data: [5]Scalar,
 
-            pub fn flag(self: @This()) MGRFlag {
-                return switch (self.data[0]) {
-                    -1.0 => MGRFlag.Full,
-                    0.0 => MGRFlag.OffDiagonal,
-                    1.0 => MGRFlag.Diagonal,
-                    2.0 => MGRFlag.Identity,
-                    else => @panic("Invalid flag value in ModifiedGivensRotation data."),
+            /// Semantic description of the transform `H`, mirroring the four BLAS
+            /// SFLAG cases. Only the entries BLAS actually reads for a given flag
+            /// are carried; the rest are fixed by the convention (1 or ±1). The
+            /// union tag *is* the `MGRFlag`.
+            pub const Matrix = union(MGRFlag) {
+                /// SFLAG=-1: H = (h11 h12; h21 h22)
+                Full: struct { h11: Scalar, h21: Scalar, h12: Scalar, h22: Scalar },
+                /// SFLAG=0: H = (1 h12; h21 1)
+                OffDiagonal: struct { h21: Scalar, h12: Scalar },
+                /// SFLAG=1: H = (h11 1; -1 h22)
+                Diagonal: struct { h11: Scalar, h22: Scalar },
+                /// SFLAG=-2: H = I
+                Identity,
+            };
+
+            /// Build a fully-initialized rotation from its semantic form. Every
+            /// `data` slot is written (unused H slots are set to 0), so there is
+            /// no `undefined` state. The `Matrix` tag is normally comptime-known,
+            /// so this lowers to a handful of stores — zero runtime cost.
+            pub fn init(form: Matrix) Self {
+                return switch (form) {
+                    .Full => |h| .{ .data = .{ -1.0, h.h11, h.h21, h.h12, h.h22 } },
+                    .OffDiagonal => |h| .{ .data = .{ 0.0, 0, h.h21, h.h12, 0 } },
+                    .Diagonal => |h| .{ .data = .{ 1.0, h.h11, 0, 0, h.h22 } },
+                    .Identity => .{ .data = .{ -2.0, 0, 0, 0, 0 } },
                 };
             }
 
-            pub fn fromFlag(flag_: MGRFlag) @This() {
-                var data: [5]Scalar = undefined;
-                data[0] = switch (flag_) {
-                    MGRFlag.Full => -1.0,
-                    MGRFlag.OffDiagonal => 0.0,
-                    MGRFlag.Diagonal => 1.0,
-                    MGRFlag.Identity => 2.0,
+            /// The BLAS SFLAG of this rotation, decoded from `data[0]`.
+            pub fn flag(self: Self) MGRFlag {
+                // Zig does not allow `switch` on floats, so compare the sentinel.
+                const sentinel = self.data[0];
+                return if (sentinel == -1.0)
+                    .Full
+                else if (sentinel == 0.0)
+                    .OffDiagonal
+                else if (sentinel == 1.0)
+                    .Diagonal
+                else if (sentinel == -2.0)
+                    .Identity
+                else
+                    @panic("Invalid flag value in ModifiedGivensRotation data.");
+            }
+
+            /// Decode back into the semantic `Matrix` form.
+            pub fn matrix(self: Self) Matrix {
+                return switch (self.flag()) {
+                    .Full => .{ .Full = .{ .h11 = self.data[1], .h21 = self.data[2], .h12 = self.data[3], .h22 = self.data[4] } },
+                    .OffDiagonal => .{ .OffDiagonal = .{ .h21 = self.data[2], .h12 = self.data[3] } },
+                    .Diagonal => .{ .Diagonal = .{ .h11 = self.data[1], .h22 = self.data[4] } },
+                    .Identity => .Identity,
                 };
-                return .{ .data = data };
             }
         };
     }
@@ -3334,6 +3374,64 @@ test "rotm" {
                 math.floatEpsAt(T, expected4),
             );
         }
+    }
+}
+
+test "ModifiedGivensRotation init/matrix/flag round-trip" {
+    inline for (.{ f32, f64 }) |T| {
+        const MGR = blas.ModifiedGivensRotation(T);
+
+        // (semantic form, expected BLAS param array laid out by hand)
+        const forms = .{
+            .{ MGR.Matrix{ .Full = .{ .h11 = 2, .h21 = 3, .h12 = 4, .h22 = 5 } }, [5]T{ -1, 2, 3, 4, 5 } },
+            .{ MGR.Matrix{ .OffDiagonal = .{ .h21 = 3, .h12 = 4 } }, [5]T{ 0, 0, 3, 4, 0 } },
+            .{ MGR.Matrix{ .Diagonal = .{ .h11 = 2, .h22 = 5 } }, [5]T{ 1, 2, 0, 0, 5 } },
+            .{ MGR.Matrix{ .Identity = {} }, [5]T{ -2, 0, 0, 0, 0 } },
+        };
+
+        inline for (forms) |form| {
+            const m = form[0];
+            const expected_data: [5]T = form[1];
+            const rot = MGR.init(m);
+            // `init` writes every slot (no `undefined`) using the BLAS layout.
+            try std.testing.expectEqualSlices(T, &expected_data, &rot.data);
+            // `flag()` matches the semantic tag, and `matrix()` round-trips.
+            try std.testing.expectEqual(std.meta.activeTag(m), rot.flag());
+            try std.testing.expectEqual(m, rot.matrix());
+        }
+    }
+}
+
+test "ModifiedGivensRotation applied via rotm matches reference for each flag" {
+    const T = f64;
+    const MGR = blas.ModifiedGivensRotation(T);
+
+    const forms = [_]MGR.Matrix{
+        .{ .Full = .{ .h11 = 0.8, .h21 = -0.6, .h12 = 0.6, .h22 = 0.8 } },
+        .{ .OffDiagonal = .{ .h21 = -0.6, .h12 = 0.6 } },
+        .{ .Diagonal = .{ .h11 = 0.8, .h22 = 0.8 } },
+        .Identity,
+    };
+
+    for (forms) |m| {
+        const rot = MGR.init(m);
+
+        // Reference: apply the same param array straight through cblas.
+        var x_ref = [_]T{ 1.0, -2.0 };
+        var y_ref = [_]T{ 3.0, 0.5 };
+        acc.cblas_drotm(2, &x_ref, 1, &y_ref, 1, &rot.data);
+
+        // Ours: apply through the NamedArray wrapper on an interleaved buffer
+        // (x0, y0, x1, y1).
+        var pts = [_]T{ 1.0, 3.0, -2.0, 0.5 };
+        const idx = NamedIndex(blas.IJ).initContiguous(.{ .i = 2, .j = 2 });
+        const points = NamedArray(blas.IJ, T){ .idx = idx, .buf = &pts };
+        blas.rotm(T, rot, points);
+
+        try std.testing.expectApproxEqAbs(x_ref[0], points.at(.{ .i = 0, .j = 0 }).*, math.floatEpsAt(T, x_ref[0]));
+        try std.testing.expectApproxEqAbs(y_ref[0], points.at(.{ .i = 0, .j = 1 }).*, math.floatEpsAt(T, y_ref[0]));
+        try std.testing.expectApproxEqAbs(x_ref[1], points.at(.{ .i = 1, .j = 0 }).*, math.floatEpsAt(T, x_ref[1]));
+        try std.testing.expectApproxEqAbs(y_ref[1], points.at(.{ .i = 1, .j = 1 }).*, math.floatEpsAt(T, y_ref[1]));
     }
 }
 

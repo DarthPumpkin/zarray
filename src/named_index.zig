@@ -11,11 +11,24 @@ pub const NamedIndexError = error{
 
 // Axis-keyed struct factories.
 //
-// These are the name-keyed analog of `std.enums.EnumFieldStruct`: given a list of
-// axis names they build a struct with one field per axis. We key on names rather
-// than an enum because several axis transforms build structs for *derived* name
-// lists (unions, splits, renames) that don't correspond to a single input enum;
-// where the names do come from an enum they're obtained via `std.meta.fieldNames`.
+// These are the name-list generalization of `std.enums.EnumFieldStruct`: given a
+// list of axis names they build a struct with one `T`-typed field per axis, in
+// declaration order. In fact `AxesStructOf(std.meta.fieldNames(E), T)` is
+// structurally identical to `std.enums.EnumFieldStruct(E, T, null)` (both lower to
+// the same `@Struct(.auto, ...)` call); the equivalence is pinned by the
+// "factories match std.enums.EnumFieldStruct" test below.
+//
+// We key on names rather than an enum, and keep a single factory as the sole
+// constructor, for two reasons:
+//   1. Several axis transforms build structs for *derived* name lists (unions,
+//      splits, renames) that don't correspond to a single input enum, so an
+//      enum-only helper like `EnumFieldStruct` can't express them. Where names do
+//      come from an enum they're obtained via `std.meta.fieldNames`.
+//   2. `@Struct` does not deduplicate: two separate calls with identical
+//      arguments produce *distinct* types. Type identity across the codebase
+//      therefore relies on comptime memoization of these factory functions, so
+//      every axis-keyed struct must be minted here rather than by calling
+//      `EnumFieldStruct` (or `@Struct`) directly at each site.
 //
 // Layout is the default `auto`, exactly like `EnumFieldStruct`. Conversions to and
 // from a positional array go through `structToArray`/`arrayToStruct` (see
@@ -64,6 +77,41 @@ pub fn AxesOptionalStruct(comptime names: []const [:0]const u8) type {
     return AxesOptionalStructOf(names, usize);
 }
 
+// Pins the documented equivalence between our name-list factories and
+// `std.enums.EnumFieldStruct`. The types are deliberately *not* compared with
+// `==` (separate `@Struct` calls never dedupe, see the `AxesStructOf` header);
+// we assert structural equivalence field-by-field plus matching defaults, which
+// is what the codebase actually relies on.
+test "factories match std.enums.EnumFieldStruct for enum-backed names" {
+    const E = enum { i, j, k };
+    const names = comptime meta.fieldNames(E);
+
+    // Plain variant: AxesStructOf(fieldNames(E), T) ~ EnumFieldStruct(E, T, null).
+    const Ours = AxesStructOf(names, u32);
+    const Std = std.enums.EnumFieldStruct(E, u32, null);
+    const ours_fields = @typeInfo(Ours).@"struct".fields;
+    const std_fields = @typeInfo(Std).@"struct".fields;
+    try std.testing.expectEqual(std_fields.len, ours_fields.len);
+    inline for (ours_fields, std_fields) |of, sf| {
+        try std.testing.expect(mem.eql(u8, of.name, sf.name));
+        try std.testing.expectEqual(sf.type, of.type);
+        try std.testing.expectEqual(sf.alignment, of.alignment);
+    }
+    try std.testing.expectEqual(@sizeOf(Std), @sizeOf(Ours));
+
+    // Optional variant: AxesOptionalStructOf(fieldNames(E), T)
+    // ~ EnumFieldStruct(E, ?T, null), including the per-field null default.
+    const OursOpt = AxesOptionalStructOf(names, u32);
+    const StdOpt = std.enums.EnumFieldStruct(E, ?u32, @as(?u32, null));
+    const ours_opt = OursOpt{};
+    const std_opt = StdOpt{};
+    inline for (@typeInfo(OursOpt).@"struct".fields, @typeInfo(StdOpt).@"struct".fields) |of, sf| {
+        try std.testing.expect(mem.eql(u8, of.name, sf.name));
+        try std.testing.expectEqual(sf.type, of.type);
+        try std.testing.expectEqual(@field(std_opt, sf.name), @field(ours_opt, of.name));
+    }
+}
+
 pub fn NamedIndex(comptime AxisEnum: type) type {
     _ = @typeInfo(AxisEnum).@"enum";
     const field_names = meta.fieldNames(AxisEnum);
@@ -75,7 +123,7 @@ pub fn NamedIndex(comptime AxisEnum: type) type {
         pub const Axis = AxisEnum;
         pub const Axes = AxesStruct(field_names);
         pub const Strides = AxesStructOf(field_names, isize);
-        pub const AxesOptional = AxesOptionalStruct(field_names);
+        // pub const AxesOptional = AxesOptionalStruct(field_names);
         pub const StepsOptional = AxesOptionalStructOf(field_names, isize);
 
         /// Create contiguous index (row-major: last axis fastest).
@@ -615,9 +663,11 @@ pub fn NamedIndex(comptime AxisEnum: type) type {
     };
 }
 
-/// resolveDimensions unchanged (shapes only)
-pub fn resolveDimensions(shapes: anytype) NamedIndexError!AxesStruct(unionOfAxisNames(@TypeOf(shapes))) {
-    const all_axis_names = comptime unionOfAxisNames(@TypeOf(shapes));
+/// Validate that the given shapes agree on shared axis sizes and return the
+/// resolved (unioned) shape. Callers typically ignore the result and use it only
+/// for its `ShapeMismatch` error.
+pub fn resolveDimensions(shapes: anytype) NamedIndexError!AxesStruct(unionOfAxisNames(shapeTupleAxisTypes(@TypeOf(shapes)))) {
+    const all_axis_names = comptime unionOfAxisNames(shapeTupleAxisTypes(@TypeOf(shapes)));
     const ResolvedShape = AxesStruct(all_axis_names);
     const ResolvedShapeOptional = AxesOptionalStruct(all_axis_names);
     var resolved_optional: ResolvedShapeOptional = .{};
@@ -813,83 +863,64 @@ pub fn Xor(comptime Enum1: type, comptime Enum2: type) type {
     return KeyEnum(&xor_fnames);
 }
 
-fn unionOfAxisNames(comptime ShapeTupleType: type) []const [:0]const u8 {
+/// Deduplicated union of the field names across the given axis types, in
+/// first-seen order. `types` may be enums or shape structs (or a mix), since
+/// `std.meta.fieldNames` reports field names for both. This is the single helper
+/// behind both the shape-tuple path (`resolveDimensions`) and the enum-list path
+/// (tblis label assignment).
+pub fn unionOfAxisNames(comptime types: []const type) []const [:0]const u8 {
     comptime {
-        const tuple_info = @typeInfo(ShapeTupleType).@"struct";
         var sum: usize = 0;
-        for (tuple_info.fields) |tuple_field| {
+        for (types) |T| sum += meta.fieldNames(T).len;
+        var all_names: [sum][:0]const u8 = undefined;
+        var count: usize = 0;
+        for (types) |T| {
+            for (meta.fieldNames(T)) |name| {
+                var found = false;
+                for (all_names[0..count]) |existing|
+                    if (mem.eql(u8, existing, name)) {
+                        found = true;
+                        break;
+                    };
+                if (!found) {
+                    all_names[count] = name;
+                    count += 1;
+                }
+            }
+        }
+        return all_names[0..count];
+    }
+}
+
+/// Extract the per-operand shape-struct types from a `resolveDimensions` shape
+/// tuple, validating that every axis field is a plain size (`usize` or
+/// `comptime_int`). The resulting `[]const type` feeds `unionOfAxisNames`.
+fn shapeTupleAxisTypes(comptime ShapeTupleType: type) []const type {
+    comptime {
+        const tuple_fields = @typeInfo(ShapeTupleType).@"struct".fields;
+        for (tuple_fields) |tuple_field| {
             const info = @typeInfo(tuple_field.type);
             if (info != .@"struct") @compileError("Shape must be a struct");
             for (info.@"struct".fields) |axis_field| {
                 if (axis_field.type != usize and axis_field.type != comptime_int)
                     @compileError("Expected axis type usize, found " ++ @typeName(axis_field.type));
             }
-            sum += info.@"struct".fields.len;
         }
-        var all_names: [sum][:0]const u8 = undefined;
-        var count: usize = 0;
-        for (tuple_info.fields) |tuple_field| {
-            const info = @typeInfo(tuple_field.type);
-            for (info.@"struct".fields) |field| {
-                var found = false;
-                for (all_names[0..count]) |existing|
-                    if (mem.eql(u8, existing, field.name)) {
-                        found = true;
-                        break;
-                    };
-                if (!found) {
-                    all_names[count] = field.name;
-                    count += 1;
-                }
-            }
-        }
-        return all_names[0..count];
+        var types: [tuple_fields.len]type = undefined;
+        for (tuple_fields, 0..) |tuple_field, i| types[i] = tuple_field.type;
+        const final = types;
+        return &final;
     }
 }
 
-/// Given a tuple of Axis enums, return a comptime slice of the union of their field names.
-pub fn unionOfAxisNamesEnum(comptime axisEnums: []const type) []const [:0]const u8 {
-    comptime {
-        var sum: usize = 0;
-        for (axisEnums) |Axis| {
-            const info = @typeInfo(Axis);
-            if (info != .@"enum") @compileError("Axis must be enum");
-            sum += info.@"enum".fields.len;
-        }
-        var all_names: [sum][:0]const u8 = undefined;
-        var count: usize = 0;
-        for (axisEnums) |Axis| {
-            const info = @typeInfo(Axis);
-            for (info.@"enum".fields) |field| {
-                var found = false;
-                for (all_names[0..count]) |existing|
-                    if (mem.eql(u8, existing, field.name)) {
-                        found = true;
-                        break;
-                    };
-                if (!found) {
-                    all_names[count] = field.name;
-                    count += 1;
-                }
-            }
-        }
-        const Context = struct {
-            pub fn lessThan(_: @This(), a: [:0]const u8, b: [:0]const u8) bool {
-                return std.mem.order(u8, a, b) == .lt;
-            }
-        };
-        mem.sort([:0]const u8, all_names[0..count], Context{}, Context.lessThan);
-        return all_names[0..count];
-    }
-}
-
-test "unionOfAxisNamesEnum" {
+test "unionOfAxisNames" {
     comptime {
         const IJK = enum { i, j, k };
         const JLI = enum { j, l, i };
 
+        // First-seen order: i, j, k (from IJK), then l (the only new name in JLI).
         const expected = [_][:0]const u8{ "i", "j", "k", "l" };
-        const actual = unionOfAxisNamesEnum(&.{ IJK, JLI });
+        const actual = unionOfAxisNames(&.{ IJK, JLI });
 
         try std.testing.expectEqualDeep(&expected, actual);
     }

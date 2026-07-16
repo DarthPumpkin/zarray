@@ -692,7 +692,7 @@ fn one(comptime T: type) T {
 
 fn index_strings(comptime Axes: []const type) [Axes.len][]const C.zig_label_type {
     const result: [Axes.len][]const C.zig_label_type = comptime result: {
-        const combined_names = idx_.unionOfAxisNamesEnum(Axes);
+        const combined_names = idx_.unionOfAxisNames(Axes);
 
         var out: [Axes.len][]const C.zig_label_type = undefined;
         for (Axes, 0..) |AxisT, axis_i| {

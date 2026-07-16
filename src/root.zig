@@ -6,6 +6,7 @@ pub const NamedArray = arr.NamedArray;
 pub const NamedArrayConst = arr.NamedArrayConst;
 
 pub const index = @import("named_index.zig");
+pub const axis_meta = @import("axis_meta.zig");
 pub const math = @import("math.zig");
 pub const libs = struct {
     pub const blas = @import("accelerate.zig").blas;

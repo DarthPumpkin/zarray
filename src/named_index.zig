@@ -187,37 +187,15 @@ pub fn NamedIndex(comptime AxisEnum: type) type {
         }
 
         pub fn squeezeAxis(self: *const @This(), comptime axis: Axis) NamedIndex(Removed(Axis, @tagName(axis))) {
-            const axis_name = @tagName(axis);
-            if (@field(self.shape, axis_name) != 1) @panic("squeezeAxis: axis size must be 1");
-            const NewEnum = Removed(Axis, axis_name);
-            const NewKey = AxesStruct(meta.fieldNames(NewEnum));
-            const NewStrides = AxesStructOf(meta.fieldNames(NewEnum), isize);
-
-            const new_shape: NewKey = blk: {
-                var tmp: NewKey = undefined;
-                inline for (field_names) |fname| if (comptime !mem.eql(u8, fname, axis_name)) {
-                    @field(tmp, fname) = @field(self.shape, fname);
-                };
-                break :blk tmp;
-            };
-            const new_strides: NewStrides = blk: {
-                var tmp: NewStrides = undefined;
-                inline for (field_names) |fname| if (comptime !mem.eql(u8, fname, axis_name)) {
-                    @field(tmp, fname) = @field(self.strides, fname);
-                };
-                break :blk tmp;
-            };
-            return .{
-                .shape = new_shape,
-                .strides = new_strides,
-                .offset = self.offset,
-            };
+            return self.conformAxes(Removed(Axis, @tagName(axis)));
         }
 
         pub fn keepOnly(self: *const @This(), comptime NewEnum: type) NamedIndex(NewEnum) {
             const old_field_names = field_names;
             const new_field_names = comptime meta.fieldNames(NewEnum);
 
+            // keepOnly is stricter than conformAxes: every requested axis must
+            // already exist in the original axis set.
             inline for (new_field_names) |new_name| {
                 var found = false;
                 inline for (old_field_names) |old_name| {
@@ -229,31 +207,7 @@ pub fn NamedIndex(comptime AxisEnum: type) type {
                 if (!found) @panic("keepOnly: axis not present in original: " ++ new_name);
             }
 
-            inline for (old_field_names) |old_name| {
-                var keep = false;
-                inline for (new_field_names) |new_name| {
-                    if (mem.eql(u8, old_name, new_name)) {
-                        keep = true;
-                        break;
-                    }
-                }
-                if (!keep and @field(self.shape, old_name) != 1)
-                    @panic("keepOnly: cannot squeeze axis '" ++ old_name ++ "' size != 1");
-            }
-
-            const NewShape = AxesStruct(new_field_names);
-            const NewStrides = AxesStructOf(new_field_names, isize);
-            var new_shape: NewShape = undefined;
-            var new_strides: NewStrides = undefined;
-            inline for (new_field_names) |nm| {
-                @field(new_shape, nm) = @field(self.shape, nm);
-                @field(new_strides, nm) = @field(self.strides, nm);
-            }
-            return .{
-                .shape = new_shape,
-                .strides = new_strides,
-                .offset = self.offset,
-            };
+            return self.conformAxes(NewEnum);
         }
 
         pub fn conformAxes(self: *const @This(), comptime NewEnum: type) NamedIndex(NewEnum) {
@@ -329,23 +283,7 @@ pub fn NamedIndex(comptime AxisEnum: type) type {
         }
 
         pub fn addEmptyAxis(self: *const @This(), comptime axis: [:0]const u8) NamedIndex(Added(Axis, axis)) {
-            const NewEnum = Added(Axis, axis);
-            const NewShape = AxesStruct(meta.fieldNames(NewEnum));
-            const NewStrides = AxesStructOf(meta.fieldNames(NewEnum), isize);
-
-            const new_shape: NewShape = blk: {
-                var tmp: NewShape = undefined;
-                inline for (field_names) |fname| @field(tmp, fname) = @field(self.shape, fname);
-                @field(tmp, axis) = 1;
-                break :blk tmp;
-            };
-            const new_strides: NewStrides = blk: {
-                var tmp: NewStrides = undefined;
-                inline for (field_names) |fname| @field(tmp, fname) = @field(self.strides, fname);
-                @field(tmp, axis) = 0;
-                break :blk tmp;
-            };
-            return .{ .shape = new_shape, .strides = new_strides, .offset = self.offset };
+            return self.conformAxes(Added(Axis, axis));
         }
 
         pub fn rename(self: *const @This(), comptime NewEnum: type, comptime rename_pairs: []const AxisRenamePair) NamedIndex(NewEnum) {

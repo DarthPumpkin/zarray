@@ -612,23 +612,6 @@ pub fn NamedIndex(comptime AxisEnum: type) type {
             }
             return .{ .shape = new_shape, .strides = new_strides, .offset = self.offset };
         }
-
-        pub fn rename_old(self: *const @This(), comptime axis: Axis, comptime new_name: [:0]const u8) NamedIndex(Renamed(Axis, @tagName(axis), new_name)) {
-            const old_name = @tagName(axis);
-            const NewEnum = Renamed(Axis, old_name, new_name);
-            const NewShape = AxesStruct(meta.fieldNames(NewEnum));
-            const NewStrides = AxesStructOf(meta.fieldNames(NewEnum), isize);
-            const new_names = comptime meta.fieldNames(NewEnum);
-            var new_shape: NewShape = undefined;
-            var new_strides: NewStrides = undefined;
-            // `Renamed` keeps axis order, only swapping the renamed field's name,
-            // so old field i maps positionally to new field i.
-            inline for (field_names, new_names) |old_n, new_n| {
-                @field(new_shape, new_n) = @field(self.shape, old_n);
-                @field(new_strides, new_n) = @field(self.strides, old_n);
-            }
-            return .{ .shape = new_shape, .strides = new_strides, .offset = self.offset };
-        }
     };
 }
 
@@ -756,26 +739,6 @@ pub fn KeyEnum(comptime names: []const [:0]const u8) type {
         break :blk fv_;
     };
     return @Enum(TagType, .exhaustive, names, &field_values);
-}
-
-fn Renamed(comptime OldKey: type, old_name: [:0]const u8, new_name: [:0]const u8) type {
-    const old_struct = @typeInfo(OldKey).@"enum";
-    const new_field_names = comptime blk: {
-        var out: [old_struct.fields.len][:0]const u8 = undefined;
-        var matched = false;
-        for (0..old_struct.fields.len) |fi| {
-            const old_field = old_struct.fields[fi];
-            if (mem.eql(u8, old_field.name, old_name)) {
-                out[fi] = new_name;
-                matched = true;
-            } else {
-                out[fi] = old_field.name;
-            }
-        }
-        if (!matched) @compileError("Renamed: field not found: " ++ old_name);
-        break :blk out;
-    };
-    return KeyEnum(&new_field_names);
 }
 
 fn Removed(comptime OldKey: type, comptime name: [:0]const u8) type {
@@ -1498,23 +1461,26 @@ test "count" {
 
 test "rename" {
     const IJEnum = enum { i, j };
+    const FromJEnum = enum { from, j };
     const IndexIJ = NamedIndex(IJEnum);
     const idx: IndexIJ = .initContiguous(.{
         .i = 5,
         .j = 3,
     });
-    const idx_from = idx.rename_old(.i, "from");
+    // Rename i->from; j is auto-mapped by name.
+    const idx_from = idx.rename(FromJEnum, &.{.{ .old = "i", .new = "from" }});
 
-    const expected = NamedIndex(Renamed(IJEnum, "i", "from")){
+    const expected = NamedIndex(FromJEnum){
         .shape = .{ .from = idx.shape.i, .j = idx.shape.j },
         .strides = .{ .from = idx.strides.i, .j = idx.strides.j },
         .offset = idx.offset,
     };
     try std.testing.expectEqual(expected, idx_from);
 
-    // Toggle this manually to verify that it throws a compileError.
+    // Toggle this manually to verify that it throws a compileError
+    // (source axis "nonexisting" does not exist).
     if (false) {
-        _ = idx.rename_old("nonexisting", "foo");
+        _ = idx.rename(FromJEnum, &.{.{ .old = "nonexisting", .new = "from" }});
     }
 }
 
@@ -1799,27 +1765,30 @@ test "resolveDimensions" {
     }
 }
 
-// test "mergeAxes" {
-//     const SourceAxes = enum { i, j, k };
-//     const TargetAxes = enum { i, jk };
+test "mergeAxes basic contiguous merge and stride misalignment" {
+    const SourceAxes = enum { i, j, k };
+    const TargetAxes = enum { i, jk };
 
-//     const source_idx: NamedIndex(SourceAxes) = .initContiguous(.{ .i = 2, .j = 3, .k = 5 });
-//     const expected_reshaped: NamedIndex(TargetAxes) = .initContiguous(.{ .i = 2, .jk = 15 });
+    // Contiguous source: merging j (stride 5) and k (stride 1) into jk succeeds.
+    const source_idx: NamedIndex(SourceAxes) = .initContiguous(.{ .i = 2, .j = 3, .k = 5 });
+    const expected_reshaped: NamedIndex(TargetAxes) = .initContiguous(.{ .i = 2, .jk = 15 });
 
-//     const actual_reshaped = try source_idx.mergeAxes(TargetAxes);
+    const actual_reshaped = try source_idx.mergeAxes(TargetAxes);
 
-//     try std.testing.expectEqual(expected_reshaped, actual_reshaped);
+    try std.testing.expectEqual(expected_reshaped, actual_reshaped);
 
-//     // Error if axes cannot be merged due to stride misalignment
-//     const error_source: NamedIndex(SourceAxes) = .{
-//         .shape = .{ .i = 2, .j = 3, .k = 5 },
-//         .strides = .{ .i = 18, .j = 6, .k = 1 },
-//     };
+    // Error if axes cannot be merged due to stride misalignment: for j and k to
+    // be contiguous we need abs(stride_j) == abs(stride_k) * shape_k = 1 * 5 = 5,
+    // but stride_j = 6 here.
+    const error_source: NamedIndex(SourceAxes) = .{
+        .shape = .{ .i = 2, .j = 3, .k = 5 },
+        .strides = .{ .i = 18, .j = 6, .k = 1 },
+    };
 
-//     const error_actual = error_source.mergeAxes(TargetAxes);
+    const error_actual = error_source.mergeAxes(TargetAxes);
 
-//     try std.testing.expectError(.StrideMisalignment, error_actual);
-// }
+    try std.testing.expectError(NamedIndexError.StrideMisalignment, error_actual);
+}
 
 test "splitAxis" {
     const SourceAxes = enum { i, jk };

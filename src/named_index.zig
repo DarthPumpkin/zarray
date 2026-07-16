@@ -11,18 +11,22 @@ pub const NamedIndexError = error{
 
 // Axis-keyed struct factories.
 //
-// These are conceptually the same as `std.enums.EnumFieldStruct`, but keyed by a
-// list of field names (rather than an enum) and, crucially, laid out `packed` so
-// that a value can be reinterpreted as a fixed-size array with `@bitCast` (see
-// `axisOrder`, `isContiguous`, `KeyIterator`, and `accelerate.zig`). The names
-// always originate from an axis enum via `std.meta.fieldNames`.
+// These are the name-keyed analog of `std.enums.EnumFieldStruct`: given a list of
+// axis names they build a struct with one field per axis. We key on names rather
+// than an enum because several axis transforms build structs for *derived* name
+// lists (unions, splits, renames) that don't correspond to a single input enum;
+// where the names do come from an enum they're obtained via `std.meta.fieldNames`.
+//
+// Layout is the default `auto`, exactly like `EnumFieldStruct`. Conversions to and
+// from a positional array go through `structToArray`/`arrayToStruct` (see
+// `axisOrder`, `isContiguous`, `KeyIterator`) rather than relying on a `packed`
+// bit layout and `@bitCast`.
 pub fn AxesStructOf(comptime names: []const [:0]const u8, comptime T: type) type {
-    return @Struct(.@"packed", null, names, &@splat(T), &@splat(.{}));
+    return @Struct(.auto, null, names, &@splat(T), &@splat(.{}));
 }
 
-// Optional variant, used for partial specifications (e.g. per-axis steps). It is
-// never `@bitCast`, so it uses the default `auto` layout, matching
-// `std.enums.EnumFieldStruct(E, ?T, null)`.
+// Optional variant, used for partial specifications (e.g. per-axis steps), where
+// unspecified axes default to null. Matches `EnumFieldStruct(E, ?T, <null default>)`.
 pub fn AxesOptionalStructOf(comptime names: []const [:0]const u8, comptime T: type) type {
     const optT = ?T;
     const default_val: optT = null;
@@ -33,6 +37,24 @@ pub fn AxesOptionalStructOf(comptime names: []const [:0]const u8, comptime T: ty
         &@splat(optT),
         &@splat(.{ .default_value_ptr = &default_val }),
     );
+}
+
+/// Copy an axis-keyed struct's fields into a positional array, in field
+/// declaration order (the order `std.meta.fieldNames` reports). Replaces the old
+/// `@bitCast`-to-array trick, which required a `packed` layout.
+fn structToArray(comptime V: type, s: anytype) [@typeInfo(@TypeOf(s)).@"struct".fields.len]V {
+    const fields = @typeInfo(@TypeOf(s)).@"struct".fields;
+    var out: [fields.len]V = undefined;
+    inline for (fields, 0..) |field, i| out[i] = @field(s, field.name);
+    return out;
+}
+
+/// Inverse of `structToArray`: build an axis-keyed struct `S` from a positional
+/// array whose elements are in `S`'s field declaration order.
+fn arrayToStruct(comptime S: type, arr: anytype) S {
+    var out: S = undefined;
+    inline for (@typeInfo(S).@"struct".fields, 0..) |field, i| @field(out, field.name) = arr[i];
+    return out;
 }
 
 pub fn AxesStruct(comptime names: []const [:0]const u8) type {
@@ -313,7 +335,7 @@ pub fn NamedIndex(comptime AxisEnum: type) type {
         }
 
         pub fn axisOrder(self: *const @This()) [field_names.len]Axis {
-            const strides_arr: [field_names.len]isize = @bitCast(self.strides);
+            const strides_arr = structToArray(isize, self.strides);
             const idxs = argsortAbsStrideDesc(field_names.len, strides_arr);
             var axes: [field_names.len]Axis = undefined;
             inline for (0..field_names.len) |i| axes[i] = @enumFromInt(idxs[i]);
@@ -322,8 +344,8 @@ pub fn NamedIndex(comptime AxisEnum: type) type {
 
         pub fn isContiguous(self: *const @This()) bool {
             const order = self.axisOrder();
-            const strides_arr: [field_names.len]isize = @bitCast(self.strides);
-            const shape_arr: [field_names.len]usize = @bitCast(self.shape);
+            const strides_arr = structToArray(isize, self.strides);
+            const shape_arr = structToArray(usize, self.shape);
             var expected: usize = 1;
             inline for (0..field_names.len) |i| {
                 const axis = order[field_names.len - 1 - i];
@@ -552,8 +574,8 @@ pub fn NamedIndex(comptime AxisEnum: type) type {
                 }
             }
 
-            const strides_arr: [source_names.len]isize = @bitCast(self.strides);
-            const shapes_arr: [source_names.len]usize = @bitCast(self.shape);
+            const strides_arr = structToArray(isize, self.strides);
+            const shapes_arr = structToArray(usize, self.shape);
 
             const order = self.axisOrder();
             var ordered_merge: [source_names.len]usize = undefined;
@@ -610,8 +632,15 @@ pub fn NamedIndex(comptime AxisEnum: type) type {
             const NewEnum = Renamed(Axis, old_name, new_name);
             const NewShape = AxesStruct(meta.fieldNames(NewEnum));
             const NewStrides = AxesStructOf(meta.fieldNames(NewEnum), isize);
-            const new_shape: NewShape = @bitCast(self.shape);
-            const new_strides: NewStrides = @bitCast(self.strides);
+            const new_names = comptime meta.fieldNames(NewEnum);
+            var new_shape: NewShape = undefined;
+            var new_strides: NewStrides = undefined;
+            // `Renamed` keeps axis order, only swapping the renamed field's name,
+            // so old field i maps positionally to new field i.
+            inline for (field_names, new_names) |old_n, new_n| {
+                @field(new_shape, new_n) = @field(self.shape, old_n);
+                @field(new_strides, new_n) = @field(self.strides, old_n);
+            }
             return .{ .shape = new_shape, .strides = new_strides, .offset = self.offset };
         }
     };
@@ -666,8 +695,8 @@ pub fn KeyIterator(comptime ShapeKey: type, comptime StrideKey: type) type {
 
         pub fn init(shape: ShapeKey, strides: StrideKey) @This() {
             const start = [_]usize{0} ** fnames.len;
-            const shape_arr: [fnames.len]usize = @bitCast(shape);
-            const strides_arr: [fnames.len]isize = @bitCast(strides);
+            const shape_arr = structToArray(usize, shape);
+            const strides_arr = structToArray(isize, strides);
             const argsort = argsortAbsStrideDesc(fnames.len, strides_arr);
             return .{ .next_arr = start, .shape_arr = shape_arr, .dims_desc = argsort };
         }
@@ -693,7 +722,7 @@ pub fn KeyIterator(comptime ShapeKey: type, comptime StrideKey: type) type {
                     }
                 }
             }
-            return @bitCast(result_arr);
+            return arrayToStruct(ShapeKey, result_arr);
         }
     };
 }

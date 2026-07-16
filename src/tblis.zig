@@ -42,7 +42,7 @@ pub fn add(
     const axis_names = comptime meta.fieldNames(Axis);
     const rank = comptime axis_names.len;
     comptime assert(rank <= 255 - 'a' + 1);
-    assert(a.idx.shape == b.idx.shape);
+    assert(meta.eql(a.idx.shape, b.idx.shape));
 
     var shape: [rank]C.zig_len_type = undefined;
     var a_stride: [rank]C.zig_stride_type = undefined;
@@ -133,7 +133,7 @@ pub fn dot(
     b: arr.NamedArrayConst(AxisA, Scalar),
 ) Scalar {
     const a_idx = comptime index_strings(&.{AxisA})[0];
-    assert(a.idx.shape == b.idx.shape);
+    assert(meta.eql(a.idx.shape, b.idx.shape));
     const rank = a_idx.len;
 
     var a_mem: TblisTensorBuf(rank) = undefined;

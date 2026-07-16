@@ -2432,7 +2432,12 @@ pub const blas = struct {
                 const inc = @field(arr.idx.strides, axis_name);
                 // The pointer is expected to be to the scalar that comes first in virtual memory.
                 // For negative strides, this corresponds to the logically last scalar.
-                const ptr: *const Scalar = if (inc >= 0) arr.at(@bitCast([_]usize{0})) else arr.at(@bitCast([_]usize{len - 1}));
+                const Key = @TypeOf(arr.idx.shape);
+                const ptr: *const Scalar = if (inc >= 0) arr.at(std.mem.zeroes(Key)) else key: {
+                    var k = std.mem.zeroes(Key);
+                    @field(k, axis_name) = len - 1;
+                    break :key arr.at(k);
+                };
 
                 return .{
                     .len = @intCast(len),
@@ -2458,7 +2463,12 @@ pub const blas = struct {
 
                 const len = @field(arr.idx.shape, axis_name);
                 const inc = @field(arr.idx.strides, axis_name);
-                const ptr: *Scalar = if (inc >= 0) arr.at(@bitCast([_]usize{0})) else arr.at(@bitCast([_]usize{len - 1}));
+                const Key = @TypeOf(arr.idx.shape);
+                const ptr: *Scalar = if (inc >= 0) arr.at(std.mem.zeroes(Key)) else key: {
+                    var k = std.mem.zeroes(Key);
+                    @field(k, axis_name) = len - 1;
+                    break :key arr.at(k);
+                };
 
                 return .{
                     .len = @intCast(len),

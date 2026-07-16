@@ -30,7 +30,7 @@ pub fn add(
     arr2: NamedArrayConst(Axis, Scalar),
     arr_out: NamedArray(Axis, Scalar),
 ) void {
-    if (arr1.idx.shape != arr2.idx.shape or arr1.idx.shape != arr_out.idx.shape)
+    if (!meta.eql(arr1.idx.shape, arr2.idx.shape) or !meta.eql(arr1.idx.shape, arr_out.idx.shape))
         @panic("Incompatible shapes");
     // TODO: Check that arr_out.idx is non-overlapping.
     var keys = arr1.idx.iterKeys();
@@ -48,7 +48,7 @@ pub fn inner(
     arr1: NamedArrayConst(Axis, Scalar1),
     arr2: NamedArrayConst(Axis, Scalar2),
 ) Promote(Scalar1, Scalar2) {
-    if (arr1.idx.shape != arr2.idx.shape)
+    if (!meta.eql(arr1.idx.shape, arr2.idx.shape))
         @panic("Incompatible shapes for inner product");
 
     const ResultType = Promote(Scalar1, Scalar2);

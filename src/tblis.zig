@@ -119,9 +119,12 @@ pub fn add(
         a_stride[i] = @intCast(@field(a.idx.strides, name));
         b_stride[i] = @intCast(@field(b.idx.strides, name));
     }
-    var a_tensor = init_tensor(Scalar, rank, &shape, &a_stride, @constCast(a.buf.ptr));
+    const a_base_ptr: [*]Scalar = @constCast(a.buf.ptr) + a.idx.offset;
+    const b_base_ptr: [*]Scalar = b.buf.ptr + b.idx.offset;
+
+    var a_tensor = init_tensor(Scalar, rank, &shape, &a_stride, a_base_ptr);
     a_tensor.scalar = init_scalar(Scalar, opt.scale_a);
-    var b_tensor = init_tensor(Scalar, rank, &shape, &b_stride, b.buf.ptr);
+    var b_tensor = init_tensor(Scalar, rank, &shape, &b_stride, b_base_ptr);
     b_tensor.scalar = init_scalar(Scalar, opt.scale_b);
 
     C.tblis_zig_tensor_add(null, null, &a_tensor, &idx_str, &b_tensor, &idx_str);
@@ -181,6 +184,40 @@ test "add mat + row broadcast" {
     };
     add(IJ, T, a, b, .{});
 
+    try std.testing.expectEqualDeep(&expected, &b_buf);
+}
+
+test "add honors non-zero offset views" {
+    const IJ = enum { i, j };
+    const T = f32;
+
+    const a_buf = [_]T{
+        1, 2, 3,
+        4, 5, 6,
+    };
+    var b_buf = [_]T{
+        10, 20, 30,
+        40, 50, 60,
+    };
+
+    var a = arr.NamedArrayConst(IJ, T){
+        .idx = .initContiguous(.{ .i = 2, .j = 3 }),
+        .buf = &a_buf,
+    };
+    var b = arr.NamedArray(IJ, T){
+        .idx = .initContiguous(.{ .i = 2, .j = 3 }),
+        .buf = &b_buf,
+    };
+
+    a.idx = a.idx.sliceAxis(.j, 1, 3);
+    b.idx = b.idx.sliceAxis(.j, 1, 3);
+
+    add(IJ, T, a, b, .{});
+
+    const expected = [_]T{
+        10, 22, 33,
+        40, 55, 66,
+    };
     try std.testing.expectEqualDeep(&expected, &b_buf);
 }
 

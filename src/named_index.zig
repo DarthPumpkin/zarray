@@ -5,13 +5,15 @@ const assert = std.debug.assert;
 const Type = std.builtin.Type;
 
 const axis_meta = @import("axis_meta.zig");
-pub const AxesStructOf = axis_meta.AxesStructOf;
-pub const AxesOptionalStructOf = axis_meta.AxesOptionalStructOf;
-pub const AxesStruct = axis_meta.AxesStruct;
-pub const AxesOptionalStruct = axis_meta.AxesOptionalStruct;
-pub const KeyEnum = axis_meta.KeyEnum;
-pub const Xor = axis_meta.Xor;
-pub const unionOfAxisNames = axis_meta.unionOfAxisNames;
+const AxesStructOf = axis_meta.AxesStructOf;
+const AxesOptionalStructOf = axis_meta.AxesOptionalStructOf;
+const AxesStruct = axis_meta.AxesStruct;
+const AxesOptionalStruct = axis_meta.AxesOptionalStruct;
+const KeyEnum = axis_meta.KeyEnum;
+const Xor = axis_meta.Xor;
+const Difference = axis_meta.Difference;
+const DifferenceAxesStruct = axis_meta.DifferenceAxesStruct;
+const unionOfAxisNames = axis_meta.unionOfAxisNames;
 
 pub const NamedIndexError = error{
     ShapeMismatch,

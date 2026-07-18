@@ -99,6 +99,36 @@ pub fn Xor(comptime Enum1: type, comptime Enum2: type) type {
     return KeyEnum(&xor_fnames);
 }
 
+/// Difference of axis names `EnumAll \ EnumSubset` as an enum.
+///
+/// Requires that every field in `EnumSubset` appears in `EnumAll`.
+pub fn Difference(comptime EnumAll: type, comptime EnumSubset: type) type {
+    const all_info = @typeInfo(EnumAll).@"enum";
+    const subset_info = @typeInfo(EnumSubset).@"enum";
+
+    comptime {
+        for (subset_info.fields) |subset_field| {
+            var found = false;
+            for (all_info.fields) |all_field| {
+                if (mem.eql(u8, subset_field.name, all_field.name)) {
+                    found = true;
+                    break;
+                }
+            }
+            if (!found)
+                @compileError("Difference: subset axis not present in superset: " ++ subset_field.name);
+        }
+    }
+
+    // Under the subset precondition, symmetric difference equals set difference.
+    return Xor(EnumAll, EnumSubset);
+}
+
+/// Axis-keyed `usize` struct for `EnumAll \ EnumSubset`.
+pub fn DifferenceAxesStruct(comptime EnumAll: type, comptime EnumSubset: type) type {
+    return AxesStruct(meta.fieldNames(Difference(EnumAll, EnumSubset)));
+}
+
 /// Deduplicated union of the field names across the given axis types, in
 /// first-seen order. `types` may be enums or shape structs (or a mix), since
 /// `std.meta.fieldNames` reports field names for both.
@@ -172,4 +202,27 @@ test "unionOfAxisNames" {
 
         try std.testing.expectEqualDeep(&expected, actual);
     }
+}
+
+test "Difference" {
+    const IJK = enum { i, j, k };
+    const IJ = enum { i, j };
+    const K = enum { k };
+
+    const D = Difference(IJK, IJ);
+    try std.testing.expectEqualDeep(meta.fieldNames(K), meta.fieldNames(D));
+
+    if (false) {
+        const KL = enum { k, l };
+        _ = Difference(IJK, KL);
+    }
+}
+
+test "DifferenceAxesStruct" {
+    const IJK = enum { i, j, k };
+    const IK = enum { i, k };
+
+    const D = DifferenceAxesStruct(IJK, IK);
+    const d: D = .{ .j = 3 };
+    try std.testing.expectEqual(@as(usize, 3), d.j);
 }

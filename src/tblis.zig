@@ -14,6 +14,7 @@ const c64_tblis = C.dcomplex_zig;
 
 const arr = @import("named_array.zig");
 const idx_ = @import("named_index.zig");
+const axis_meta = @import("axis_meta.zig");
 
 pub const Reduce = enum {
     SUM,
@@ -24,6 +25,68 @@ pub const Reduce = enum {
     MIN_ABS,
     NORM_2,
 };
+
+/// Extrema reductions that also expose arg indices.
+///
+/// For `*_ABS` variants, returned values follow tblis semantics and are
+/// magnitudes (non-negative for real scalars).
+pub const ArgReduce = enum {
+    MAX,
+    MAX_ABS,
+    MIN,
+    MIN_ABS,
+};
+
+fn assertAxisSubsetNonEmpty(comptime AxisIn: type, comptime AxisOut: type, comptime caller: []const u8) void {
+    const in_names = comptime meta.fieldNames(AxisIn);
+    const out_names = comptime meta.fieldNames(AxisOut);
+
+    comptime {
+        if (out_names.len == 0)
+            @compileError(caller ++ ": AxisOut must be non-empty. Use reduceAll(...) for full reduction.");
+
+        for (out_names) |out_name| {
+            var found = false;
+            for (in_names) |in_name| {
+                if (std.mem.eql(u8, out_name, in_name)) {
+                    found = true;
+                    break;
+                }
+            }
+            if (!found)
+                @compileError(caller ++ ": AxisOut contains axis not present in AxisIn: '" ++ out_name ++ "'");
+        }
+    }
+}
+
+fn assertHasReducedAxis(comptime AxisIn: type, comptime AxisOut: type, comptime caller: []const u8) void {
+    const ReducedAxis = comptime axis_meta.Difference(AxisIn, AxisOut);
+    comptime {
+        if (meta.fields(ReducedAxis).len == 0)
+            @compileError(caller ++ ": no reduced axis. Use reduceAll(...) for full reduction, or pass a strict subset AxisOut.");
+    }
+}
+
+pub fn ReduceWithArgResult(comptime AxisOut: type, comptime Scalar: type, comptime ArgScalar: type) type {
+    return struct {
+        values: arr.NamedArray(AxisOut, Scalar),
+        args: arr.NamedArray(AxisOut, ArgScalar),
+
+        pub fn deinit(self: *const @This(), allocator: std.mem.Allocator) void {
+            self.values.deinit(allocator);
+            self.args.deinit(allocator);
+        }
+    };
+}
+
+fn argReduceToReduce(comptime op: ArgReduce) Reduce {
+    return switch (op) {
+        .MAX => .MAX,
+        .MAX_ABS => .MAX_ABS,
+        .MIN => .MIN,
+        .MIN_ABS => .MIN_ABS,
+    };
+}
 
 /// Assign `B <- alpha A + beta B`
 /// where `A, B` have the same shape and `alpha, beta` are optional scalars.
@@ -293,7 +356,7 @@ test "mult i jk -> ijk" {
 // The returned struct contains the reduced scalar value and the index (one per axis)
 // at which the extremum occurred for MAX/MIN-type reductions. For SUM/NORM variants,
 // the index content is undefined and can be ignored.
-pub fn reduce(
+pub fn reduceAll(
     comptime AxisA: type,
     comptime Scalar: type,
     op: Reduce,
@@ -342,7 +405,197 @@ pub fn reduce(
     };
 }
 
-test "reduce i" {
+/// Reduce `a` over all axes absent from `AxisOut`, writing both extremum values
+/// and reduced-axis arg indices in a single pass.
+///
+/// `out_values` and `out_args` must both have per-axis extents matching `a` on
+/// the kept axes (`AxisOut`).
+pub fn reduceWithArgInto(
+    comptime AxisIn: type,
+    comptime AxisOut: type,
+    comptime Scalar: type,
+    comptime op: ArgReduce,
+    a: arr.NamedArrayConst(AxisIn, Scalar),
+    out_values: arr.NamedArray(AxisOut, Scalar),
+    out_args: arr.NamedArray(AxisOut, axis_meta.DifferenceAxesStruct(AxisIn, AxisOut)),
+) void {
+    assertAxisSubsetNonEmpty(AxisIn, AxisOut, "reduceWithArgInto");
+    assertHasReducedAxis(AxisIn, AxisOut, "reduceWithArgInto");
+    const out_names = comptime meta.fieldNames(AxisOut);
+    const ReducedAxis = comptime axis_meta.Difference(AxisIn, AxisOut);
+    const reduced_names = comptime meta.fieldNames(ReducedAxis);
+    const ArgScalar = axis_meta.DifferenceAxesStruct(AxisIn, AxisOut);
+    const value_op = comptime argReduceToReduce(op);
+
+    inline for (out_names) |name| {
+        const expected = @field(a.idx.shape, name);
+        if (@field(out_values.idx.shape, name) != expected)
+            @panic("reduceWithArgInto: values output shape mismatch");
+        if (@field(out_args.idx.shape, name) != expected)
+            @panic("reduceWithArgInto: args output shape mismatch");
+    }
+
+    var reduced_shape = a.idx.shape;
+    inline for (out_names) |name| {
+        @field(reduced_shape, name) = 1;
+    }
+
+    var out_keys = out_values.idx.iterKeys();
+    while (out_keys.next()) |out_key| {
+        var base_offset_signed: isize = @intCast(a.idx.offset);
+        inline for (out_names) |name| {
+            const idx_val: isize = @intCast(@field(out_key, name));
+            const stride_val: isize = @field(a.idx.strides, name);
+            base_offset_signed += idx_val * stride_val;
+        }
+        const base_offset: usize = @intCast(base_offset_signed);
+
+        const reduced_view = arr.NamedArrayConst(AxisIn, Scalar){
+            .idx = .{
+                .shape = reduced_shape,
+                .strides = a.idx.strides,
+                .offset = base_offset,
+            },
+            .buf = a.buf,
+        };
+
+        const reduced = reduceAll(AxisIn, Scalar, value_op, reduced_view);
+        out_values.at(out_key).* = reduced.value;
+
+        // tblis currently reports a linear offset for extrema location in the
+        // first index slot. Recover the full per-axis key by searching the
+        // reduced view's key space for the matching linear offset.
+        const in_names = comptime meta.fieldNames(AxisIn);
+        const raw_linear: usize = @field(reduced.index, in_names[0]);
+
+        var idx_relative = reduced_view.idx;
+        idx_relative.offset = 0;
+
+        var found_key: ?@TypeOf(reduced_view.idx).Axes = null;
+        var candidate_keys = idx_relative.iterKeys();
+        while (candidate_keys.next()) |candidate_key| {
+            if (idx_relative.linear(candidate_key) == raw_linear) {
+                found_key = candidate_key;
+                break;
+            }
+        }
+        const arg_key = found_key orelse @panic("reduceWithArgInto: failed to decode arg index");
+
+        var arg_value: ArgScalar = undefined;
+        inline for (reduced_names) |name| {
+            @field(arg_value, name) = @field(arg_key, name);
+        }
+        out_args.at(out_key).* = arg_value;
+    }
+}
+
+/// Allocate and return both extremum values and reduced-axis arg indices for
+/// reducing `a` over all axes absent from `AxisOut`.
+pub fn reduceWithArgAlloc(
+    comptime AxisIn: type,
+    comptime AxisOut: type,
+    comptime Scalar: type,
+    allocator: std.mem.Allocator,
+    comptime op: ArgReduce,
+    a: arr.NamedArrayConst(AxisIn, Scalar),
+) !ReduceWithArgResult(AxisOut, Scalar, axis_meta.DifferenceAxesStruct(AxisIn, AxisOut)) {
+    assertAxisSubsetNonEmpty(AxisIn, AxisOut, "reduceWithArgAlloc");
+    assertHasReducedAxis(AxisIn, AxisOut, "reduceWithArgAlloc");
+
+    const out_names = comptime meta.fieldNames(AxisOut);
+    const OutIndex = idx_.NamedIndex(AxisOut);
+    const ArgScalar = axis_meta.DifferenceAxesStruct(AxisIn, AxisOut);
+
+    var out_shape: OutIndex.Axes = undefined;
+    inline for (out_names) |name| {
+        @field(out_shape, name) = @field(a.idx.shape, name);
+    }
+
+    const values = try arr.NamedArray(AxisOut, Scalar).initAlloc(allocator, out_shape);
+    errdefer values.deinit(allocator);
+
+    const args = try arr.NamedArray(AxisOut, ArgScalar).initAlloc(allocator, out_shape);
+    errdefer args.deinit(allocator);
+
+    reduceWithArgInto(AxisIn, AxisOut, Scalar, op, a, values, args);
+
+    return .{ .values = values, .args = args };
+}
+
+/// Reduce `a` over all axes in `AxisIn` that are absent from `AxisOut`, writing
+/// the resulting values into `out`.
+///
+/// This function does not allocate. `out` must have the same per-axis extents as
+/// `a` on the kept axes (`AxisOut`).
+pub fn reduceInto(
+    comptime AxisIn: type,
+    comptime AxisOut: type,
+    comptime Scalar: type,
+    op: Reduce,
+    a: arr.NamedArrayConst(AxisIn, Scalar),
+    out: arr.NamedArray(AxisOut, Scalar),
+) void {
+    assertAxisSubsetNonEmpty(AxisIn, AxisOut, "reduceInto");
+    const out_names = comptime meta.fieldNames(AxisOut);
+
+    inline for (out_names) |name| {
+        if (@field(out.idx.shape, name) != @field(a.idx.shape, name))
+            @panic("reduceInto: output shape mismatch");
+    }
+
+    var reduced_shape = a.idx.shape;
+    inline for (out_names) |name| {
+        @field(reduced_shape, name) = 1;
+    }
+
+    var out_keys = out.idx.iterKeys();
+    while (out_keys.next()) |out_key| {
+        var base_offset_signed: isize = @intCast(a.idx.offset);
+        inline for (out_names) |name| {
+            const idx_val: isize = @intCast(@field(out_key, name));
+            const stride_val: isize = @field(a.idx.strides, name);
+            base_offset_signed += idx_val * stride_val;
+        }
+        const base_offset: usize = @intCast(base_offset_signed);
+
+        const reduced_view = arr.NamedArrayConst(AxisIn, Scalar){
+            .idx = .{
+                .shape = reduced_shape,
+                .strides = a.idx.strides,
+                .offset = base_offset,
+            },
+            .buf = a.buf,
+        };
+
+        out.at(out_key).* = reduceAll(AxisIn, Scalar, op, reduced_view).value;
+    }
+}
+
+/// Allocate and return the values of reducing `a` over all axes absent from
+/// `AxisOut` using `op`.
+pub fn reduceAlloc(
+    comptime AxisIn: type,
+    comptime AxisOut: type,
+    comptime Scalar: type,
+    allocator: std.mem.Allocator,
+    op: Reduce,
+    a: arr.NamedArrayConst(AxisIn, Scalar),
+) !arr.NamedArray(AxisOut, Scalar) {
+    assertAxisSubsetNonEmpty(AxisIn, AxisOut, "reduceAlloc");
+    const out_names = comptime meta.fieldNames(AxisOut);
+    const OutIndex = idx_.NamedIndex(AxisOut);
+
+    var out_shape: OutIndex.Axes = undefined;
+    inline for (out_names) |name| {
+        @field(out_shape, name) = @field(a.idx.shape, name);
+    }
+
+    const out = try arr.NamedArray(AxisOut, Scalar).initAlloc(allocator, out_shape);
+    reduceInto(AxisIn, AxisOut, Scalar, op, a, out);
+    return out;
+}
+
+test "reduceAll i" {
     const T = f64;
     const I = enum { i };
     const data = [_]T{ 1, -2, 3, -4, 5 };
@@ -351,15 +604,248 @@ test "reduce i" {
         .buf = &data,
     };
 
-    const r_sum = reduce(I, T, .SUM, a);
+    const r_sum = reduceAll(I, T, .SUM, a);
     try std.testing.expectEqual(@as(T, 3.0), r_sum.value);
 
-    const r_sum_abs = reduce(I, T, .SUM_ABS, a);
+    const r_sum_abs = reduceAll(I, T, .SUM_ABS, a);
     try std.testing.expectEqual(@as(T, 15.0), r_sum_abs.value);
 
-    const r_max = reduce(I, T, .MAX, a);
+    const r_max = reduceAll(I, T, .MAX, a);
     try std.testing.expectEqual(@as(T, 5.0), r_max.value);
     try std.testing.expectEqual(@as(C.zig_len_type, 4), r_max.index.i);
+}
+
+test "reduceAll honors non-zero offset view" {
+    const T = f64;
+    const IJ = enum { i, j };
+
+    const data = [_]T{ 1, 2, 3, 4, 5, 6 };
+    var a = arr.NamedArrayConst(IJ, T){
+        .idx = .initContiguous(.{ .i = 2, .j = 3 }),
+        .buf = &data,
+    };
+    a.idx = a.idx.sliceAxis(.j, 1, 3);
+
+    const r_sum = reduceAll(IJ, T, .SUM, a);
+    try std.testing.expectEqual(@as(T, 16), r_sum.value);
+
+    const r_max = reduceAll(IJ, T, .MAX, a);
+    try std.testing.expectEqual(@as(T, 6), r_max.value);
+}
+
+test "reduceInto supports non-sum op" {
+    const T = f64;
+    const IJ = enum { i, j };
+    const I = enum { i };
+
+    const data = [_]T{ 1, 2, 3, 4, 5, 6 };
+    const a = arr.NamedArrayConst(IJ, T){
+        .idx = .initContiguous(.{ .i = 2, .j = 3 }),
+        .buf = &data,
+    };
+
+    var out_buf: [2]T = undefined;
+    const out = arr.NamedArray(I, T){
+        .idx = .initContiguous(.{ .i = 2 }),
+        .buf = &out_buf,
+    };
+
+    reduceInto(IJ, I, T, .MAX, a, out);
+    try std.testing.expectEqual(@as(T, 3), out.scalarAt(.{ .i = 0 }));
+    try std.testing.expectEqual(@as(T, 6), out.scalarAt(.{ .i = 1 }));
+}
+
+test "reduceInto handles negative reduced stride" {
+    const T = f64;
+    const IJ = enum { i, j };
+    const I = enum { i };
+
+    const data = [_]T{ 1, 2, 3, 4, 5, 6 };
+    var a = arr.NamedArrayConst(IJ, T){
+        .idx = .initContiguous(.{ .i = 2, .j = 3 }),
+        .buf = &data,
+    };
+    a.idx = a.idx.strideAxis(.j, -1);
+
+    var out_buf: [2]T = undefined;
+    const out = arr.NamedArray(I, T){
+        .idx = .initContiguous(.{ .i = 2 }),
+        .buf = &out_buf,
+    };
+
+    reduceInto(IJ, I, T, .SUM, a, out);
+    try std.testing.expectEqual(@as(T, 6), out.scalarAt(.{ .i = 0 }));
+    try std.testing.expectEqual(@as(T, 15), out.scalarAt(.{ .i = 1 }));
+}
+
+test "reduceInto sum writes into strided output" {
+    const T = f64;
+    const IJ = enum { i, j };
+    const I = enum { i };
+
+    const data = [_]T{ 1, 2, 3, 4, 5, 6 };
+    const a = arr.NamedArrayConst(IJ, T){
+        .idx = .initContiguous(.{ .i = 2, .j = 3 }),
+        .buf = &data,
+    };
+
+    var out_buf = [_]T{ -1, -1, -1, -1 };
+    const out = arr.NamedArray(I, T){
+        .idx = .{ .shape = .{ .i = 2 }, .strides = .{ .i = 2 } },
+        .buf = &out_buf,
+    };
+
+    reduceInto(IJ, I, T, .SUM, a, out);
+
+    try std.testing.expectEqual(@as(T, 6), out_buf[0]);
+    try std.testing.expectEqual(@as(T, 15), out_buf[2]);
+    try std.testing.expectEqual(@as(T, -1), out_buf[1]);
+    try std.testing.expectEqual(@as(T, -1), out_buf[3]);
+}
+
+test "reduceAlloc sum over selected axes with reordered output axes" {
+    const T = f64;
+    const IJK = enum { i, j, k };
+    const KI = enum { k, i };
+
+    const data = [_]T{
+        1,  2,  3,
+        4,  5,  6,
+        7,  8,  9,
+        10, 11, 12,
+    };
+
+    const a = arr.NamedArrayConst(IJK, T){
+        .idx = .initContiguous(.{ .i = 2, .j = 2, .k = 3 }),
+        .buf = &data,
+    };
+
+    const out = try reduceAlloc(IJK, KI, T, std.testing.allocator, .SUM, a);
+    defer out.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(@as(usize, 3), out.idx.shape.k);
+    try std.testing.expectEqual(@as(usize, 2), out.idx.shape.i);
+
+    try std.testing.expectEqual(@as(T, 5), out.scalarAt(.{ .k = 0, .i = 0 }));
+    try std.testing.expectEqual(@as(T, 17), out.scalarAt(.{ .k = 0, .i = 1 }));
+    try std.testing.expectEqual(@as(T, 7), out.scalarAt(.{ .k = 1, .i = 0 }));
+    try std.testing.expectEqual(@as(T, 19), out.scalarAt(.{ .k = 1, .i = 1 }));
+    try std.testing.expectEqual(@as(T, 9), out.scalarAt(.{ .k = 2, .i = 0 }));
+    try std.testing.expectEqual(@as(T, 21), out.scalarAt(.{ .k = 2, .i = 1 }));
+}
+
+test "reduceAlloc forwards non-sum op" {
+    const T = f64;
+    const IJK = enum { i, j, k };
+    const KI = enum { k, i };
+
+    const data = [_]T{
+        1,  2,  3,
+        4,  5,  6,
+        7,  8,  9,
+        10, 11, 12,
+    };
+
+    const a = arr.NamedArrayConst(IJK, T){
+        .idx = .initContiguous(.{ .i = 2, .j = 2, .k = 3 }),
+        .buf = &data,
+    };
+
+    const out = try reduceAlloc(IJK, KI, T, std.testing.allocator, .MAX, a);
+    defer out.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(@as(T, 4), out.scalarAt(.{ .k = 0, .i = 0 }));
+    try std.testing.expectEqual(@as(T, 10), out.scalarAt(.{ .k = 0, .i = 1 }));
+    try std.testing.expectEqual(@as(T, 5), out.scalarAt(.{ .k = 1, .i = 0 }));
+    try std.testing.expectEqual(@as(T, 11), out.scalarAt(.{ .k = 1, .i = 1 }));
+    try std.testing.expectEqual(@as(T, 6), out.scalarAt(.{ .k = 2, .i = 0 }));
+    try std.testing.expectEqual(@as(T, 12), out.scalarAt(.{ .k = 2, .i = 1 }));
+}
+
+test "reduceInto sum with all axes kept is identity" {
+    const T = f64;
+    const IJ = enum { i, j };
+
+    const data = [_]T{ 1, 2, 3, 4, 5, 6 };
+    const a = arr.NamedArrayConst(IJ, T){
+        .idx = .initContiguous(.{ .i = 2, .j = 3 }),
+        .buf = &data,
+    };
+
+    var out_buf: [data.len]T = undefined;
+    const out = arr.NamedArray(IJ, T){
+        .idx = .initContiguous(.{ .i = 2, .j = 3 }),
+        .buf = &out_buf,
+    };
+
+    reduceInto(IJ, IJ, T, .SUM, a, out);
+    try std.testing.expectEqualDeep(data, out_buf);
+}
+
+test "reduceWithArgInto writes values and reduced-axis indices" {
+    const T = f64;
+    const IJ = enum { i, j };
+    const I = enum { i };
+    const Arg = axis_meta.DifferenceAxesStruct(IJ, I);
+
+    const data = [_]T{ 1, 2, 3, 4, 5, 6 };
+    const a = arr.NamedArrayConst(IJ, T){
+        .idx = .initContiguous(.{ .i = 2, .j = 3 }),
+        .buf = &data,
+    };
+
+    var out_val_buf: [2]T = undefined;
+    var out_arg_buf: [2]Arg = undefined;
+
+    const out_values = arr.NamedArray(I, T){
+        .idx = .initContiguous(.{ .i = 2 }),
+        .buf = &out_val_buf,
+    };
+    const out_args = arr.NamedArray(I, Arg){
+        .idx = .initContiguous(.{ .i = 2 }),
+        .buf = &out_arg_buf,
+    };
+
+    reduceWithArgInto(IJ, I, T, .MAX, a, out_values, out_args);
+
+    try std.testing.expectEqual(@as(T, 3), out_values.scalarAt(.{ .i = 0 }));
+    try std.testing.expectEqual(@as(T, 6), out_values.scalarAt(.{ .i = 1 }));
+
+    try std.testing.expectEqual(@as(usize, 2), out_args.scalarAt(.{ .i = 0 }).j);
+    try std.testing.expectEqual(@as(usize, 2), out_args.scalarAt(.{ .i = 1 }).j);
+}
+
+test "reduceWithArgAlloc returns values and args in one pass" {
+    const T = f64;
+    const IJK = enum { i, j, k };
+    const KI = enum { k, i };
+
+    const data = [_]T{
+        5,  2,
+        -1, 4,
+        3,  -0.5,
+        -7, 9,
+        6,  -2,
+        1,  -8,
+    };
+
+    const a = arr.NamedArrayConst(IJK, T){
+        .idx = .initContiguous(.{ .i = 2, .j = 3, .k = 2 }),
+        .buf = &data,
+    };
+
+    var out = try reduceWithArgAlloc(IJK, KI, T, std.testing.allocator, .MIN_ABS, a);
+    defer out.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(@as(T, 1), out.values.scalarAt(.{ .k = 0, .i = 0 }));
+    try std.testing.expectEqual(@as(T, 1), out.values.scalarAt(.{ .k = 0, .i = 1 }));
+    try std.testing.expectEqual(@as(T, 0.5), out.values.scalarAt(.{ .k = 1, .i = 0 }));
+    try std.testing.expectEqual(@as(T, 2), out.values.scalarAt(.{ .k = 1, .i = 1 }));
+
+    try std.testing.expectEqual(@as(usize, 1), out.args.scalarAt(.{ .k = 0, .i = 0 }).j);
+    try std.testing.expectEqual(@as(usize, 2), out.args.scalarAt(.{ .k = 0, .i = 1 }).j);
+    try std.testing.expectEqual(@as(usize, 2), out.args.scalarAt(.{ .k = 1, .i = 0 }).j);
+    try std.testing.expectEqual(@as(usize, 1), out.args.scalarAt(.{ .k = 1, .i = 1 }).j);
 }
 
 /// Update `A <- alpha A` where `alpha` is a scalar.
@@ -588,7 +1074,9 @@ fn toTblisTensor(comptime AxisA: type, comptime T: type, a: anytype, mem: *Tblis
         mem.len[i] = @intCast(@field(a.idx.shape, name));
         mem.stride[i] = @intCast(@field(a.idx.strides, name));
     }
-    const a_tensor = init_tensor(T, rank, &mem.len, &mem.stride, @constCast(a.buf.ptr));
+
+    const base_ptr: [*]T = @constCast(a.buf.ptr) + a.idx.offset;
+    const a_tensor = init_tensor(T, rank, &mem.len, &mem.stride, base_ptr);
     return a_tensor;
 }
 
@@ -692,7 +1180,7 @@ fn one(comptime T: type) T {
 
 fn index_strings(comptime Axes: []const type) [Axes.len][]const C.zig_label_type {
     const result: [Axes.len][]const C.zig_label_type = comptime result: {
-        const combined_names = idx_.unionOfAxisNames(Axes);
+        const combined_names = axis_meta.unionOfAxisNames(Axes);
 
         var out: [Axes.len][]const C.zig_label_type = undefined;
         for (Axes, 0..) |AxisT, axis_i| {

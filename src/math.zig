@@ -4,6 +4,7 @@ const meta = std.meta;
 
 const named_array = @import("named_array.zig");
 const named_index = @import("named_index.zig");
+const axis_meta = @import("axis_meta.zig");
 const NamedArray = named_array.NamedArray;
 const NamedArrayConst = named_array.NamedArrayConst;
 const NamedIndex = named_index.NamedIndex;
@@ -109,7 +110,7 @@ pub fn einsum(
     }
 
     // Validate axis names
-    const xor = named_index.Xor(AxisA, AxisB);
+    const xor = axis_meta.Xor(AxisA, AxisB);
     if (comptime !mem.eql([:0]const u8, output_names, meta.fieldNames(xor))) {
         @compileError("AxisOut is not the XOR of AxisA and AxisB.");
     }
@@ -173,12 +174,12 @@ pub fn einsum(
             sum = arrA.scalarAt(keyA) * arrB.scalarAt(keyB);
         } else {
             // For each contracted key
-            const ContractedKey = named_index.AxesStruct(contracted_names);
+            const ContractedKey = axis_meta.AxesStruct(contracted_names);
             var contracted_shape: ContractedKey = undefined;
             inline for (contracted_names) |name| {
                 @field(contracted_shape, name) = @field(arrA.idx.shape, name);
             }
-            var contracted_idx = NamedIndex(named_index.KeyEnum(contracted_names)).initContiguous(contracted_shape);
+            var contracted_idx = NamedIndex(axis_meta.KeyEnum(contracted_names)).initContiguous(contracted_shape);
             var ckeys = contracted_idx.iterKeys();
             while (ckeys.next()) |ckey| {
                 // Build full keys for arrA and arrB

@@ -37,6 +37,7 @@ pub const ArgReduce = enum {
     MIN_ABS,
 };
 
+/// Compile-time guard: `AxisOut` must be a non-empty subset of `AxisIn`.
 fn assertAxisSubsetNonEmpty(comptime AxisIn: type, comptime AxisOut: type, comptime caller: []const u8) void {
     const in_names = comptime meta.fieldNames(AxisIn);
     const out_names = comptime meta.fieldNames(AxisOut);
@@ -59,12 +60,68 @@ fn assertAxisSubsetNonEmpty(comptime AxisIn: type, comptime AxisOut: type, compt
     }
 }
 
+/// Compile-time guard: reductions over `AxisOut` must remove at least one axis.
 fn assertHasReducedAxis(comptime AxisIn: type, comptime AxisOut: type, comptime caller: []const u8) void {
     const ReducedAxis = comptime axis_meta.Difference(AxisIn, AxisOut);
     comptime {
         if (meta.fields(ReducedAxis).len == 0)
             @compileError(caller ++ ": no reduced axis. Use reduceAll(...) for full reduction, or pass a strict subset AxisOut.");
     }
+}
+
+/// Runtime guard: on kept axes (`AxisOut`), output extents must match input extents.
+fn assertOutputShapeMatchesInput(comptime AxisOut: type, in_shape: anytype, out_shape: anytype, comptime caller: []const u8, comptime out_label: []const u8) void {
+    inline for (comptime meta.fieldNames(AxisOut)) |name| {
+        if (@field(out_shape, name) != @field(in_shape, name))
+            @panic(caller ++ ": " ++ out_label ++ " output shape mismatch");
+    }
+}
+
+/// Build the per-output reduction shape by collapsing kept axes to extent `1`.
+fn reducedShapeForOutputAxes(comptime AxisOut: type, in_shape: anytype) @TypeOf(in_shape) {
+    var reduced_shape = in_shape;
+    inline for (comptime meta.fieldNames(AxisOut)) |name| {
+        @field(reduced_shape, name) = 1;
+    }
+    return reduced_shape;
+}
+
+/// Create the non-allocating reduced view used for one `out_key` evaluation.
+/// Computes the per-key base offset from kept-axis indices and strides.
+fn reducedViewForOutputKey(
+    comptime AxisIn: type,
+    comptime AxisOut: type,
+    comptime Scalar: type,
+    a: arr.NamedArrayConst(AxisIn, Scalar),
+    reduced_shape: @TypeOf(a.idx.shape),
+    out_key: anytype,
+) arr.NamedArrayConst(AxisIn, Scalar) {
+    var base_offset_signed: isize = @intCast(a.idx.offset);
+    inline for (comptime meta.fieldNames(AxisOut)) |name| {
+        const idx_val: isize = @intCast(@field(out_key, name));
+        const stride_val: isize = @field(a.idx.strides, name);
+        base_offset_signed += idx_val * stride_val;
+    }
+    const base_offset: usize = @intCast(base_offset_signed);
+
+    return .{
+        .idx = .{
+            .shape = reduced_shape,
+            .strides = a.idx.strides,
+            .offset = base_offset,
+        },
+        .buf = a.buf,
+    };
+}
+
+/// Derive `AxisOut` extents from an input shape by copying only kept-axis sizes.
+fn outputShapeFromInput(comptime AxisOut: type, in_shape: anytype) idx_.NamedIndex(AxisOut).Axes {
+    const OutIndex = idx_.NamedIndex(AxisOut);
+    var out_shape: OutIndex.Axes = undefined;
+    inline for (comptime meta.fieldNames(AxisOut)) |name| {
+        @field(out_shape, name) = @field(in_shape, name);
+    }
+    return out_shape;
 }
 
 pub fn ReduceWithArgResult(comptime AxisOut: type, comptime Scalar: type, comptime ArgScalar: type) type {
@@ -79,6 +136,7 @@ pub fn ReduceWithArgResult(comptime AxisOut: type, comptime Scalar: type, compti
     };
 }
 
+/// Map arg-reduction variants to their value-only reduction counterpart.
 fn argReduceToReduce(comptime op: ArgReduce) Reduce {
     return switch (op) {
         .MAX => .MAX,
@@ -102,32 +160,19 @@ pub fn add(
     b: arr.NamedArray(Axis, Scalar),
     opt: struct { scale_a: Scalar = one(Scalar), scale_b: Scalar = one(Scalar) },
 ) void {
-    const axis_names = comptime meta.fieldNames(Axis);
-    const rank = comptime axis_names.len;
-    comptime assert(rank <= 255 - 'a' + 1);
+    const idx_str = comptime index_strings(&.{Axis})[0];
+    const rank = idx_str.len;
     assert(meta.eql(a.idx.shape, b.idx.shape));
 
-    var shape: [rank]C.zig_len_type = undefined;
-    var a_stride: [rank]C.zig_stride_type = undefined;
-    var b_stride: [rank]C.zig_stride_type = undefined;
-    var idx_str: [rank]C.zig_label_type = undefined;
-
-    inline for (axis_names, 0..) |name, i| {
-        const char_idx: u8 = 'a' + @as(u8, @intCast(i));
-        idx_str[i] = char_idx;
-        shape[i] = @intCast(@field(a.idx.shape, name));
-        a_stride[i] = @intCast(@field(a.idx.strides, name));
-        b_stride[i] = @intCast(@field(b.idx.strides, name));
-    }
-    const a_base_ptr: [*]Scalar = @constCast(a.buf.ptr) + a.idx.offset;
-    const b_base_ptr: [*]Scalar = b.buf.ptr + b.idx.offset;
-
-    var a_tensor = init_tensor(Scalar, rank, &shape, &a_stride, a_base_ptr);
+    var a_mem: TblisTensorBuf(rank) = undefined;
+    var a_tensor = toTblisTensor(Axis, Scalar, a, &a_mem);
     a_tensor.scalar = init_scalar(Scalar, opt.scale_a);
-    var b_tensor = init_tensor(Scalar, rank, &shape, &b_stride, b_base_ptr);
+
+    var b_mem: TblisTensorBuf(rank) = undefined;
+    var b_tensor = toTblisTensor(Axis, Scalar, b, &b_mem);
     b_tensor.scalar = init_scalar(Scalar, opt.scale_b);
 
-    C.tblis_zig_tensor_add(null, null, &a_tensor, &idx_str, &b_tensor, &idx_str);
+    C.tblis_zig_tensor_add(null, null, &a_tensor, idx_str.ptr, &b_tensor, idx_str.ptr);
 }
 
 test "add strided" {
@@ -458,43 +503,19 @@ pub fn reduceWithArgInto(
 ) void {
     assertAxisSubsetNonEmpty(AxisIn, AxisOut, "reduceWithArgInto");
     assertHasReducedAxis(AxisIn, AxisOut, "reduceWithArgInto");
-    const out_names = comptime meta.fieldNames(AxisOut);
     const ReducedAxis = comptime axis_meta.Difference(AxisIn, AxisOut);
     const reduced_names = comptime meta.fieldNames(ReducedAxis);
     const ArgScalar = axis_meta.DifferenceAxesStruct(AxisIn, AxisOut);
     const value_op = comptime argReduceToReduce(op);
 
-    inline for (out_names) |name| {
-        const expected = @field(a.idx.shape, name);
-        if (@field(out_values.idx.shape, name) != expected)
-            @panic("reduceWithArgInto: values output shape mismatch");
-        if (@field(out_args.idx.shape, name) != expected)
-            @panic("reduceWithArgInto: args output shape mismatch");
-    }
+    assertOutputShapeMatchesInput(AxisOut, a.idx.shape, out_values.idx.shape, "reduceWithArgInto", "values");
+    assertOutputShapeMatchesInput(AxisOut, a.idx.shape, out_args.idx.shape, "reduceWithArgInto", "args");
 
-    var reduced_shape = a.idx.shape;
-    inline for (out_names) |name| {
-        @field(reduced_shape, name) = 1;
-    }
+    const reduced_shape = reducedShapeForOutputAxes(AxisOut, a.idx.shape);
 
     var out_keys = out_values.idx.iterKeys();
     while (out_keys.next()) |out_key| {
-        var base_offset_signed: isize = @intCast(a.idx.offset);
-        inline for (out_names) |name| {
-            const idx_val: isize = @intCast(@field(out_key, name));
-            const stride_val: isize = @field(a.idx.strides, name);
-            base_offset_signed += idx_val * stride_val;
-        }
-        const base_offset: usize = @intCast(base_offset_signed);
-
-        const reduced_view = arr.NamedArrayConst(AxisIn, Scalar){
-            .idx = .{
-                .shape = reduced_shape,
-                .strides = a.idx.strides,
-                .offset = base_offset,
-            },
-            .buf = a.buf,
-        };
+        const reduced_view = reducedViewForOutputKey(AxisIn, AxisOut, Scalar, a, reduced_shape, out_key);
 
         const reduced = reduceAll(AxisIn, Scalar, value_op, reduced_view);
         out_values.at(out_key).* = reduced.value;
@@ -539,14 +560,8 @@ pub fn reduceWithArgAlloc(
     assertAxisSubsetNonEmpty(AxisIn, AxisOut, "reduceWithArgAlloc");
     assertHasReducedAxis(AxisIn, AxisOut, "reduceWithArgAlloc");
 
-    const out_names = comptime meta.fieldNames(AxisOut);
-    const OutIndex = idx_.NamedIndex(AxisOut);
     const ArgScalar = axis_meta.DifferenceAxesStruct(AxisIn, AxisOut);
-
-    var out_shape: OutIndex.Axes = undefined;
-    inline for (out_names) |name| {
-        @field(out_shape, name) = @field(a.idx.shape, name);
-    }
+    const out_shape = outputShapeFromInput(AxisOut, a.idx.shape);
 
     const values = try arr.NamedArray(AxisOut, Scalar).initAlloc(allocator, out_shape);
     errdefer values.deinit(allocator);
@@ -573,37 +588,13 @@ pub fn reduceInto(
     out: arr.NamedArray(AxisOut, Scalar),
 ) void {
     assertAxisSubsetNonEmpty(AxisIn, AxisOut, "reduceInto");
-    const out_names = comptime meta.fieldNames(AxisOut);
+    assertOutputShapeMatchesInput(AxisOut, a.idx.shape, out.idx.shape, "reduceInto", "output");
 
-    inline for (out_names) |name| {
-        if (@field(out.idx.shape, name) != @field(a.idx.shape, name))
-            @panic("reduceInto: output shape mismatch");
-    }
-
-    var reduced_shape = a.idx.shape;
-    inline for (out_names) |name| {
-        @field(reduced_shape, name) = 1;
-    }
+    const reduced_shape = reducedShapeForOutputAxes(AxisOut, a.idx.shape);
 
     var out_keys = out.idx.iterKeys();
     while (out_keys.next()) |out_key| {
-        var base_offset_signed: isize = @intCast(a.idx.offset);
-        inline for (out_names) |name| {
-            const idx_val: isize = @intCast(@field(out_key, name));
-            const stride_val: isize = @field(a.idx.strides, name);
-            base_offset_signed += idx_val * stride_val;
-        }
-        const base_offset: usize = @intCast(base_offset_signed);
-
-        const reduced_view = arr.NamedArrayConst(AxisIn, Scalar){
-            .idx = .{
-                .shape = reduced_shape,
-                .strides = a.idx.strides,
-                .offset = base_offset,
-            },
-            .buf = a.buf,
-        };
-
+        const reduced_view = reducedViewForOutputKey(AxisIn, AxisOut, Scalar, a, reduced_shape, out_key);
         out.at(out_key).* = reduceAll(AxisIn, Scalar, op, reduced_view).value;
     }
 }
@@ -619,13 +610,7 @@ pub fn reduceAlloc(
     a: arr.NamedArrayConst(AxisIn, Scalar),
 ) !arr.NamedArray(AxisOut, Scalar) {
     assertAxisSubsetNonEmpty(AxisIn, AxisOut, "reduceAlloc");
-    const out_names = comptime meta.fieldNames(AxisOut);
-    const OutIndex = idx_.NamedIndex(AxisOut);
-
-    var out_shape: OutIndex.Axes = undefined;
-    inline for (out_names) |name| {
-        @field(out_shape, name) = @field(a.idx.shape, name);
-    }
+    const out_shape = outputShapeFromInput(AxisOut, a.idx.shape);
 
     const out = try arr.NamedArray(AxisOut, Scalar).initAlloc(allocator, out_shape);
     reduceInto(AxisIn, AxisOut, Scalar, op, a, out);

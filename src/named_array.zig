@@ -6,6 +6,10 @@ const named_index = @import("named_index.zig");
 const NamedIndex = named_index.NamedIndex;
 const AxisRenamePair = named_index.AxisRenamePair;
 
+const axis_meta = @import("axis_meta.zig");
+const Difference = axis_meta.Difference;
+const DifferenceAxesStruct = axis_meta.DifferenceAxesStruct;
+
 const Writer = std.Io.Writer;
 
 pub fn NamedArray(comptime Axis: type, comptime Scalar: type) type {
@@ -86,6 +90,21 @@ pub fn NamedArray(comptime Axis: type, comptime Scalar: type) type {
                 .idx = self.idx.conformAxes(NewEnum),
                 .buf = self.buf,
             };
+        }
+
+        /// Fix each axis not present in `NewEnum` to a single position and drop it,
+        /// returning a lower-rank view over the same buffer.
+        /// `indices` supplies the position for every dropped axis (`Axis \ NewEnum`).
+        /// This is `conformAxes` generalized: each dropped axis is first sliced to
+        /// its chosen position instead of having to already be size 1.
+        pub fn indexAxes(self: *const @This(), comptime NewEnum: type, indices: DifferenceAxesStruct(Axis, NewEnum)) NamedArray(NewEnum, Scalar) {
+            return indexAxesGeneric(self, NewEnum, indices);
+        }
+
+        /// Like `indexAxes`, but returns null instead of panicking if any dropped
+        /// axis index is out of bounds for that axis.
+        pub fn indexAxesChecked(self: *const @This(), comptime NewEnum: type, indices: DifferenceAxesStruct(Axis, NewEnum)) ?NamedArray(NewEnum, Scalar) {
+            return indexAxesCheckedGeneric(self, NewEnum, indices);
         }
 
         /// Strictly rename axes according to the provided mapping.
@@ -169,6 +188,21 @@ pub fn NamedArrayConst(comptime Axis: type, comptime Scalar: type) type {
             };
         }
 
+        /// Fix each axis not present in `NewEnum` to a single position and drop it,
+        /// returning a lower-rank view over the same buffer.
+        /// `indices` supplies the position for every dropped axis (`Axis \ NewEnum`).
+        /// This is `conformAxes` generalized: each dropped axis is first sliced to
+        /// its chosen position instead of having to already be size 1.
+        pub fn indexAxes(self: *const @This(), comptime NewEnum: type, indices: DifferenceAxesStruct(Axis, NewEnum)) NamedArrayConst(NewEnum, Scalar) {
+            return indexAxesGeneric(self, NewEnum, indices);
+        }
+
+        /// Like `indexAxes`, but returns null instead of panicking if any dropped
+        /// axis index is out of bounds for that axis.
+        pub fn indexAxesChecked(self: *const @This(), comptime NewEnum: type, indices: DifferenceAxesStruct(Axis, NewEnum)) ?NamedArrayConst(NewEnum, Scalar) {
+            return indexAxesCheckedGeneric(self, NewEnum, indices);
+        }
+
         /// Strictly rename axes according to the provided mapping.
         /// If any axis in NewEnum cannot be mapped, this will fail to compile.
         pub fn renameAxes(self: *const @This(), comptime NewEnum: type, comptime rename_pairs: []const AxisRenamePair) NamedArrayConst(NewEnum, Scalar) {
@@ -241,6 +275,35 @@ fn toContiguousGeneric(comptime Axis: type, comptime Scalar: type, self: anytype
         }
     }
     return .{ .idx = new_idx, .buf = buf };
+}
+
+// Selects the mutable or const NamedArray type based on the buffer's constness.
+fn ReducedArray(comptime BufType: type, comptime NewAxis: type) type {
+    const ptr = @typeInfo(BufType).pointer;
+    return if (ptr.is_const)
+        NamedArrayConst(NewAxis, ptr.child)
+    else
+        NamedArray(NewAxis, ptr.child);
+}
+
+// Works for both NamedArray and NamedArrayConst
+fn indexAxesGeneric(self: anytype, comptime NewEnum: type, indices: anytype) ReducedArray(@TypeOf(self.buf), NewEnum) {
+    const Axis = @TypeOf(self.idx).Axis;
+    var idx = self.idx;
+    inline for (comptime meta.fieldNames(Difference(Axis, NewEnum))) |name| {
+        const i = @field(indices, name);
+        idx = idx.sliceAxis(@field(Axis, name), i, i + 1);
+    }
+    return .{ .idx = idx.conformAxes(NewEnum), .buf = self.buf };
+}
+
+// Works for both NamedArray and NamedArrayConst
+fn indexAxesCheckedGeneric(self: anytype, comptime NewEnum: type, indices: anytype) ?ReducedArray(@TypeOf(self.buf), NewEnum) {
+    const Axis = @TypeOf(self.idx).Axis;
+    inline for (comptime meta.fieldNames(Difference(Axis, NewEnum))) |name| {
+        if (@field(indices, name) >= @field(self.idx.shape, name)) return null;
+    }
+    return indexAxesGeneric(self, NewEnum, indices);
 }
 
 fn getValCheckedGeneric(self: anytype, key: @TypeOf(self.idx).Axes) ?@TypeOf(self.buf[0]) {
@@ -943,6 +1006,64 @@ test "NamedArrayConst conformAxes" {
         };
         _ = arr_bad.conformAxes(IKL);
     }
+}
+
+test "NamedArray indexAxes" {
+    const IJK = enum { i, j, k };
+    const J = enum { j };
+    const KI = enum { k, i };
+
+    // Contiguous 2x3x4, buf[n] = n so scalarAt(.{i,j,k}) == i*12 + j*4 + k.
+    var buf: [24]i32 = undefined;
+    for (&buf, 0..) |*v, n| v.* = @intCast(n);
+    const arr = NamedArray(IJK, i32){
+        .idx = NamedIndex(IJK).initContiguous(.{ .i = 2, .j = 3, .k = 4 }),
+        .buf = &buf,
+    };
+
+    // Drop i and k, keep j: fix i=1, k=2 -> 1*12 + j*4 + 2.
+    const row = arr.indexAxes(J, .{ .i = 1, .k = 2 });
+    try std.testing.expectEqual(&buf, row.buf.ptr);
+    try std.testing.expectEqual(14, row.scalarAt(.{ .j = 0 }));
+    try std.testing.expectEqual(18, row.scalarAt(.{ .j = 1 }));
+    try std.testing.expectEqual(22, row.scalarAt(.{ .j = 2 }));
+
+    // Kept axes may be reordered relative to the original: keep {k, i}, drop j=1.
+    const plane = arr.indexAxes(KI, .{ .j = 1 });
+    try std.testing.expectEqual(4, plane.scalarAt(.{ .i = 0, .k = 0 })); // 0*12 + 4 + 0
+    try std.testing.expectEqual(7, plane.scalarAt(.{ .i = 0, .k = 3 })); // 0*12 + 4 + 3
+    try std.testing.expectEqual(16, plane.scalarAt(.{ .i = 1, .k = 0 })); // 1*12 + 4 + 0
+
+    // Writes through the reduced view reach the shared buffer.
+    row.at(.{ .j = 1 }).* = -1;
+    try std.testing.expectEqual(-1, arr.scalarAt(.{ .i = 1, .j = 1, .k = 2 }));
+
+    // Checked variant: in-bounds yields the same view, out-of-bounds yields null.
+    const ok = arr.indexAxesChecked(J, .{ .i = 1, .k = 2 });
+    try std.testing.expect(ok != null);
+    try std.testing.expectEqual(row.idx, ok.?.idx);
+    try std.testing.expectEqual(null, arr.indexAxesChecked(J, .{ .i = 2, .k = 2 })); // i == size
+    try std.testing.expectEqual(null, arr.indexAxesChecked(J, .{ .i = 0, .k = 4 })); // k == size
+}
+
+test "NamedArrayConst indexAxes" {
+    const IJK = enum { i, j, k };
+    const J = enum { j };
+
+    var buf: [24]i32 = undefined;
+    for (&buf, 0..) |*v, n| v.* = @intCast(n);
+    const arr = NamedArrayConst(IJK, i32){
+        .idx = NamedIndex(IJK).initContiguous(.{ .i = 2, .j = 3, .k = 4 }),
+        .buf = &buf,
+    };
+
+    const row = arr.indexAxes(J, .{ .i = 1, .k = 2 });
+    try std.testing.expectEqual(14, row.scalarAt(.{ .j = 0 }));
+    try std.testing.expectEqual(18, row.scalarAt(.{ .j = 1 }));
+    try std.testing.expectEqual(22, row.scalarAt(.{ .j = 2 }));
+
+    try std.testing.expect(arr.indexAxesChecked(J, .{ .i = 1, .k = 2 }) != null);
+    try std.testing.expectEqual(null, arr.indexAxesChecked(J, .{ .i = 0, .k = 4 }));
 }
 
 test "mergeAxes" {

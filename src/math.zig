@@ -206,10 +206,7 @@ pub fn einsum(
         out_i += 1;
     }
 
-    return NamedArray(AxisOut, OutputScalar){
-        .idx = output_idx,
-        .buf = output_buf,
-    };
+    return .init(output_idx, output_buf);
 }
 
 // test "log" {
@@ -220,15 +217,9 @@ test "add inplace" {
     const Axis = enum { i };
     const idx = NamedIndex(Axis).initContiguous(.{ .i = 3 });
     const buf1 = [_]i32{ 1, 2, 3 };
-    const arr1 = NamedArrayConst(Axis, i32){
-        .idx = idx,
-        .buf = &buf1,
-    };
+    const arr1 = NamedArrayConst(Axis, i32).init(idx, &buf1);
     var buf2 = [_]i32{ 2, 2, 2 };
-    const arr_out = NamedArray(Axis, i32){
-        .idx = idx,
-        .buf = &buf2,
-    };
+    const arr_out = NamedArray(Axis, i32).init(idx, &buf2);
     const arr2 = arr_out.asConst();
     add(Axis, i32, arr1, arr2, arr_out);
 
@@ -248,18 +239,9 @@ test "add broadcasted" {
     var buf1 = [_]i32{ 1, 2, 3 };
     var buf2 = [_]i32{ 1, 1, 1 };
     var buf_out: [12]i32 = undefined;
-    const arr1 = NamedArrayConst(IJ, i32){
-        .idx = idx_broad,
-        .buf = &buf1,
-    };
-    const arr2 = NamedArrayConst(IJ, i32){
-        .idx = idx_broad,
-        .buf = &buf2,
-    };
-    const arr_out = NamedArray(IJ, i32){
-        .idx = idx_out,
-        .buf = &buf_out,
-    };
+    const arr1 = NamedArrayConst(IJ, i32).init(idx_broad, &buf1);
+    const arr2 = NamedArrayConst(IJ, i32).init(idx_broad, &buf2);
+    const arr_out = NamedArray(IJ, i32).init(idx_out, &buf_out);
     add(IJ, i32, arr1, arr2, arr_out);
 
     const expected = [_]i32{
@@ -289,9 +271,9 @@ test "add row-major col-major" {
     };
     var buf_out: [6]i32 = undefined;
 
-    const arr_row_major = NamedArrayConst(IJ, i32){ .idx = idx_row_major, .buf = &buf_row_major };
-    const arr_col_major = NamedArrayConst(IJ, i32){ .idx = idx_col_major, .buf = &buf_col_major };
-    const arr_out = NamedArray(IJ, i32){ .idx = idx_row_major, .buf = &buf_out };
+    const arr_row_major = NamedArrayConst(IJ, i32).init(idx_row_major, &buf_row_major);
+    const arr_col_major = NamedArrayConst(IJ, i32).init(idx_col_major, &buf_col_major);
+    const arr_out = NamedArray(IJ, i32).init(idx_row_major, &buf_out);
 
     add(IJ, i32, arr_row_major, arr_col_major, arr_out);
 
@@ -302,8 +284,8 @@ test "add row-major col-major" {
 test "inner 1d mixed types" {
     const Axis = enum { i };
     const idx = NamedIndex(Axis).initContiguous(.{ .i = 3 });
-    const arr1 = NamedArrayConst(Axis, f32){ .idx = idx, .buf = &[_]f32{ 1, 2, 3 } };
-    const arr2 = NamedArrayConst(Axis, f64){ .idx = idx, .buf = &[_]f64{ 4.0, 5.0, 6.0 } };
+    const arr1 = NamedArrayConst(Axis, f32).init(idx, &[_]f32{ 1, 2, 3 });
+    const arr2 = NamedArrayConst(Axis, f64).init(idx, &[_]f64{ 4.0, 5.0, 6.0 });
     const result = inner(Axis, f32, f64, arr1, arr2);
     try std.testing.expectEqual(result, 32.0); // 1*4.0 + 2*5.0 + 3*6.0 = 32.0
 }
@@ -326,8 +308,8 @@ test "inner 2d row-major col-major" {
         30, 60,
     };
 
-    const arr_row_major = NamedArrayConst(IJ, i32){ .idx = idx_row_major, .buf = &buf_row_major };
-    const arr_col_major = NamedArrayConst(IJ, i32){ .idx = idx_col_major, .buf = &buf_col_major };
+    const arr_row_major = NamedArrayConst(IJ, i32).init(idx_row_major, &buf_row_major);
+    const arr_col_major = NamedArrayConst(IJ, i32).init(idx_col_major, &buf_col_major);
 
     const result = inner(IJ, i32, i32, arr_row_major, arr_col_major);
 
@@ -377,10 +359,7 @@ test "einsum sum over axis" {
     const idx_ij = NamedIndex(IJ).initContiguous(.{ .i = 2, .j = 3 });
 
     // 2x3 matrix: [ [1,2,3], [4,5,6] ]
-    const arr_ij = NamedArrayConst(IJ, i32){
-        .idx = idx_ij,
-        .buf = &[_]i32{ 1, 2, 3, 4, 5, 6 },
-    };
+    const arr_ij = NamedArrayConst(IJ, i32).init(idx_ij, &[_]i32{ 1, 2, 3, 4, 5, 6 });
 
     // Summing over j: result should be [1+2+3, 4+5+6] = [6, 15]
     const allocator = std.testing.allocator;
@@ -402,14 +381,8 @@ test "einsum outer product 1d x 1d -> 2d" {
     const idx_i = NamedIndex(I).initContiguous(.{ .i = 2 });
     const idx_j = NamedIndex(J).initContiguous(.{ .j = 3 });
 
-    const arr_i = NamedArrayConst(I, i32){
-        .idx = idx_i,
-        .buf = &[_]i32{ 2, 3 },
-    };
-    const arr_j = NamedArrayConst(J, i32){
-        .idx = idx_j,
-        .buf = &[_]i32{ 10, 20, 30 },
-    };
+    const arr_i = NamedArrayConst(I, i32).init(idx_i, &[_]i32{ 2, 3 });
+    const arr_j = NamedArrayConst(J, i32).init(idx_j, &[_]i32{ 10, 20, 30 });
 
     const allocator = std.testing.allocator;
     const arr_ij = try einsum(I, J, IJ, i32, i32, arr_i, arr_j, allocator);

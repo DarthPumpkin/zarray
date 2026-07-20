@@ -185,15 +185,9 @@ test "add strided" {
         1, 2, 3,
         4, 5, 6,
     };
-    const a = ArrConst{
-        .idx = .initContiguous(.{ .i = 2, .j = 3 }),
-        .buf = &a_buf,
-    };
+    const a = ArrConst.init(.initContiguous(.{ .i = 2, .j = 3 }), &a_buf);
     var b_buf = [_]T{ 1, 2, 10, 20, 100, 200, 1_000, 2_000, 10_000, 20_000, 100_000, 200_000 };
-    const b = Arr{
-        .idx = .{ .shape = .{ .i = 2, .j = 3 }, .strides = .{ .i = 2, .j = 4 } },
-        .buf = &b_buf,
-    };
+    const b = Arr.init(.{ .shape = .{ .i = 2, .j = 3 }, .strides = .{ .i = 2, .j = 4 } }, &b_buf);
 
     const expected = [_]T{ 2, 2, 14, 20, 102, 200, 1_005, 2_000, 10_003, 20_000, 100_006, 200_000 };
     add(IJ, T, a, b, .{});
@@ -213,14 +207,8 @@ test "add mat + row broadcast" {
         1, 2, 3,
         4, 5, 6,
     };
-    var a = RowJ{
-        .idx = .initContiguous(.{ .i = 1, .j = 3 }),
-        .buf = &a_buf,
-    };
-    const b = MatIJ{
-        .idx = .initContiguous(.{ .i = 2, .j = 3 }),
-        .buf = &b_buf,
-    };
+    var a = RowJ.init(.initContiguous(.{ .i = 1, .j = 3 }), &a_buf);
+    const b = MatIJ.init(.initContiguous(.{ .i = 2, .j = 3 }), &b_buf);
     a.idx = a.idx.broadcastAxis(.i, b.idx.shape.i);
 
     const expected = [_]T{
@@ -245,14 +233,8 @@ test "add honors non-zero offset views" {
         40, 50, 60,
     };
 
-    var a = arr.NamedArrayConst(IJ, T){
-        .idx = .initContiguous(.{ .i = 2, .j = 3 }),
-        .buf = &a_buf,
-    };
-    var b = arr.NamedArray(IJ, T){
-        .idx = .initContiguous(.{ .i = 2, .j = 3 }),
-        .buf = &b_buf,
-    };
+    var a = arr.NamedArrayConst(IJ, T).init(.initContiguous(.{ .i = 2, .j = 3 }), &a_buf);
+    var b = arr.NamedArray(IJ, T).init(.initContiguous(.{ .i = 2, .j = 3 }), &b_buf);
 
     a.idx = a.idx.sliceAxis(.j, 1, 3);
     b.idx = b.idx.sliceAxis(.j, 1, 3);
@@ -306,14 +288,8 @@ test "dot row col" {
     const n = 4;
     const a_data = [m * n]T{ 1, 2, 3, 4 };
     const b_data = [n * m]T{ 1, 10, 100, 1000 };
-    const a = arr.NamedArrayConst(IJ, T){
-        .idx = .initContiguous(.{ .i = m, .j = n }),
-        .buf = &a_data,
-    };
-    const b = arr.NamedArrayConst(IJ, T){
-        .idx = .{ .shape = .{ .j = n, .i = m }, .strides = .{ .j = 1, .i = n } },
-        .buf = &b_data,
-    };
+    const a = arr.NamedArrayConst(IJ, T).init(.initContiguous(.{ .i = m, .j = n }), &a_data);
+    const b = arr.NamedArrayConst(IJ, T).init(.{ .shape = .{ .j = n, .i = m }, .strides = .{ .j = 1, .i = n } }, &b_data);
 
     const expected: T = 4321;
     const actual = dot(IJ, T, a, b);
@@ -373,18 +349,9 @@ test "mult ij jk" {
     const b_data = [_]T{ 1, 10, 100, 1000, 10_000, 100_000 }; // col-major (j,k): strides j=1, k=n
     var c_data: [m * k]T = undefined;
 
-    const a = arr.NamedArrayConst(IJ, T){
-        .idx = .initContiguous(.{ .i = m, .j = n }),
-        .buf = &a_data,
-    };
-    const b = arr.NamedArrayConst(JK, T){
-        .idx = .{ .shape = .{ .j = n, .k = k }, .strides = .{ .j = 1, .k = n } },
-        .buf = &b_data,
-    };
-    const c = arr.NamedArray(IK, T){
-        .idx = .{ .shape = .{ .i = m, .k = k }, .strides = .{ .i = k, .k = 1 } },
-        .buf = &c_data,
-    };
+    const a = arr.NamedArrayConst(IJ, T).init(.initContiguous(.{ .i = m, .j = n }), &a_data);
+    const b = arr.NamedArrayConst(JK, T).init(.{ .shape = .{ .j = n, .k = k }, .strides = .{ .j = 1, .k = n } }, &b_data);
+    const c = arr.NamedArray(IK, T).init(.{ .shape = .{ .i = m, .k = k }, .strides = .{ .i = k, .k = 1 } }, &c_data);
 
     mult(IJ, JK, IK, T, a, b, c);
 
@@ -410,18 +377,9 @@ test "mult i jk -> ijk" {
     };
     var c_data: [m * n * k]T = undefined;
 
-    const a = arr.NamedArrayConst(I, T){
-        .idx = .{ .shape = .{ .i = m }, .strides = .{ .i = 1 } },
-        .buf = &a_data,
-    };
-    const b = arr.NamedArrayConst(JK, T){
-        .idx = .{ .shape = .{ .j = n, .k = k }, .strides = .{ .j = k, .k = 1 } },
-        .buf = &b_data,
-    };
-    const c = arr.NamedArray(IJK, T){
-        .idx = .{ .shape = .{ .i = m, .j = n, .k = k }, .strides = .{ .i = n * k, .j = k, .k = 1 } },
-        .buf = &c_data,
-    };
+    const a = arr.NamedArrayConst(I, T).init(.{ .shape = .{ .i = m }, .strides = .{ .i = 1 } }, &a_data);
+    const b = arr.NamedArrayConst(JK, T).init(.{ .shape = .{ .j = n, .k = k }, .strides = .{ .j = k, .k = 1 } }, &b_data);
+    const c = arr.NamedArray(IJK, T).init(.{ .shape = .{ .i = m, .j = n, .k = k }, .strides = .{ .i = n * k, .j = k, .k = 1 } }, &c_data);
 
     mult(I, JK, IJK, T, a, b, c);
 
@@ -621,10 +579,7 @@ test "reduceAll i" {
     const T = f64;
     const I = enum { i };
     const data = [_]T{ 1, -2, 3, -4, 5 };
-    const a = arr.NamedArrayConst(I, T){
-        .idx = .initContiguous(.{ .i = data.len }),
-        .buf = &data,
-    };
+    const a = arr.NamedArrayConst(I, T).init(.initContiguous(.{ .i = data.len }), &data);
 
     const r_sum = reduceAll(I, T, .SUM, a);
     try std.testing.expectEqual(@as(T, 3.0), r_sum.value);
@@ -642,10 +597,7 @@ test "reduceAll honors non-zero offset view" {
     const IJ = enum { i, j };
 
     const data = [_]T{ 1, 2, 3, 4, 5, 6 };
-    var a = arr.NamedArrayConst(IJ, T){
-        .idx = .initContiguous(.{ .i = 2, .j = 3 }),
-        .buf = &data,
-    };
+    var a = arr.NamedArrayConst(IJ, T).init(.initContiguous(.{ .i = 2, .j = 3 }), &data);
     a.idx = a.idx.sliceAxis(.j, 1, 3);
 
     const r_sum = reduceAll(IJ, T, .SUM, a);
@@ -661,16 +613,10 @@ test "reduceInto supports non-sum op" {
     const I = enum { i };
 
     const data = [_]T{ 1, 2, 3, 4, 5, 6 };
-    const a = arr.NamedArrayConst(IJ, T){
-        .idx = .initContiguous(.{ .i = 2, .j = 3 }),
-        .buf = &data,
-    };
+    const a = arr.NamedArrayConst(IJ, T).init(.initContiguous(.{ .i = 2, .j = 3 }), &data);
 
     var out_buf: [2]T = undefined;
-    const out = arr.NamedArray(I, T){
-        .idx = .initContiguous(.{ .i = 2 }),
-        .buf = &out_buf,
-    };
+    const out = arr.NamedArray(I, T).init(.initContiguous(.{ .i = 2 }), &out_buf);
 
     reduceInto(IJ, I, T, .MAX, a, out);
     try std.testing.expectEqual(@as(T, 3), out.scalarAt(.{ .i = 0 }));
@@ -683,17 +629,11 @@ test "reduceInto handles negative reduced stride" {
     const I = enum { i };
 
     const data = [_]T{ 1, 2, 3, 4, 5, 6 };
-    var a = arr.NamedArrayConst(IJ, T){
-        .idx = .initContiguous(.{ .i = 2, .j = 3 }),
-        .buf = &data,
-    };
+    var a = arr.NamedArrayConst(IJ, T).init(.initContiguous(.{ .i = 2, .j = 3 }), &data);
     a.idx = a.idx.strideAxis(.j, -1);
 
     var out_buf: [2]T = undefined;
-    const out = arr.NamedArray(I, T){
-        .idx = .initContiguous(.{ .i = 2 }),
-        .buf = &out_buf,
-    };
+    const out = arr.NamedArray(I, T).init(.initContiguous(.{ .i = 2 }), &out_buf);
 
     reduceInto(IJ, I, T, .SUM, a, out);
     try std.testing.expectEqual(@as(T, 6), out.scalarAt(.{ .i = 0 }));
@@ -706,16 +646,10 @@ test "reduceInto sum writes into strided output" {
     const I = enum { i };
 
     const data = [_]T{ 1, 2, 3, 4, 5, 6 };
-    const a = arr.NamedArrayConst(IJ, T){
-        .idx = .initContiguous(.{ .i = 2, .j = 3 }),
-        .buf = &data,
-    };
+    const a = arr.NamedArrayConst(IJ, T).init(.initContiguous(.{ .i = 2, .j = 3 }), &data);
 
     var out_buf = [_]T{ -1, -1, -1, -1 };
-    const out = arr.NamedArray(I, T){
-        .idx = .{ .shape = .{ .i = 2 }, .strides = .{ .i = 2 } },
-        .buf = &out_buf,
-    };
+    const out = arr.NamedArray(I, T).init(.{ .shape = .{ .i = 2 }, .strides = .{ .i = 2 } }, &out_buf);
 
     reduceInto(IJ, I, T, .SUM, a, out);
 
@@ -737,10 +671,7 @@ test "reduceAlloc sum over selected axes with reordered output axes" {
         10, 11, 12,
     };
 
-    const a = arr.NamedArrayConst(IJK, T){
-        .idx = .initContiguous(.{ .i = 2, .j = 2, .k = 3 }),
-        .buf = &data,
-    };
+    const a = arr.NamedArrayConst(IJK, T).init(.initContiguous(.{ .i = 2, .j = 2, .k = 3 }), &data);
 
     const out = try reduceAlloc(IJK, KI, T, std.testing.allocator, .SUM, a);
     defer out.deinit(std.testing.allocator);
@@ -768,10 +699,7 @@ test "reduceAlloc forwards non-sum op" {
         10, 11, 12,
     };
 
-    const a = arr.NamedArrayConst(IJK, T){
-        .idx = .initContiguous(.{ .i = 2, .j = 2, .k = 3 }),
-        .buf = &data,
-    };
+    const a = arr.NamedArrayConst(IJK, T).init(.initContiguous(.{ .i = 2, .j = 2, .k = 3 }), &data);
 
     const out = try reduceAlloc(IJK, KI, T, std.testing.allocator, .MAX, a);
     defer out.deinit(std.testing.allocator);
@@ -789,16 +717,10 @@ test "reduceInto sum with all axes kept is identity" {
     const IJ = enum { i, j };
 
     const data = [_]T{ 1, 2, 3, 4, 5, 6 };
-    const a = arr.NamedArrayConst(IJ, T){
-        .idx = .initContiguous(.{ .i = 2, .j = 3 }),
-        .buf = &data,
-    };
+    const a = arr.NamedArrayConst(IJ, T).init(.initContiguous(.{ .i = 2, .j = 3 }), &data);
 
     var out_buf: [data.len]T = undefined;
-    const out = arr.NamedArray(IJ, T){
-        .idx = .initContiguous(.{ .i = 2, .j = 3 }),
-        .buf = &out_buf,
-    };
+    const out = arr.NamedArray(IJ, T).init(.initContiguous(.{ .i = 2, .j = 3 }), &out_buf);
 
     reduceInto(IJ, IJ, T, .SUM, a, out);
     try std.testing.expectEqualDeep(data, out_buf);
@@ -811,22 +733,13 @@ test "reduceWithArgInto writes values and reduced-axis indices" {
     const Arg = axis_meta.DifferenceAxesStruct(IJ, I);
 
     const data = [_]T{ 1, 2, 3, 4, 5, 6 };
-    const a = arr.NamedArrayConst(IJ, T){
-        .idx = .initContiguous(.{ .i = 2, .j = 3 }),
-        .buf = &data,
-    };
+    const a = arr.NamedArrayConst(IJ, T).init(.initContiguous(.{ .i = 2, .j = 3 }), &data);
 
     var out_val_buf: [2]T = undefined;
     var out_arg_buf: [2]Arg = undefined;
 
-    const out_values = arr.NamedArray(I, T){
-        .idx = .initContiguous(.{ .i = 2 }),
-        .buf = &out_val_buf,
-    };
-    const out_args = arr.NamedArray(I, Arg){
-        .idx = .initContiguous(.{ .i = 2 }),
-        .buf = &out_arg_buf,
-    };
+    const out_values = arr.NamedArray(I, T).init(.initContiguous(.{ .i = 2 }), &out_val_buf);
+    const out_args = arr.NamedArray(I, Arg).init(.initContiguous(.{ .i = 2 }), &out_arg_buf);
 
     reduceWithArgInto(IJ, I, T, .MAX, a, out_values, out_args);
 
@@ -851,10 +764,7 @@ test "reduceWithArgAlloc returns values and args in one pass" {
         1,  -8,
     };
 
-    const a = arr.NamedArrayConst(IJK, T){
-        .idx = .initContiguous(.{ .i = 2, .j = 3, .k = 2 }),
-        .buf = &data,
-    };
+    const a = arr.NamedArrayConst(IJK, T).init(.initContiguous(.{ .i = 2, .j = 3, .k = 2 }), &data);
 
     var out = try reduceWithArgAlloc(IJK, KI, T, std.testing.allocator, .MIN_ABS, a);
     defer out.deinit(std.testing.allocator);
@@ -900,13 +810,10 @@ test "scale" {
         .{ .re = 1.0, .im = -1.0 },
         .{ .re = 0.0, .im = 1.0 },
     };
-    const a = arr.NamedArray(IJKL, T){
-        .idx = .{
-            .shape = .{ .i = 1, .j = 1, .k = 3, .l = 1 },
-            .strides = .{ .i = 6290, .j = 19348, .k = 1, .l = 6890000 },
-        },
-        .buf = &a_data,
-    };
+    const a = arr.NamedArray(IJKL, T).init(.{
+        .shape = .{ .i = 1, .j = 1, .k = 3, .l = 1 },
+        .strides = .{ .i = 6290, .j = 19348, .k = 1, .l = 6890000 },
+    }, &a_data);
 
     scale(IJKL, T, .init(1.0, 1.0), a);
 
@@ -947,10 +854,7 @@ test "set f32 contiguous 1d" {
     var data: [5]T = undefined;
     @memset(&data, 0.0);
 
-    const a = arr.NamedArray(I, T){
-        .idx = .{ .shape = .{ .i = data.len }, .strides = .{ .i = 1 } },
-        .buf = &data,
-    };
+    const a = arr.NamedArray(I, T).init(.{ .shape = .{ .i = data.len }, .strides = .{ .i = 1 } }, &data);
 
     set(I, T, 3.5, a);
 
@@ -972,10 +876,7 @@ test "set complex strided 3d with gaps" {
     var buf: [16]T = undefined;
     @memset(&buf, .init(0, 0));
 
-    const a = arr.NamedArray(IJK, T){
-        .idx = .{ .shape = .{ .i = m, .j = n, .k = p }, .strides = .{ .i = 8, .j = 4, .k = 1 } },
-        .buf = &buf,
-    };
+    const a = arr.NamedArray(IJK, T).init(.{ .shape = .{ .i = m, .j = n, .k = p }, .strides = .{ .i = 8, .j = 4, .k = 1 } }, &buf);
 
     set(IJK, T, one(T), a);
 
@@ -1018,10 +919,7 @@ test "shift f32 contiguous 1d" {
     const I = enum { i };
     var data: [5]T = .{ 1.0, 2.0, 3.0, 4.0, 5.0 };
 
-    const a = arr.NamedArray(I, T){
-        .idx = .initContiguous(.{ .i = data.len }),
-        .buf = &data,
-    };
+    const a = arr.NamedArray(I, T).init(.initContiguous(.{ .i = data.len }), &data);
 
     shift(I, T, 3.5, a, .{ .scale_a = 2.0 });
 
@@ -1048,10 +946,7 @@ test "shift complex strided 3d with gaps" {
         T.init(6, 0), T.init(7, 0), T.init(0, 0), T.init(0, 0),
     };
 
-    const a = arr.NamedArray(IJK, T){
-        .idx = .{ .shape = .{ .i = m, .j = n, .k = p }, .strides = .{ .i = 8, .j = 4, .k = 1 } },
-        .buf = &buf,
-    };
+    const a = arr.NamedArray(IJK, T).init(.{ .shape = .{ .i = m, .j = n, .k = p }, .strides = .{ .i = 8, .j = 4, .k = 1 } }, &buf);
 
     shift(IJK, T, one(T), a, .{});
 

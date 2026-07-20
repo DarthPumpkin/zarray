@@ -141,17 +141,11 @@ fn LayerIterator(comptime Scalar: type) type {
             const lin = layer_sizes[self.layer_offset];
             const lout = layer_sizes[self.layer_offset + 1];
             const layer: Layer(Scalar) = .{
-                .weights_2d = NamedArray(WeightsAxis, Scalar){
-                    .idx = .{
-                        .shape = .{ .in = @intCast(lin), .out = lout },
-                        .strides = .{ .in = @intCast(lout), .out = 1 },
-                    },
-                    .buf = self.buffer.weights_flat[self.weights_offset..][0 .. lin * lout],
-                },
-                .biases_1d = NamedArray(BiasAxis, Scalar){
-                    .idx = .initContiguous(.{ .out = lout }),
-                    .buf = self.buffer.biases_flat[self.biases_offset..][0..lout],
-                },
+                .weights_2d = NamedArray(WeightsAxis, Scalar).init(.{
+                    .shape = .{ .in = @intCast(lin), .out = lout },
+                    .strides = .{ .in = @intCast(lout), .out = 1 },
+                }, self.buffer.weights_flat[self.weights_offset..][0 .. lin * lout]),
+                .biases_1d = NamedArray(BiasAxis, Scalar).init(.initContiguous(.{ .out = lout }), self.buffer.biases_flat[self.biases_offset..][0..lout]),
             };
 
             self.layer_offset += 1;

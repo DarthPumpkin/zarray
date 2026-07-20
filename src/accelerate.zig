@@ -355,14 +355,8 @@ pub const blas = struct {
             else => @compileError("rot_real is incompatible with given Scalar type."),
         };
         assert(points.idx.shape.j == 2);
-        const x_na = NamedArray(I, Scalar){
-            .idx = points.idx.sliceAxis(.j, 0, 1).conformAxes(I),
-            .buf = points.buf,
-        };
-        const y_na = NamedArray(I, Scalar){
-            .idx = points.idx.sliceAxis(.j, 1, 2).conformAxes(I),
-            .buf = points.buf,
-        };
+        const x_na = NamedArray(I, Scalar).init(points.idx.sliceAxis(.j, 0, 1).conformAxes(I), points.buf);
+        const y_na = NamedArray(I, Scalar).init(points.idx.sliceAxis(.j, 1, 2).conformAxes(I), points.buf);
         const x_blas = Blas1dMut(Scalar).init(I, x_na);
         const y_blas = Blas1dMut(Scalar).init(I, y_na);
         f(
@@ -395,14 +389,8 @@ pub const blas = struct {
             else => @compileError("rot_complex is incompatible with given RealScalar type."),
         };
         assert(points.idx.shape.j == 2);
-        const x_na = NamedArray(I, Complex(RealScalar)){
-            .idx = points.idx.sliceAxis(.j, 0, 1).conformAxes(I),
-            .buf = points.buf,
-        };
-        const y_na = NamedArray(I, Complex(RealScalar)){
-            .idx = points.idx.sliceAxis(.j, 1, 2).conformAxes(I),
-            .buf = points.buf,
-        };
+        const x_na = NamedArray(I, Complex(RealScalar)).init(points.idx.sliceAxis(.j, 0, 1).conformAxes(I), points.buf);
+        const y_na = NamedArray(I, Complex(RealScalar)).init(points.idx.sliceAxis(.j, 1, 2).conformAxes(I), points.buf);
         const x_blas = Blas1dMut(Complex(RealScalar)).init(I, x_na);
         const y_blas = Blas1dMut(Complex(RealScalar)).init(I, y_na);
         _ = f(
@@ -450,14 +438,8 @@ pub const blas = struct {
             else => @compileError("rotm is incompatible with given Scalar type."),
         };
         assert(points.idx.shape.j == 2);
-        const x_na = NamedArray(I, Scalar){
-            .idx = points.idx.sliceAxis(.j, 0, 1).conformAxes(I),
-            .buf = points.buf,
-        };
-        const y_na = NamedArray(I, Scalar){
-            .idx = points.idx.sliceAxis(.j, 1, 2).conformAxes(I),
-            .buf = points.buf,
-        };
+        const x_na = NamedArray(I, Scalar).init(points.idx.sliceAxis(.j, 0, 1).conformAxes(I), points.buf);
+        const y_na = NamedArray(I, Scalar).init(points.idx.sliceAxis(.j, 1, 2).conformAxes(I), points.buf);
         const x_blas = Blas1dMut(Scalar).init(I, x_na);
         const y_blas = Blas1dMut(Scalar).init(I, y_na);
         f(
@@ -2568,7 +2550,7 @@ pub const blas = struct {
                     .{ .old = meta.fieldNames(AxisA)[1 - i_axis], .new = "j" },
                 };
                 const a_ij_idx = arr.idx.rename(IJ, &rename_pairs);
-                const arr_ij: NamedArrayConst(IJ, Scalar) = .{ .idx = a_ij_idx, .buf = arr.buf };
+                const arr_ij: NamedArrayConst(IJ, Scalar) = .init(a_ij_idx, arr.buf);
                 return init(arr_ij);
             }
         };
@@ -2617,7 +2599,7 @@ pub const blas = struct {
                     .{ .old = meta.fieldNames(AxisA)[1 - i_axis], .new = "j" },
                 };
                 const a_ij_idx = arr.idx.rename(IJ, &rename_pairs);
-                const arr_ij: NamedArray(IJ, Scalar) = .{ .idx = a_ij_idx, .buf = arr.buf };
+                const arr_ij: NamedArray(IJ, Scalar) = .init(a_ij_idx, arr.buf);
                 return init(arr_ij);
             }
         };
@@ -2767,15 +2749,9 @@ test "dot" {
     const T = f32;
     const Arr = NamedArrayConst(I, T);
 
-    var x = Arr{
-        .idx = .initContiguous(.{ .i = 3 }),
-        .buf = &[_]T{ 2.0, 3.0, 5.0 },
-    };
+    var x = Arr.init(.initContiguous(.{ .i = 3 }), &[_]T{ 2.0, 3.0, 5.0 });
     x.idx = x.idx.stride(.{ .i = -1 });
-    const y = Arr{
-        .idx = .initContiguous(.{ .i = 3 }),
-        .buf = &[_]T{ 1.0, 10.0, 100.0 },
-    };
+    const y = Arr.init(.initContiguous(.{ .i = 3 }), &[_]T{ 1.0, 10.0, 100.0 });
 
     const expected: T = 235.0;
     const actual = blas.dot(T, I, x, y, .{});
@@ -2793,14 +2769,8 @@ test "dot internal_double_precision" {
 
     // Use values where double-precision accumulation matters:
     // large * large + small can lose the small contribution in f32.
-    const x = Arr{
-        .idx = .initContiguous(.{ .i = 3 }),
-        .buf = &[_]T{ 1.0, 2.0, 3.0 },
-    };
-    const y = Arr{
-        .idx = .initContiguous(.{ .i = 3 }),
-        .buf = &[_]T{ 4.0, 5.0, 6.0 },
-    };
+    const x = Arr.init(.initContiguous(.{ .i = 3 }), &[_]T{ 1.0, 2.0, 3.0 });
+    const y = Arr.init(.initContiguous(.{ .i = 3 }), &[_]T{ 4.0, 5.0, 6.0 });
 
     // 1*4 + 2*5 + 3*6 = 4 + 10 + 18 = 32
     const expected: T = 32.0;
@@ -2816,15 +2786,9 @@ test "dsdot" {
     const I = enum { i };
     const Arr = NamedArrayConst(I, f32);
 
-    var x = Arr{
-        .idx = .initContiguous(.{ .i = 3 }),
-        .buf = &[_]f32{ 2.0, 3.0, 5.0 },
-    };
+    var x = Arr.init(.initContiguous(.{ .i = 3 }), &[_]f32{ 2.0, 3.0, 5.0 });
     x.idx = x.idx.stride(.{ .i = -1 });
-    const y = Arr{
-        .idx = .initContiguous(.{ .i = 3 }),
-        .buf = &[_]f32{ 1.0, 10.0, 100.0 },
-    };
+    const y = Arr.init(.initContiguous(.{ .i = 3 }), &[_]f32{ 1.0, 10.0, 100.0 });
 
     // With reversed x: [5, 3, 2] · [1, 10, 100] = 5 + 30 + 200 = 235
     const expected: f64 = 235.0;
@@ -2841,20 +2805,14 @@ test "dotu" {
     const T = Complex(f32);
     const Arr = NamedArrayConst(I, T);
 
-    const x = Arr{
-        .idx = .initContiguous(.{ .i = 2 }),
-        .buf = &[_]T{
-            .{ .re = 1.0, .im = 2.0 },
-            .{ .re = 3.0, .im = 4.0 },
-        },
-    };
-    const y = Arr{
-        .idx = .initContiguous(.{ .i = 2 }),
-        .buf = &[_]T{
-            .{ .re = 5.0, .im = 6.0 },
-            .{ .re = 7.0, .im = 8.0 },
-        },
-    };
+    const x = Arr.init(.initContiguous(.{ .i = 2 }), &[_]T{
+        .{ .re = 1.0, .im = 2.0 },
+        .{ .re = 3.0, .im = 4.0 },
+    });
+    const y = Arr.init(.initContiguous(.{ .i = 2 }), &[_]T{
+        .{ .re = 5.0, .im = 6.0 },
+        .{ .re = 7.0, .im = 8.0 },
+    });
 
     const expected: T = .{ .re = -18.0, .im = 68.0 };
     const actual = blas.dotu(T, I, x, y);
@@ -2875,20 +2833,14 @@ test "dotc" {
     const T = Complex(f32);
     const Arr = NamedArrayConst(I, T);
 
-    const x = Arr{
-        .idx = .initContiguous(.{ .i = 2 }),
-        .buf = &[_]T{
-            .{ .re = 1.0, .im = 2.0 },
-            .{ .re = 3.0, .im = 4.0 },
-        },
-    };
-    const y = Arr{
-        .idx = .initContiguous(.{ .i = 2 }),
-        .buf = &[_]T{
-            .{ .re = 5.0, .im = 6.0 },
-            .{ .re = 7.0, .im = 8.0 },
-        },
-    };
+    const x = Arr.init(.initContiguous(.{ .i = 2 }), &[_]T{
+        .{ .re = 1.0, .im = 2.0 },
+        .{ .re = 3.0, .im = 4.0 },
+    });
+    const y = Arr.init(.initContiguous(.{ .i = 2 }), &[_]T{
+        .{ .re = 5.0, .im = 6.0 },
+        .{ .re = 7.0, .im = 8.0 },
+    });
 
     const expected: T = .{ .re = 70.0, .im = -8.0 };
     const actual = blas.dotc(T, I, x, y);
@@ -2909,10 +2861,7 @@ test "nrm2 real" {
     const T = f32;
     const Arr = NamedArrayConst(I, T);
 
-    const x = Arr{
-        .idx = .initContiguous(.{ .i = 2 }),
-        .buf = &[_]T{ 3.0, 4.0 },
-    };
+    const x = Arr.init(.initContiguous(.{ .i = 2 }), &[_]T{ 3.0, 4.0 });
 
     const expected: T = 5.0;
     const actual = blas.nrm2(T, I, x);
@@ -2928,13 +2877,10 @@ test "nrm2 complex" {
     const T = Complex(f32);
     const Arr = NamedArrayConst(I, T);
 
-    const x = Arr{
-        .idx = .initContiguous(.{ .i = 2 }),
-        .buf = &[_]T{
-            .{ .re = 1.0, .im = 2.0 },
-            .{ .re = 3.0, .im = 4.0 },
-        },
-    };
+    const x = Arr.init(.initContiguous(.{ .i = 2 }), &[_]T{
+        .{ .re = 1.0, .im = 2.0 },
+        .{ .re = 3.0, .im = 4.0 },
+    });
 
     const expected: f32 = math.sqrt(@as(f32, 30.0));
     const actual = blas.nrm2(T, I, x);
@@ -2950,10 +2896,7 @@ test "asum real" {
     const T = f32;
     const Arr = NamedArrayConst(I, T);
 
-    const x = Arr{
-        .idx = .initContiguous(.{ .i = 3 }),
-        .buf = &[_]T{ 2.0, -3.0, 5.0 },
-    };
+    const x = Arr.init(.initContiguous(.{ .i = 3 }), &[_]T{ 2.0, -3.0, 5.0 });
 
     const expected: T = 10.0;
     const actual = blas.asum(T, I, x);
@@ -2969,13 +2912,10 @@ test "asum complex" {
     const T = Complex(f32);
     const Arr = NamedArrayConst(I, T);
 
-    const x = Arr{
-        .idx = .initContiguous(.{ .i = 2 }),
-        .buf = &[_]T{
-            .{ .re = 1.0, .im = 2.0 },
-            .{ .re = -3.0, .im = 4.0 },
-        },
-    };
+    const x = Arr.init(.initContiguous(.{ .i = 2 }), &[_]T{
+        .{ .re = 1.0, .im = 2.0 },
+        .{ .re = -3.0, .im = 4.0 },
+    });
 
     const expected: f32 = 10.0; // |1|+|2| + |−3|+|4|
     const actual = blas.asum(T, I, x);
@@ -2991,10 +2931,7 @@ test "i_amax real" {
     const T = f32;
     const Arr = NamedArrayConst(I, T);
 
-    const x = Arr{
-        .idx = .initContiguous(.{ .i = 3 }),
-        .buf = &[_]T{ 2.0, -3.0, 5.0 },
-    };
+    const x = Arr.init(.initContiguous(.{ .i = 3 }), &[_]T{ 2.0, -3.0, 5.0 });
 
     const actual = blas.i_amax(T, I, x);
     try std.testing.expectEqual(@as(usize, 2), actual);
@@ -3005,14 +2942,11 @@ test "i_amax complex" {
     const T = Complex(f32);
     const Arr = NamedArrayConst(I, T);
 
-    const x = Arr{
-        .idx = .initContiguous(.{ .i = 3 }),
-        .buf = &[_]T{
-            .{ .re = 1.0, .im = 2.0 }, // |.| ≈ 2.236
-            .{ .re = 3.0, .im = 1.0 }, // |.| ≈ 3.162
-            .{ .re = -3.0, .im = 4.0 }, // |.| = 5
-        },
-    };
+    const x = Arr.init(.initContiguous(.{ .i = 3 }), &[_]T{
+        .{ .re = 1.0, .im = 2.0 }, // |.| ≈ 2.236
+        .{ .re = 3.0, .im = 1.0 }, // |.| ≈ 3.162
+        .{ .re = -3.0, .im = 4.0 }, // |.| = 5
+    });
 
     const actual = blas.i_amax(T, I, x);
     try std.testing.expectEqual(@as(usize, 2), actual);
@@ -3025,14 +2959,8 @@ test "swap real" {
 
     var x_buf = [_]T{ 1.0, 2.0, 3.0 };
     var y_buf = [_]T{ 4.0, 5.0, 6.0 };
-    const x = Arr{
-        .idx = .initContiguous(.{ .i = 3 }),
-        .buf = &x_buf,
-    };
-    const y = Arr{
-        .idx = .initContiguous(.{ .i = 3 }),
-        .buf = &y_buf,
-    };
+    const x = Arr.init(.initContiguous(.{ .i = 3 }), &x_buf);
+    const y = Arr.init(.initContiguous(.{ .i = 3 }), &y_buf);
 
     blas.swap(T, I, x, y);
     try std.testing.expectEqualSlices(T, &[_]T{ 4.0, 5.0, 6.0 }, x.buf);
@@ -3049,17 +2977,11 @@ test "copy complex" {
         .{ .re = 0.0, .im = 0.0 },
         .{ .re = 0.0, .im = 0.0 },
     };
-    const x = ArrC{
-        .idx = .initContiguous(.{ .i = 2 }),
-        .buf = &[_]T{
-            .{ .re = 1.0, .im = -2.0 },
-            .{ .re = 3.5, .im = 4.0 },
-        },
-    };
-    const y = Arr{
-        .idx = .initContiguous(.{ .i = 2 }),
-        .buf = &y_buf,
-    };
+    const x = ArrC.init(.initContiguous(.{ .i = 2 }), &[_]T{
+        .{ .re = 1.0, .im = -2.0 },
+        .{ .re = 3.5, .im = 4.0 },
+    });
+    const y = Arr.init(.initContiguous(.{ .i = 2 }), &y_buf);
 
     blas.copy(T, I, x, y);
     try std.testing.expectEqualDeep(x.buf[0], y.buf[0]);
@@ -3074,14 +2996,8 @@ test "axpy real" {
 
     const x_buf = [_]T{ 1.0, -2.0, 3.0 };
     var y_buf = [_]T{ 10.0, 20.0, 30.0 };
-    const x = ArrC{
-        .idx = .initContiguous(.{ .i = 3 }),
-        .buf = &x_buf,
-    };
-    const y = Arr{
-        .idx = .initContiguous(.{ .i = 3 }),
-        .buf = &y_buf,
-    };
+    const x = ArrC.init(.initContiguous(.{ .i = 3 }), &x_buf);
+    const y = Arr.init(.initContiguous(.{ .i = 3 }), &y_buf);
 
     const alpha: T = 2.0;
     blas.axpy(T, I, alpha, x, y);
@@ -3098,17 +3014,11 @@ test "axpy complex" {
         .{ .re = 5.0, .im = 6.0 },
         .{ .re = 7.0, .im = 8.0 },
     };
-    const x = ArrC{
-        .idx = .initContiguous(.{ .i = 2 }),
-        .buf = &[_]T{
-            .{ .re = 1.0, .im = 2.0 },
-            .{ .re = -3.0, .im = 4.0 },
-        },
-    };
-    const y = Arr{
-        .idx = .initContiguous(.{ .i = 2 }),
-        .buf = &y_buf,
-    };
+    const x = ArrC.init(.initContiguous(.{ .i = 2 }), &[_]T{
+        .{ .re = 1.0, .im = 2.0 },
+        .{ .re = -3.0, .im = 4.0 },
+    });
+    const y = Arr.init(.initContiguous(.{ .i = 2 }), &y_buf);
 
     const alpha: T = .{ .re = 2.0, .im = -1.0 };
     blas.axpy(T, I, alpha, x, y);
@@ -3127,10 +3037,7 @@ test "scal real" {
     const Arr = NamedArray(I, T);
 
     var buf_x: [4]T = .{ 1.0, -2.0, 3.0, -4.0 };
-    const x = Arr{
-        .idx = .initContiguous(.{ .i = 4 }),
-        .buf = &buf_x,
-    };
+    const x = Arr.init(.initContiguous(.{ .i = 4 }), &buf_x);
 
     const alpha: T = 2.5;
     blas.scal(T, T, I, alpha, x);
@@ -3149,10 +3056,7 @@ test "scal complex with real alpha" {
         .{ .re = -3.0, .im = 4.0 },
         .{ .re = 0.5, .im = -1.5 },
     };
-    const x = Arr{
-        .idx = .initContiguous(.{ .i = 3 }),
-        .buf = &buf_x,
-    };
+    const x = Arr.init(.initContiguous(.{ .i = 3 }), &buf_x);
 
     const alpha: f32 = 2.0;
     // Use csscal path: complex vector scaled by real alpha
@@ -3177,10 +3081,7 @@ test "scal complex" {
         .{ .re = -3.0, .im = 4.0 },
         .{ .re = 0.5, .im = -1.5 },
     };
-    const x = Arr{
-        .idx = .initContiguous(.{ .i = 3 }),
-        .buf = &buf_x,
-    };
+    const x = Arr.init(.initContiguous(.{ .i = 3 }), &buf_x);
 
     const alpha: T = .{ .re = 2.0, .im = -1.0 };
     blas.scal(T, T, I, alpha, x);
@@ -3246,10 +3147,7 @@ test "rot_real" {
         -1.0,           0.0,
         math.sqrt(2.0), math.sqrt(2.0),
     };
-    const points = NamedArray(blas.IJ, T){
-        .idx = .initContiguous(.{ .i = 2, .j = 2 }),
-        .buf = &points_buf,
-    };
+    const points = NamedArray(blas.IJ, T).init(.initContiguous(.{ .i = 2, .j = 2 }), &points_buf);
     const expected_points = &[_]T{
         -math.sqrt(2.0) / 2.0, math.sqrt(2.0) / 2.0,
         2.0,                   0.0,
@@ -3333,10 +3231,10 @@ test "rotm" {
     var points_buf4 = points_buf;
 
     const idx = NamedIndex(blas.IJ).initContiguous(.{ .i = 2, .j = 2 }).stride(.{ .i = -1 });
-    const points1 = NamedArray(blas.IJ, T){ .idx = idx, .buf = &points_buf1 };
-    const points2 = NamedArray(blas.IJ, T){ .idx = idx, .buf = &points_buf2 };
-    const points3 = NamedArray(blas.IJ, T){ .idx = idx, .buf = &points_buf3 };
-    const points4 = NamedArray(blas.IJ, T){ .idx = idx, .buf = &points_buf4 };
+    const points1 = NamedArray(blas.IJ, T).init(idx, &points_buf1);
+    const points2 = NamedArray(blas.IJ, T).init(idx, &points_buf2);
+    const points3 = NamedArray(blas.IJ, T).init(idx, &points_buf3);
+    const points4 = NamedArray(blas.IJ, T).init(idx, &points_buf4);
 
     blas.rotm(T, rot1, points1);
     blas.rotm(T, rot2, points2);
@@ -3425,7 +3323,7 @@ test "ModifiedGivensRotation applied via rotm matches reference for each flag" {
         // (x0, y0, x1, y1).
         var pts = [_]T{ 1.0, 3.0, -2.0, 0.5 };
         const idx = NamedIndex(blas.IJ).initContiguous(.{ .i = 2, .j = 2 });
-        const points = NamedArray(blas.IJ, T){ .idx = idx, .buf = &pts };
+        const points = NamedArray(blas.IJ, T).init(idx, &pts);
         blas.rotm(T, rot, points);
 
         try std.testing.expectApproxEqAbs(x_ref[0], points.at(.{ .i = 0, .j = 0 }).*, math.floatEpsAt(T, x_ref[0]));
@@ -3450,22 +3348,13 @@ test "gemv real padded row-major" {
         1, 2, 3, 99, 99,
         4, 5, 6, 99, 99,
     };
-    const A = NamedArrayConst(MK, T){
-        .idx = .{ .shape = .{ .m = 2, .k = 3 }, .strides = .{ .m = 5, .k = 1 } },
-        .buf = &a_buf,
-    };
+    const A = NamedArrayConst(MK, T).init(.{ .shape = .{ .m = 2, .k = 3 }, .strides = .{ .m = 5, .k = 1 } }, &a_buf);
 
     const x_buf = [_]T{ 1, 2, 3 };
-    const x = NamedArrayConst(K, T){
-        .idx = NamedIndex(K).initContiguous(.{ .k = 3 }),
-        .buf = &x_buf,
-    };
+    const x = NamedArrayConst(K, T).init(NamedIndex(K).initContiguous(.{ .k = 3 }), &x_buf);
 
     var y_buf = [_]T{ 0, 0 };
-    const y = NamedArray(M, T){
-        .idx = NamedIndex(M).initContiguous(.{ .m = 2 }),
-        .buf = &y_buf,
-    };
+    const y = NamedArray(M, T).init(NamedIndex(M).initContiguous(.{ .m = 2 }), &y_buf);
 
     blas.gemv(T, MK, K, M, A, x, y, .{ .alpha = 1.0, .beta = 0.0 });
 
@@ -3490,22 +3379,13 @@ test "gemv real padded column-major" {
         3, 4, 99, 99,
         5, 6, 99, 99,
     };
-    const A = NamedArrayConst(MK, T){
-        .idx = .{ .shape = .{ .m = 2, .k = 3 }, .strides = .{ .m = 1, .k = 4 } },
-        .buf = &a_buf,
-    };
+    const A = NamedArrayConst(MK, T).init(.{ .shape = .{ .m = 2, .k = 3 }, .strides = .{ .m = 1, .k = 4 } }, &a_buf);
 
     const x_buf = [_]T{ 1, 2, 3 };
-    const x = NamedArrayConst(K, T){
-        .idx = NamedIndex(K).initContiguous(.{ .k = 3 }),
-        .buf = &x_buf,
-    };
+    const x = NamedArrayConst(K, T).init(NamedIndex(K).initContiguous(.{ .k = 3 }), &x_buf);
 
     var y_buf = [_]T{ 0, 0 };
-    const y = NamedArray(M, T){
-        .idx = NamedIndex(M).initContiguous(.{ .m = 2 }),
-        .buf = &y_buf,
-    };
+    const y = NamedArray(M, T).init(NamedIndex(M).initContiguous(.{ .m = 2 }), &y_buf);
 
     blas.gemv(T, MK, K, M, A, x, y, .{ .alpha = 1.0, .beta = 0.0 });
 
@@ -3528,22 +3408,13 @@ test "symv padded row-major" {
         2, 5, 6, 99, 99,
         3, 6, 9, 99, 99,
     };
-    const A = NamedArrayConst(MK, T){
-        .idx = .{ .shape = .{ .m = 3, .k = 3 }, .strides = .{ .m = 5, .k = 1 } },
-        .buf = &a_buf,
-    };
+    const A = NamedArrayConst(MK, T).init(.{ .shape = .{ .m = 3, .k = 3 }, .strides = .{ .m = 5, .k = 1 } }, &a_buf);
 
     const x_buf = [_]T{ 1, 2, 3 };
-    const x = NamedArrayConst(K, T){
-        .idx = NamedIndex(K).initContiguous(.{ .k = 3 }),
-        .buf = &x_buf,
-    };
+    const x = NamedArrayConst(K, T).init(NamedIndex(K).initContiguous(.{ .k = 3 }), &x_buf);
 
     var y_buf = [_]T{ 0, 0, 0 };
-    const y = NamedArray(M, T){
-        .idx = NamedIndex(M).initContiguous(.{ .m = 3 }),
-        .buf = &y_buf,
-    };
+    const y = NamedArray(M, T).init(NamedIndex(M).initContiguous(.{ .m = 3 }), &y_buf);
 
     // triangle = .k (second axis) → Upper
     blas.symv(T, MK, K, M, .{ .triangle = .k, .data = A }, x, y, .{ .alpha = 1.0, .beta = 0.0 });
@@ -3570,22 +3441,13 @@ test "ger padded row-major" {
         1, 2, 3, 99, 99,
         4, 5, 6, 99, 99,
     };
-    const A = NamedArray(MK, T){
-        .idx = .{ .shape = .{ .m = 2, .k = 3 }, .strides = .{ .m = 5, .k = 1 } },
-        .buf = &a_buf,
-    };
+    const A = NamedArray(MK, T).init(.{ .shape = .{ .m = 2, .k = 3 }, .strides = .{ .m = 5, .k = 1 } }, &a_buf);
 
     const x_buf = [_]T{ 1, 2 };
-    const x = NamedArrayConst(M, T){
-        .idx = NamedIndex(M).initContiguous(.{ .m = 2 }),
-        .buf = &x_buf,
-    };
+    const x = NamedArrayConst(M, T).init(NamedIndex(M).initContiguous(.{ .m = 2 }), &x_buf);
 
     const y_buf = [_]T{ 4, 5, 6 };
-    const y = NamedArrayConst(K, T){
-        .idx = NamedIndex(K).initContiguous(.{ .k = 3 }),
-        .buf = &y_buf,
-    };
+    const y = NamedArrayConst(K, T).init(NamedIndex(K).initContiguous(.{ .k = 3 }), &y_buf);
 
     blas.ger(T, MK, M, K, A, x, y, .{});
 
@@ -3610,22 +3472,13 @@ test "gemv real" {
 
     // A = [[1, 2, 3], [4, 5, 6], [7, 8, 9]] (3x3 row-major)
     const a_buf = [_]T{ 1, 2, 3, 4, 5, 6, 7, 8, 9 };
-    const A = NamedArrayConst(MK, T){
-        .idx = NamedIndex(MK).initContiguous(.{ .m = 3, .k = 3 }),
-        .buf = &a_buf,
-    };
+    const A = NamedArrayConst(MK, T).init(NamedIndex(MK).initContiguous(.{ .m = 3, .k = 3 }), &a_buf);
 
     const x_buf = [_]T{ 1, 2, 3 };
-    const x = NamedArrayConst(K, T){
-        .idx = NamedIndex(K).initContiguous(.{ .k = 3 }),
-        .buf = &x_buf,
-    };
+    const x = NamedArrayConst(K, T).init(NamedIndex(K).initContiguous(.{ .k = 3 }), &x_buf);
 
     var y_buf = [_]T{ 0, 0, 0 };
-    const y = NamedArray(M, T){
-        .idx = NamedIndex(M).initContiguous(.{ .m = 3 }),
-        .buf = &y_buf,
-    };
+    const y = NamedArray(M, T).init(NamedIndex(M).initContiguous(.{ .m = 3 }), &y_buf);
 
     // y = 1 * A * x + 0 * y = A * x = [14, 32, 50]
     blas.gemv(T, MK, K, M, A, x, y, .{ .alpha = 1.0, .beta = 0.0 });
@@ -3644,22 +3497,13 @@ test "gemv real rectangular" {
 
     // A = [[1, 2], [3, 4], [5, 6]] (3x2, m=3, k=2)
     const a_buf = [_]T{ 1, 2, 3, 4, 5, 6 };
-    const A = NamedArrayConst(MK, T){
-        .idx = NamedIndex(MK).initContiguous(.{ .m = 3, .k = 2 }),
-        .buf = &a_buf,
-    };
+    const A = NamedArrayConst(MK, T).init(NamedIndex(MK).initContiguous(.{ .m = 3, .k = 2 }), &a_buf);
 
     const x_buf = [_]T{ 1, 2 };
-    const x = NamedArrayConst(K, T){
-        .idx = NamedIndex(K).initContiguous(.{ .k = 2 }),
-        .buf = &x_buf,
-    };
+    const x = NamedArrayConst(K, T).init(NamedIndex(K).initContiguous(.{ .k = 2 }), &x_buf);
 
     var y_buf = [_]T{ 0, 0, 0 };
-    const y = NamedArray(M, T){
-        .idx = NamedIndex(M).initContiguous(.{ .m = 3 }),
-        .buf = &y_buf,
-    };
+    const y = NamedArray(M, T).init(NamedIndex(M).initContiguous(.{ .m = 3 }), &y_buf);
 
     // y = A * x = [1*1+2*2, 3*1+4*2, 5*1+6*2] = [5, 11, 17]
     blas.gemv(T, MK, K, M, A, x, y, .{ .alpha = 1.0, .beta = 0.0 });
@@ -3678,19 +3522,13 @@ test "gemv real nontrivial scalars and strides" {
 
     // A = [[1, 2, 3], [4, 5, 6], [7, 8, 9]]
     const a_buf = [_]T{ 1, 2, 3, 4, 5, 6, 7, 8, 9 };
-    const A = NamedArrayConst(MK, T){
-        .idx = NamedIndex(MK).initContiguous(.{ .m = 3, .k = 3 }),
-        .buf = &a_buf,
-    };
+    const A = NamedArrayConst(MK, T).init(NamedIndex(MK).initContiguous(.{ .m = 3, .k = 3 }), &a_buf);
 
     // x_buf physical = [1, 2, 3]; stride -1 → logical x = [3, 2, 1]
     const x_buf = [_]T{ 1, 2, 3 };
     var x_idx = NamedIndex(K).initContiguous(.{ .k = 3 });
     x_idx = x_idx.stride(.{ .k = -1 });
-    const x = NamedArrayConst(K, T){
-        .idx = x_idx,
-        .buf = &x_buf,
-    };
+    const x = NamedArrayConst(K, T).init(x_idx, &x_buf);
 
     // y with stride 2: positions 0, 2, 4 in buffer
     var y_buf = [_]T{ 10, 99, 20, 99, 30 };
@@ -3699,10 +3537,7 @@ test "gemv real nontrivial scalars and strides" {
         .strides = .{ .m = 2 },
         .offset = 0,
     };
-    const y = NamedArray(M, T){
-        .idx = y_idx,
-        .buf = &y_buf,
-    };
+    const y = NamedArray(M, T).init(y_idx, &y_buf);
 
     // alpha = 2.0, beta = -1.0
     // A * x_logical = A * [3,2,1]:
@@ -3729,29 +3564,20 @@ test "gemv real column-major matrix" {
     // A = [[1, 3], [2, 4]] stored column-major: columns contiguous
     // Column-major buffer for 2x2: col0=[1,2], col1=[3,4]
     const a_buf = [_]T{ 1, 2, 3, 4 };
-    const A = NamedArrayConst(IJ, T){
-        .idx = .{
-            .shape = .{ .i = 2, .j = 2 },
-            .strides = .{ .i = 1, .j = 2 }, // column-major: i-stride=1, j-stride=rows
-        },
-        .buf = &a_buf,
-    };
+    const A = NamedArrayConst(IJ, T).init(.{
+        .shape = .{ .i = 2, .j = 2 },
+        .strides = .{ .i = 1, .j = 2 }, // column-major: i-stride=1, j-stride=rows
+    }, &a_buf);
 
     // x = [5, 6], y = [0, 0]
     // x axis is j (contracted), y axis is i (output).
     // After rename: j→j (cols), i→i (rows) → NoTrans
     // y = A*x = [1*5+3*6, 2*5+4*6] = [23, 34]
     const x_buf = [_]T{ 5, 6 };
-    const x = NamedArrayConst(J, T){
-        .idx = NamedIndex(J).initContiguous(.{ .j = 2 }),
-        .buf = &x_buf,
-    };
+    const x = NamedArrayConst(J, T).init(NamedIndex(J).initContiguous(.{ .j = 2 }), &x_buf);
 
     var y_buf = [_]T{ 0, 0 };
-    const y = NamedArray(I, T){
-        .idx = NamedIndex(I).initContiguous(.{ .i = 2 }),
-        .buf = &y_buf,
-    };
+    const y = NamedArray(I, T).init(NamedIndex(I).initContiguous(.{ .i = 2 }), &y_buf);
 
     blas.gemv(T, IJ, J, I, A, x, y, .{ .alpha = 1.0, .beta = 0.0 });
 
@@ -3769,24 +3595,15 @@ test "gemv real 1x1 matrix" {
 
     // A = [[7]] (1x1 matrix)
     const a_buf = [_]T{7};
-    const A = NamedArrayConst(MK, T){
-        .idx = NamedIndex(MK).initContiguous(.{ .m = 1, .k = 1 }),
-        .buf = &a_buf,
-    };
+    const A = NamedArrayConst(MK, T).init(NamedIndex(MK).initContiguous(.{ .m = 1, .k = 1 }), &a_buf);
 
     const x_buf = [_]T{3};
-    const x = NamedArrayConst(K, T){
-        .idx = NamedIndex(K).initContiguous(.{ .k = 1 }),
-        .buf = &x_buf,
-    };
+    const x = NamedArrayConst(K, T).init(NamedIndex(K).initContiguous(.{ .k = 1 }), &x_buf);
 
     // y starts at 10, beta = 2, alpha = 3
     // y = alpha * A * x + beta * y = 3 * 7 * 3 + 2 * 10 = 63 + 20 = 83
     var y_buf = [_]T{10};
-    const y = NamedArray(M, T){
-        .idx = NamedIndex(M).initContiguous(.{ .m = 1 }),
-        .buf = &y_buf,
-    };
+    const y = NamedArray(M, T).init(NamedIndex(M).initContiguous(.{ .m = 1 }), &y_buf);
 
     blas.gemv(T, MK, K, M, A, x, y, .{ .alpha = 3.0, .beta = 2.0 });
 
@@ -3808,10 +3625,7 @@ test "gemv complex" {
         .{ .re = 0, .im = 1 }, .{ .re = 1, .im = 0 }, .{ .re = 2, .im = 1 },
         .{ .re = 1, .im = 0 }, .{ .re = 0, .im = 1 }, .{ .re = 1, .im = 1 },
     };
-    const A = NamedArrayConst(MK, T){
-        .idx = NamedIndex(MK).initContiguous(.{ .m = 3, .k = 3 }),
-        .buf = &a_buf,
-    };
+    const A = NamedArrayConst(MK, T).init(NamedIndex(MK).initContiguous(.{ .m = 3, .k = 3 }), &a_buf);
 
     // x = [1+0i, 0+1i, 1+i]
     const x_buf = [_]T{
@@ -3819,20 +3633,14 @@ test "gemv complex" {
         .{ .re = 0, .im = 1 },
         .{ .re = 1, .im = 1 },
     };
-    const x = NamedArrayConst(K, T){
-        .idx = NamedIndex(K).initContiguous(.{ .k = 3 }),
-        .buf = &x_buf,
-    };
+    const x = NamedArrayConst(K, T).init(NamedIndex(K).initContiguous(.{ .k = 3 }), &x_buf);
 
     var y_buf = [_]T{
         .{ .re = 0, .im = 0 },
         .{ .re = 0, .im = 0 },
         .{ .re = 0, .im = 0 },
     };
-    const y = NamedArray(M, T){
-        .idx = NamedIndex(M).initContiguous(.{ .m = 3 }),
-        .buf = &y_buf,
-    };
+    const y = NamedArray(M, T).init(NamedIndex(M).initContiguous(.{ .m = 3 }), &y_buf);
 
     // alpha = 2+i, beta = 0
     //
@@ -3873,10 +3681,7 @@ test "gemv complex nontrivial scalars and strides" {
         .{ .re = 1, .im = 1 }, .{ .re = 2, .im = -1 },
         .{ .re = 3, .im = 0 }, .{ .re = 0, .im = 2 },
     };
-    const A = NamedArrayConst(AB, T){
-        .idx = NamedIndex(AB).initContiguous(.{ .a = 2, .b = 2 }),
-        .buf = &a_buf,
-    };
+    const A = NamedArrayConst(AB, T).init(NamedIndex(AB).initContiguous(.{ .a = 2, .b = 2 }), &a_buf);
 
     // x physical = [1+0i, 0+1i]; stride -1 → logical x = [0+1i, 1+0i]
     const x_buf = [_]T{
@@ -3885,10 +3690,7 @@ test "gemv complex nontrivial scalars and strides" {
     };
     var x_idx = NamedIndex(B).initContiguous(.{ .b = 2 });
     x_idx = x_idx.stride(.{ .b = -1 });
-    const x = NamedArrayConst(B, T){
-        .idx = x_idx,
-        .buf = &x_buf,
-    };
+    const x = NamedArrayConst(B, T).init(x_idx, &x_buf);
 
     // y with stride 2; y_init = [1+0i, 2+0i]
     var y_buf = [_]T{
@@ -3901,10 +3703,7 @@ test "gemv complex nontrivial scalars and strides" {
         .strides = .{ .a = 2 },
         .offset = 0,
     };
-    const y = NamedArray(A_, T){
-        .idx = y_idx,
-        .buf = &y_buf,
-    };
+    const y = NamedArray(A_, T).init(y_idx, &y_buf);
 
     // alpha = 1+i, beta = 2+0i
     //
@@ -3946,30 +3745,21 @@ test "hemv upper (triangle = second axis)" {
         .{ .re = 99, .im = 99 }, .{ .re = 5, .im = 0 },   .{ .re = 2, .im = -1 },
         .{ .re = 99, .im = 99 }, .{ .re = 99, .im = 99 }, .{ .re = 4, .im = 0 },
     };
-    const A = NamedArrayConst(MK, T){
-        .idx = NamedIndex(MK).initContiguous(.{ .m = 3, .k = 3 }),
-        .buf = &a_buf,
-    };
+    const A = NamedArrayConst(MK, T).init(NamedIndex(MK).initContiguous(.{ .m = 3, .k = 3 }), &a_buf);
 
     const x_buf = [_]T{
         .{ .re = 1, .im = 0 },
         .{ .re = 0, .im = 1 },
         .{ .re = 1, .im = 0 },
     };
-    const x = NamedArrayConst(K, T){
-        .idx = NamedIndex(K).initContiguous(.{ .k = 3 }),
-        .buf = &x_buf,
-    };
+    const x = NamedArrayConst(K, T).init(NamedIndex(K).initContiguous(.{ .k = 3 }), &x_buf);
 
     var y_buf = [_]T{
         .{ .re = 0, .im = 0 },
         .{ .re = 0, .im = 0 },
         .{ .re = 0, .im = 0 },
     };
-    const y = NamedArray(M, T){
-        .idx = NamedIndex(M).initContiguous(.{ .m = 3 }),
-        .buf = &y_buf,
-    };
+    const y = NamedArray(M, T).init(NamedIndex(M).initContiguous(.{ .m = 3 }), &y_buf);
 
     // y = A * x:
     //   y[0] = 2*(1) + (1-i)*(i) + (3+2i)*(1) = 2 + i+1 + 3+2i = 6+3i
@@ -4008,30 +3798,21 @@ test "hemv lower (triangle = first axis)" {
         .{ .re = 1, .im = 1 },  .{ .re = 5, .im = 0 },   .{ .re = 99, .im = 99 },
         .{ .re = 3, .im = -2 }, .{ .re = 2, .im = 1 },   .{ .re = 4, .im = 0 },
     };
-    const A = NamedArrayConst(MK, T){
-        .idx = NamedIndex(MK).initContiguous(.{ .m = 3, .k = 3 }),
-        .buf = &a_buf,
-    };
+    const A = NamedArrayConst(MK, T).init(NamedIndex(MK).initContiguous(.{ .m = 3, .k = 3 }), &a_buf);
 
     const x_buf = [_]T{
         .{ .re = 1, .im = 0 },
         .{ .re = 0, .im = 1 },
         .{ .re = 1, .im = 0 },
     };
-    const x = NamedArrayConst(K, T){
-        .idx = NamedIndex(K).initContiguous(.{ .k = 3 }),
-        .buf = &x_buf,
-    };
+    const x = NamedArrayConst(K, T).init(NamedIndex(K).initContiguous(.{ .k = 3 }), &x_buf);
 
     var y_buf = [_]T{
         .{ .re = 0, .im = 0 },
         .{ .re = 0, .im = 0 },
         .{ .re = 0, .im = 0 },
     };
-    const y = NamedArray(M, T){
-        .idx = NamedIndex(M).initContiguous(.{ .m = 3 }),
-        .buf = &y_buf,
-    };
+    const y = NamedArray(M, T).init(NamedIndex(M).initContiguous(.{ .m = 3 }), &y_buf);
 
     // Same result as the upper test: y = [6+3i, 3+5i, 6+0i]
     blas.hemv(T, MK, K, M, .{ .triangle = .m, .data = A }, x, y, .{
@@ -4063,10 +3844,7 @@ test "hemv nontrivial scalars and strides" {
         .{ .re = 3, .im = 0 },   .{ .re = 1, .im = 2 },
         .{ .re = 99, .im = 99 }, .{ .re = 5, .im = 0 },
     };
-    const A = NamedArrayConst(AB, T){
-        .idx = NamedIndex(AB).initContiguous(.{ .a = 2, .b = 2 }),
-        .buf = &a_buf,
-    };
+    const A = NamedArrayConst(AB, T).init(NamedIndex(AB).initContiguous(.{ .a = 2, .b = 2 }), &a_buf);
 
     // x physical = [1+i, 2+0i]; stride -1 → logical x = [2+0i, 1+i]
     const x_buf = [_]T{
@@ -4075,10 +3853,7 @@ test "hemv nontrivial scalars and strides" {
     };
     var x_idx = NamedIndex(B).initContiguous(.{ .b = 2 });
     x_idx = x_idx.stride(.{ .b = -1 });
-    const x = NamedArrayConst(B, T){
-        .idx = x_idx,
-        .buf = &x_buf,
-    };
+    const x = NamedArrayConst(B, T).init(x_idx, &x_buf);
 
     // y with stride 2; y_init = [1+0i, 2+i]
     var y_buf = [_]T{
@@ -4091,10 +3866,7 @@ test "hemv nontrivial scalars and strides" {
         .strides = .{ .a = 2 },
         .offset = 0,
     };
-    const y = NamedArray(A_, T){
-        .idx = y_idx,
-        .buf = &y_buf,
-    };
+    const y = NamedArray(A_, T).init(y_idx, &y_buf);
 
     // alpha = 1+i, beta = 2
     //
@@ -4135,31 +3907,22 @@ test "hemv column-major matrix" {
         .{ .re = 2, .im = 0 },  .{ .re = 99, .im = 99 },
         .{ .re = 1, .im = -1 }, .{ .re = 3, .im = 0 },
     };
-    const A = NamedArrayConst(IJ, T){
-        .idx = .{
-            .shape = .{ .i = 2, .j = 2 },
-            .strides = .{ .i = 1, .j = 2 },
-        },
-        .buf = &a_buf,
-    };
+    const A = NamedArrayConst(IJ, T).init(.{
+        .shape = .{ .i = 2, .j = 2 },
+        .strides = .{ .i = 1, .j = 2 },
+    }, &a_buf);
 
     const x_buf = [_]T{
         .{ .re = 1, .im = 0 },
         .{ .re = 0, .im = 1 },
     };
-    const x = NamedArrayConst(J, T){
-        .idx = NamedIndex(J).initContiguous(.{ .j = 2 }),
-        .buf = &x_buf,
-    };
+    const x = NamedArrayConst(J, T).init(NamedIndex(J).initContiguous(.{ .j = 2 }), &x_buf);
 
     var y_buf = [_]T{
         .{ .re = 0, .im = 0 },
         .{ .re = 0, .im = 0 },
     };
-    const y = NamedArray(I, T){
-        .idx = NamedIndex(I).initContiguous(.{ .i = 2 }),
-        .buf = &y_buf,
-    };
+    const y = NamedArray(I, T).init(NamedIndex(I).initContiguous(.{ .i = 2 }), &y_buf);
 
     // y = A*x:
     //   y[0] = 2*1 + (1-i)*(i) = 2 + i+1 = 3+i
@@ -4192,22 +3955,13 @@ test "symv upper (triangle = second axis)" {
         99, 7,  11,
         99, 99, 13,
     };
-    const A = NamedArrayConst(MK, T){
-        .idx = NamedIndex(MK).initContiguous(.{ .m = 3, .k = 3 }),
-        .buf = &a_buf,
-    };
+    const A = NamedArrayConst(MK, T).init(NamedIndex(MK).initContiguous(.{ .m = 3, .k = 3 }), &a_buf);
 
     const x_buf = [_]T{ 1, 2, 3 };
-    const x = NamedArrayConst(K, T){
-        .idx = NamedIndex(K).initContiguous(.{ .k = 3 }),
-        .buf = &x_buf,
-    };
+    const x = NamedArrayConst(K, T).init(NamedIndex(K).initContiguous(.{ .k = 3 }), &x_buf);
 
     var y_buf = [_]T{ 0, 0, 0 };
-    const y = NamedArray(M, T){
-        .idx = NamedIndex(M).initContiguous(.{ .m = 3 }),
-        .buf = &y_buf,
-    };
+    const y = NamedArray(M, T).init(NamedIndex(M).initContiguous(.{ .m = 3 }), &y_buf);
 
     // y = A * x:
     //   y[0] = 2*1 + 3*2 + 5*3  = 2 + 6 + 15  = 23
@@ -4237,22 +3991,13 @@ test "symv lower (triangle = first axis)" {
         3, 7,  99,
         5, 11, 13,
     };
-    const A = NamedArrayConst(MK, T){
-        .idx = NamedIndex(MK).initContiguous(.{ .m = 3, .k = 3 }),
-        .buf = &a_buf,
-    };
+    const A = NamedArrayConst(MK, T).init(NamedIndex(MK).initContiguous(.{ .m = 3, .k = 3 }), &a_buf);
 
     const x_buf = [_]T{ 1, 2, 3 };
-    const x = NamedArrayConst(K, T){
-        .idx = NamedIndex(K).initContiguous(.{ .k = 3 }),
-        .buf = &x_buf,
-    };
+    const x = NamedArrayConst(K, T).init(NamedIndex(K).initContiguous(.{ .k = 3 }), &x_buf);
 
     var y_buf = [_]T{ 0, 0, 0 };
-    const y = NamedArray(M, T){
-        .idx = NamedIndex(M).initContiguous(.{ .m = 3 }),
-        .buf = &y_buf,
-    };
+    const y = NamedArray(M, T).init(NamedIndex(M).initContiguous(.{ .m = 3 }), &y_buf);
 
     // Same result as the upper test: y = [23, 50, 66]
     blas.symv(T, MK, K, M, .{ .triangle = .m, .data = A }, x, y, .{ .alpha = 1.0, .beta = 0.0 });
@@ -4272,19 +4017,13 @@ test "symv nontrivial scalars and strides" {
     // Symmetric 2x2: [[4, 3], [3, 7]]
     // Upper triangle stored (triangle = .b, i.e. data where b >= a); lower position holds sentinel.
     const a_buf = [_]T{ 4, 3, 99, 7 };
-    const A = NamedArrayConst(AB, T){
-        .idx = NamedIndex(AB).initContiguous(.{ .a = 2, .b = 2 }),
-        .buf = &a_buf,
-    };
+    const A = NamedArrayConst(AB, T).init(NamedIndex(AB).initContiguous(.{ .a = 2, .b = 2 }), &a_buf);
 
     // x physical = [1, 2]; stride -1 → logical x = [2, 1]
     const x_buf = [_]T{ 1, 2 };
     var x_idx = NamedIndex(B).initContiguous(.{ .b = 2 });
     x_idx = x_idx.stride(.{ .b = -1 });
-    const x = NamedArrayConst(B, T){
-        .idx = x_idx,
-        .buf = &x_buf,
-    };
+    const x = NamedArrayConst(B, T).init(x_idx, &x_buf);
 
     // y with stride 2; y_init = [10, 20]
     var y_buf = [_]T{ 10, 99, 20 };
@@ -4293,10 +4032,7 @@ test "symv nontrivial scalars and strides" {
         .strides = .{ .a = 2 },
         .offset = 0,
     };
-    const y = NamedArray(A_, T){
-        .idx = y_idx,
-        .buf = &y_buf,
-    };
+    const y = NamedArray(A_, T).init(y_idx, &y_buf);
 
     // alpha = 2.5, beta = -1
     //
@@ -4324,25 +4060,16 @@ test "symv column-major matrix" {
     // Upper triangle stored (triangle = .j, data where j >= i).
     // Column-major buffer: col0=[4, sentinel], col1=[3, 7]
     const a_buf = [_]T{ 4, 99, 3, 7 };
-    const A = NamedArrayConst(IJ, T){
-        .idx = .{
-            .shape = .{ .i = 2, .j = 2 },
-            .strides = .{ .i = 1, .j = 2 },
-        },
-        .buf = &a_buf,
-    };
+    const A = NamedArrayConst(IJ, T).init(.{
+        .shape = .{ .i = 2, .j = 2 },
+        .strides = .{ .i = 1, .j = 2 },
+    }, &a_buf);
 
     const x_buf = [_]T{ 1, 2 };
-    const x = NamedArrayConst(J, T){
-        .idx = NamedIndex(J).initContiguous(.{ .j = 2 }),
-        .buf = &x_buf,
-    };
+    const x = NamedArrayConst(J, T).init(NamedIndex(J).initContiguous(.{ .j = 2 }), &x_buf);
 
     var y_buf = [_]T{ 0, 0 };
-    const y = NamedArray(I, T){
-        .idx = NamedIndex(I).initContiguous(.{ .i = 2 }),
-        .buf = &y_buf,
-    };
+    const y = NamedArray(I, T).init(NamedIndex(I).initContiguous(.{ .i = 2 }), &y_buf);
 
     // y = A*x = [4*1+3*2, 3*1+7*2] = [10, 17]
     blas.symv(T, IJ, J, I, .{ .triangle = .j, .data = A }, x, y, .{ .alpha = 1.0, .beta = 0.0 });
@@ -4368,16 +4095,10 @@ test "trmv real" {
         99, 7,  11,
         99, 99, 13,
     };
-    const A = NamedArrayConst(MK, T){
-        .idx = NamedIndex(MK).initContiguous(.{ .m = 3, .k = 3 }),
-        .buf = &a_buf,
-    };
+    const A = NamedArrayConst(MK, T).init(NamedIndex(MK).initContiguous(.{ .m = 3, .k = 3 }), &a_buf);
 
     var x_buf = [_]T{ 1, 2, 3 };
-    const x = NamedArray(K, T){
-        .idx = NamedIndex(K).initContiguous(.{ .k = 3 }),
-        .buf = &x_buf,
-    };
+    const x = NamedArray(K, T).init(NamedIndex(K).initContiguous(.{ .k = 3 }), &x_buf);
 
     // x := A * x:
     //   x[0] = 2*1 + 3*2 + 5*3  = 23
@@ -4406,16 +4127,10 @@ test "trmv real unit diagonal" {
         4,  99, 99,
         5,  6,  99,
     };
-    const A = NamedArrayConst(MK, T){
-        .idx = NamedIndex(MK).initContiguous(.{ .m = 3, .k = 3 }),
-        .buf = &a_buf,
-    };
+    const A = NamedArrayConst(MK, T).init(NamedIndex(MK).initContiguous(.{ .m = 3, .k = 3 }), &a_buf);
 
     var x_buf = [_]T{ 1, 2, 3 };
-    const x = NamedArray(K, T){
-        .idx = NamedIndex(K).initContiguous(.{ .k = 3 }),
-        .buf = &x_buf,
-    };
+    const x = NamedArray(K, T).init(NamedIndex(K).initContiguous(.{ .k = 3 }), &x_buf);
 
     // x := A * x (with unit diagonal):
     //   x[0] = 1*1 + 0*2 + 0*3 = 1
@@ -4441,19 +4156,13 @@ test "trmv complex" {
         .{ .re = 1, .im = 1 },   .{ .re = 2, .im = 3 },
         .{ .re = 99, .im = 99 }, .{ .re = 4, .im = -1 },
     };
-    const A = NamedArrayConst(MK, T){
-        .idx = NamedIndex(MK).initContiguous(.{ .m = 2, .k = 2 }),
-        .buf = &a_buf,
-    };
+    const A = NamedArrayConst(MK, T).init(NamedIndex(MK).initContiguous(.{ .m = 2, .k = 2 }), &a_buf);
 
     var x_buf = [_]T{
         .{ .re = 1, .im = 0 },
         .{ .re = 0, .im = 1 },
     };
-    const x = NamedArray(K, T){
-        .idx = NamedIndex(K).initContiguous(.{ .k = 2 }),
-        .buf = &x_buf,
-    };
+    const x = NamedArray(K, T).init(NamedIndex(K).initContiguous(.{ .k = 2 }), &x_buf);
 
     // x := A * x:
     //   x[0] = (1+i)(1) + (2+3i)(i) = 1+i + 2i+3i² = 1+i+2i-3 = -2+3i
@@ -4479,10 +4188,7 @@ test "trmv nontrivial strides" {
         .{ .re = 3, .im = 0 }, .{ .re = 99, .im = 99 },
         .{ .re = 1, .im = 2 }, .{ .re = 5, .im = 0 },
     };
-    const A = NamedArrayConst(AB, T){
-        .idx = NamedIndex(AB).initContiguous(.{ .a = 2, .b = 2 }),
-        .buf = &a_buf,
-    };
+    const A = NamedArrayConst(AB, T).init(NamedIndex(AB).initContiguous(.{ .a = 2, .b = 2 }), &a_buf);
 
     // x with stride 2: positions 0, 2 in buffer; logical x = [1+i, 2+0i]
     var x_buf = [_]T{
@@ -4495,10 +4201,7 @@ test "trmv nontrivial strides" {
         .strides = .{ .b = 2 },
         .offset = 0,
     };
-    const x = NamedArray(B, T){
-        .idx = x_idx,
-        .buf = &x_buf,
-    };
+    const x = NamedArray(B, T).init(x_idx, &x_buf);
 
     // x := A * x:
     //   x[0] = (3)(1+i) + 0*(2) = 3+3i
@@ -4525,23 +4228,17 @@ test "trmv column-major matrix" {
     //    [_, 5]]
     // Column-major buffer: col0=[2, sentinel], col1=[3, 5]
     const a_buf = [_]T{ 2, 99, 3, 5 };
-    const A = NamedArrayConst(IJ, T){
-        .idx = .{
-            .shape = .{ .i = 2, .j = 2 },
-            .strides = .{ .i = 1, .j = 2 },
-        },
-        .buf = &a_buf,
-    };
+    const A = NamedArrayConst(IJ, T).init(.{
+        .shape = .{ .i = 2, .j = 2 },
+        .strides = .{ .i = 1, .j = 2 },
+    }, &a_buf);
 
     // x maps to j-axis; x = [1, 2]
     // x := A * x:
     //   x[0] = 2*1 + 3*2 = 8
     //   x[1] = 0*1 + 5*2 = 10
     var x_buf = [_]T{ 1, 2 };
-    const x = NamedArray(J, T){
-        .idx = NamedIndex(J).initContiguous(.{ .j = 2 }),
-        .buf = &x_buf,
-    };
+    const x = NamedArray(J, T).init(NamedIndex(J).initContiguous(.{ .j = 2 }), &x_buf);
 
     blas.trmv(T, IJ, J, .{ .triangle = .j, .data = A }, .non_unit, x);
 
@@ -4566,18 +4263,12 @@ test "trsv real" {
         99, 7,  11,
         99, 99, 13,
     };
-    const A = NamedArrayConst(MK, T){
-        .idx = NamedIndex(MK).initContiguous(.{ .m = 3, .k = 3 }),
-        .buf = &a_buf,
-    };
+    const A = NamedArrayConst(MK, T).init(NamedIndex(MK).initContiguous(.{ .m = 3, .k = 3 }), &a_buf);
 
     // x_init = A * [1,2,3] = [23, 47, 39]  (from trmv test)
     // After trsv: x should be [1, 2, 3].
     var x_buf = [_]T{ 23, 47, 39 };
-    const x = NamedArray(K, T){
-        .idx = NamedIndex(K).initContiguous(.{ .k = 3 }),
-        .buf = &x_buf,
-    };
+    const x = NamedArray(K, T).init(NamedIndex(K).initContiguous(.{ .k = 3 }), &x_buf);
 
     blas.trsv(T, MK, K, .{ .triangle = .k, .data = A }, .non_unit, x);
 
@@ -4602,18 +4293,12 @@ test "trsv real unit diagonal" {
         4,  99, 99,
         5,  6,  99,
     };
-    const A = NamedArrayConst(MK, T){
-        .idx = NamedIndex(MK).initContiguous(.{ .m = 3, .k = 3 }),
-        .buf = &a_buf,
-    };
+    const A = NamedArrayConst(MK, T).init(NamedIndex(MK).initContiguous(.{ .m = 3, .k = 3 }), &a_buf);
 
     // x_init = A * [1,2,3] = [1, 6, 20]  (from trmv unit diagonal test)
     // After trsv: x should be [1, 2, 3].
     var x_buf = [_]T{ 1, 6, 20 };
-    const x = NamedArray(K, T){
-        .idx = NamedIndex(K).initContiguous(.{ .k = 3 }),
-        .buf = &x_buf,
-    };
+    const x = NamedArray(K, T).init(NamedIndex(K).initContiguous(.{ .k = 3 }), &x_buf);
 
     blas.trsv(T, MK, K, .{ .triangle = .m, .data = A }, .unit, x);
 
@@ -4635,10 +4320,7 @@ test "trsv complex" {
         .{ .re = 1, .im = 1 },   .{ .re = 2, .im = 3 },
         .{ .re = 99, .im = 99 }, .{ .re = 4, .im = -1 },
     };
-    const A = NamedArrayConst(MK, T){
-        .idx = NamedIndex(MK).initContiguous(.{ .m = 2, .k = 2 }),
-        .buf = &a_buf,
-    };
+    const A = NamedArrayConst(MK, T).init(NamedIndex(MK).initContiguous(.{ .m = 2, .k = 2 }), &a_buf);
 
     // x_init = A * [1, i] = [-2+3i, 1+4i]  (from trmv complex test)
     // After trsv: x should be [1, i].
@@ -4646,10 +4328,7 @@ test "trsv complex" {
         .{ .re = -2, .im = 3 },
         .{ .re = 1, .im = 4 },
     };
-    const x = NamedArray(K, T){
-        .idx = NamedIndex(K).initContiguous(.{ .k = 2 }),
-        .buf = &x_buf,
-    };
+    const x = NamedArray(K, T).init(NamedIndex(K).initContiguous(.{ .k = 2 }), &x_buf);
 
     blas.trsv(T, MK, K, .{ .triangle = .k, .data = A }, .non_unit, x);
 
@@ -4672,10 +4351,7 @@ test "trsv nontrivial strides" {
         .{ .re = 3, .im = 0 }, .{ .re = 99, .im = 99 },
         .{ .re = 1, .im = 2 }, .{ .re = 5, .im = 0 },
     };
-    const A = NamedArrayConst(AB, T){
-        .idx = NamedIndex(AB).initContiguous(.{ .a = 2, .b = 2 }),
-        .buf = &a_buf,
-    };
+    const A = NamedArrayConst(AB, T).init(NamedIndex(AB).initContiguous(.{ .a = 2, .b = 2 }), &a_buf);
 
     // x_init = A * [1+i, 2] = [3+3i, 9+3i]  (from trmv nontrivial strides test, but stride=1 semantics)
     // x with stride 2: positions 0, 2 in buffer
@@ -4690,10 +4366,7 @@ test "trsv nontrivial strides" {
         .strides = .{ .b = 2 },
         .offset = 0,
     };
-    const x = NamedArray(B, T){
-        .idx = x_idx,
-        .buf = &x_buf,
-    };
+    const x = NamedArray(B, T).init(x_idx, &x_buf);
 
     blas.trsv(T, AB, B, .{ .triangle = .a, .data = A }, .non_unit, x);
 
@@ -4717,21 +4390,15 @@ test "trsv column-major matrix" {
     //    [_, 5]]
     // Column-major buffer: col0=[2, sentinel], col1=[3, 5]
     const a_buf = [_]T{ 2, 99, 3, 5 };
-    const A = NamedArrayConst(IJ, T){
-        .idx = .{
-            .shape = .{ .i = 2, .j = 2 },
-            .strides = .{ .i = 1, .j = 2 },
-        },
-        .buf = &a_buf,
-    };
+    const A = NamedArrayConst(IJ, T).init(.{
+        .shape = .{ .i = 2, .j = 2 },
+        .strides = .{ .i = 1, .j = 2 },
+    }, &a_buf);
 
     // x_init = A * [1,2] = [8, 10]  (from trmv column-major test)
     // After trsv: x should be [1, 2].
     var x_buf = [_]T{ 8, 10 };
-    const x = NamedArray(J, T){
-        .idx = NamedIndex(J).initContiguous(.{ .j = 2 }),
-        .buf = &x_buf,
-    };
+    const x = NamedArray(J, T).init(NamedIndex(J).initContiguous(.{ .j = 2 }), &x_buf);
 
     blas.trsv(T, IJ, J, .{ .triangle = .j, .data = A }, .non_unit, x);
 
@@ -4750,22 +4417,13 @@ test "ger real" {
     // A = zeros(3, 2), x = [1, 2, 3] (m-axis), y = [4, 5] (k-axis)
     // A := 1 * x * y^T + A = [[4, 5], [8, 10], [12, 15]]
     var a_buf = [_]T{ 0, 0, 0, 0, 0, 0 };
-    const A = NamedArray(MK, T){
-        .idx = NamedIndex(MK).initContiguous(.{ .m = 3, .k = 2 }),
-        .buf = &a_buf,
-    };
+    const A = NamedArray(MK, T).init(NamedIndex(MK).initContiguous(.{ .m = 3, .k = 2 }), &a_buf);
 
     const x_buf = [_]T{ 1, 2, 3 };
-    const x = NamedArrayConst(M, T){
-        .idx = NamedIndex(M).initContiguous(.{ .m = 3 }),
-        .buf = &x_buf,
-    };
+    const x = NamedArrayConst(M, T).init(NamedIndex(M).initContiguous(.{ .m = 3 }), &x_buf);
 
     const y_buf = [_]T{ 4, 5 };
-    const y = NamedArrayConst(K, T){
-        .idx = NamedIndex(K).initContiguous(.{ .k = 2 }),
-        .buf = &y_buf,
-    };
+    const y = NamedArrayConst(K, T).init(NamedIndex(K).initContiguous(.{ .k = 2 }), &y_buf);
 
     blas.ger(T, MK, M, K, A, x, y, .{});
 
@@ -4783,19 +4441,13 @@ test "ger real nontrivial strides" {
 
     // A_init = [[1, 2], [3, 4]]
     var a_buf = [_]T{ 1, 2, 3, 4 };
-    const A = NamedArray(AB, T){
-        .idx = NamedIndex(AB).initContiguous(.{ .a = 2, .b = 2 }),
-        .buf = &a_buf,
-    };
+    const A = NamedArray(AB, T).init(NamedIndex(AB).initContiguous(.{ .a = 2, .b = 2 }), &a_buf);
 
     // x physical = [1, 2]; stride -1 → logical x = [2, 1]
     const x_buf = [_]T{ 1, 2 };
     var x_idx = NamedIndex(A_).initContiguous(.{ .a = 2 });
     x_idx = x_idx.stride(.{ .a = -1 });
-    const x = NamedArrayConst(A_, T){
-        .idx = x_idx,
-        .buf = &x_buf,
-    };
+    const x = NamedArrayConst(A_, T).init(x_idx, &x_buf);
 
     // y with stride 2: positions 0, 2 in buffer; logical y = [1, 2]
     const y_buf = [_]T{ 1, 99, 2 };
@@ -4804,10 +4456,7 @@ test "ger real nontrivial strides" {
         .strides = .{ .b = 2 },
         .offset = 0,
     };
-    const y = NamedArrayConst(B, T){
-        .idx = y_idx,
-        .buf = &y_buf,
-    };
+    const y = NamedArrayConst(B, T).init(y_idx, &y_buf);
 
     // alpha = 3
     // A_new = 3 * outer([2,1], [1,2]) + [[1,2],[3,4]]
@@ -4832,25 +4481,16 @@ test "ger column-major matrix" {
     // A = zeros(2, 3), column-major
     // Column-major buffer (2 rows, 3 cols): col0=[0,0], col1=[0,0], col2=[0,0]
     var a_buf = [_]T{ 0, 0, 0, 0, 0, 0 };
-    const A = NamedArray(IJ, T){
-        .idx = .{
-            .shape = .{ .i = 2, .j = 3 },
-            .strides = .{ .i = 1, .j = 2 },
-        },
-        .buf = &a_buf,
-    };
+    const A = NamedArray(IJ, T).init(.{
+        .shape = .{ .i = 2, .j = 3 },
+        .strides = .{ .i = 1, .j = 2 },
+    }, &a_buf);
 
     const x_buf = [_]T{ 1, 2 };
-    const x = NamedArrayConst(I, T){
-        .idx = NamedIndex(I).initContiguous(.{ .i = 2 }),
-        .buf = &x_buf,
-    };
+    const x = NamedArrayConst(I, T).init(NamedIndex(I).initContiguous(.{ .i = 2 }), &x_buf);
 
     const y_buf = [_]T{ 3, 4, 5 };
-    const y = NamedArrayConst(J, T){
-        .idx = NamedIndex(J).initContiguous(.{ .j = 3 }),
-        .buf = &y_buf,
-    };
+    const y = NamedArrayConst(J, T).init(NamedIndex(J).initContiguous(.{ .j = 3 }), &y_buf);
 
     // A := x * y^T = [[3,4,5],[6,8,10]]
     // Column-major buffer: col0=[3,6], col1=[4,8], col2=[5,10]
@@ -4880,29 +4520,20 @@ test "geru complex" {
         .{ .re = 0, .im = 0 }, .{ .re = 0, .im = 0 }, .{ .re = 0, .im = 0 },
         .{ .re = 0, .im = 0 }, .{ .re = 0, .im = 0 }, .{ .re = 0, .im = 0 },
     };
-    const A = NamedArray(MK, T){
-        .idx = NamedIndex(MK).initContiguous(.{ .m = 2, .k = 3 }),
-        .buf = &a_buf,
-    };
+    const A = NamedArray(MK, T).init(NamedIndex(MK).initContiguous(.{ .m = 2, .k = 3 }), &a_buf);
 
     const x_buf = [_]T{
         .{ .re = 1, .im = 1 },
         .{ .re = 2, .im = 0 },
     };
-    const x = NamedArrayConst(M, T){
-        .idx = NamedIndex(M).initContiguous(.{ .m = 2 }),
-        .buf = &x_buf,
-    };
+    const x = NamedArrayConst(M, T).init(NamedIndex(M).initContiguous(.{ .m = 2 }), &x_buf);
 
     const y_buf = [_]T{
         .{ .re = 1, .im = 0 },
         .{ .re = 0, .im = 1 },
         .{ .re = 1, .im = 1 },
     };
-    const y = NamedArrayConst(K, T){
-        .idx = NamedIndex(K).initContiguous(.{ .k = 3 }),
-        .buf = &y_buf,
-    };
+    const y = NamedArrayConst(K, T).init(NamedIndex(K).initContiguous(.{ .k = 3 }), &y_buf);
 
     blas.geru(T, MK, M, K, A, x, y, .{});
 
@@ -4928,31 +4559,22 @@ test "geru column-major matrix" {
         .{ .re = 0, .im = 0 }, .{ .re = 0, .im = 0 },
         .{ .re = 0, .im = 0 }, .{ .re = 0, .im = 0 },
     };
-    const A = NamedArray(IJ, T){
-        .idx = .{
-            .shape = .{ .i = 2, .j = 2 },
-            .strides = .{ .i = 1, .j = 2 },
-        },
-        .buf = &a_buf,
-    };
+    const A = NamedArray(IJ, T).init(.{
+        .shape = .{ .i = 2, .j = 2 },
+        .strides = .{ .i = 1, .j = 2 },
+    }, &a_buf);
 
     const x_buf = [_]T{
         .{ .re = 1, .im = 1 },
         .{ .re = 2, .im = 0 },
     };
-    const x = NamedArrayConst(I, T){
-        .idx = NamedIndex(I).initContiguous(.{ .i = 2 }),
-        .buf = &x_buf,
-    };
+    const x = NamedArrayConst(I, T).init(NamedIndex(I).initContiguous(.{ .i = 2 }), &x_buf);
 
     const y_buf = [_]T{
         .{ .re = 1, .im = 0 },
         .{ .re = 0, .im = 1 },
     };
-    const y = NamedArrayConst(J, T){
-        .idx = NamedIndex(J).initContiguous(.{ .j = 2 }),
-        .buf = &y_buf,
-    };
+    const y = NamedArrayConst(J, T).init(NamedIndex(J).initContiguous(.{ .j = 2 }), &y_buf);
 
     // A := x * y^T (unconjugated):
     //   (0,0) = (1+i)*1   = 1+i
@@ -4992,29 +4614,20 @@ test "gerc complex" {
         .{ .re = 0, .im = 0 }, .{ .re = 0, .im = 0 }, .{ .re = 0, .im = 0 },
         .{ .re = 0, .im = 0 }, .{ .re = 0, .im = 0 }, .{ .re = 0, .im = 0 },
     };
-    const A = NamedArray(MK, T){
-        .idx = NamedIndex(MK).initContiguous(.{ .m = 2, .k = 3 }),
-        .buf = &a_buf,
-    };
+    const A = NamedArray(MK, T).init(NamedIndex(MK).initContiguous(.{ .m = 2, .k = 3 }), &a_buf);
 
     const x_buf = [_]T{
         .{ .re = 1, .im = 1 },
         .{ .re = 2, .im = 0 },
     };
-    const x = NamedArrayConst(M, T){
-        .idx = NamedIndex(M).initContiguous(.{ .m = 2 }),
-        .buf = &x_buf,
-    };
+    const x = NamedArrayConst(M, T).init(NamedIndex(M).initContiguous(.{ .m = 2 }), &x_buf);
 
     const y_buf = [_]T{
         .{ .re = 1, .im = 0 },
         .{ .re = 0, .im = 1 },
         .{ .re = 1, .im = 1 },
     };
-    const y = NamedArrayConst(K, T){
-        .idx = NamedIndex(K).initContiguous(.{ .k = 3 }),
-        .buf = &y_buf,
-    };
+    const y = NamedArrayConst(K, T).init(NamedIndex(K).initContiguous(.{ .k = 3 }), &y_buf);
 
     blas.gerc(T, MK, M, K, A, x, y, .{});
 
@@ -5040,10 +4653,7 @@ test "gerc nontrivial strides" {
         .{ .re = 1, .im = 0 }, .{ .re = 2, .im = 1 },
         .{ .re = 0, .im = 1 }, .{ .re = 3, .im = 0 },
     };
-    const A = NamedArray(AB, T){
-        .idx = NamedIndex(AB).initContiguous(.{ .a = 2, .b = 2 }),
-        .buf = &a_buf,
-    };
+    const A = NamedArray(AB, T).init(NamedIndex(AB).initContiguous(.{ .a = 2, .b = 2 }), &a_buf);
 
     // x physical = [1+i, 2+0i]; stride -1 → logical x = [2, 1+i]
     const x_buf = [_]T{
@@ -5052,10 +4662,7 @@ test "gerc nontrivial strides" {
     };
     var x_idx = NamedIndex(A_).initContiguous(.{ .a = 2 });
     x_idx = x_idx.stride(.{ .a = -1 });
-    const x = NamedArrayConst(A_, T){
-        .idx = x_idx,
-        .buf = &x_buf,
-    };
+    const x = NamedArrayConst(A_, T).init(x_idx, &x_buf);
 
     // y with stride 2: physical [1+0i, 99, 0+i], logical y = [1, i]
     const y_buf = [_]T{
@@ -5068,10 +4675,7 @@ test "gerc nontrivial strides" {
         .strides = .{ .b = 2 },
         .offset = 0,
     };
-    const y = NamedArrayConst(B, T){
-        .idx = y_idx,
-        .buf = &y_buf,
-    };
+    const y = NamedArrayConst(B, T).init(y_idx, &y_buf);
 
     // alpha = 1+i
     // conj(y) = [1, -i]
@@ -5107,31 +4711,22 @@ test "gerc column-major matrix" {
         .{ .re = 0, .im = 0 }, .{ .re = 0, .im = 0 },
         .{ .re = 0, .im = 0 }, .{ .re = 0, .im = 0 },
     };
-    const A = NamedArray(IJ, T){
-        .idx = .{
-            .shape = .{ .i = 2, .j = 2 },
-            .strides = .{ .i = 1, .j = 2 },
-        },
-        .buf = &a_buf,
-    };
+    const A = NamedArray(IJ, T).init(.{
+        .shape = .{ .i = 2, .j = 2 },
+        .strides = .{ .i = 1, .j = 2 },
+    }, &a_buf);
 
     const x_buf = [_]T{
         .{ .re = 1, .im = 1 },
         .{ .re = 2, .im = 0 },
     };
-    const x = NamedArrayConst(I, T){
-        .idx = NamedIndex(I).initContiguous(.{ .i = 2 }),
-        .buf = &x_buf,
-    };
+    const x = NamedArrayConst(I, T).init(NamedIndex(I).initContiguous(.{ .i = 2 }), &x_buf);
 
     const y_buf = [_]T{
         .{ .re = 1, .im = 0 },
         .{ .re = 0, .im = 1 },
     };
-    const y = NamedArrayConst(J, T){
-        .idx = NamedIndex(J).initContiguous(.{ .j = 2 }),
-        .buf = &y_buf,
-    };
+    const y = NamedArrayConst(J, T).init(NamedIndex(J).initContiguous(.{ .j = 2 }), &y_buf);
 
     // A := x * y^H = x * conj(y)^T:
     //   conj(y) = [1, -i]
@@ -5168,16 +4763,10 @@ test "syr real (triangle = second axis)" {
         99, 5,  6,
         99, 99, 9,
     };
-    const A = NamedArray(MK, T){
-        .idx = NamedIndex(MK).initContiguous(.{ .m = 3, .k = 3 }),
-        .buf = &a_buf,
-    };
+    const A = NamedArray(MK, T).init(NamedIndex(MK).initContiguous(.{ .m = 3, .k = 3 }), &a_buf);
 
     const x_buf = [_]T{ 1, 2, 3 };
-    const x = NamedArrayConst(K, T){
-        .idx = NamedIndex(K).initContiguous(.{ .k = 3 }),
-        .buf = &x_buf,
-    };
+    const x = NamedArrayConst(K, T).init(NamedIndex(K).initContiguous(.{ .k = 3 }), &x_buf);
 
     // A_new upper = 1 * x*x^T upper + A_init upper
     // x*x^T = [[1,2,3],[2,4,6],[3,6,9]]
@@ -5211,19 +4800,13 @@ test "syr real nontrivial strides" {
     //   [[3, _ ],
     //    [1, 7 ]]
     var a_buf = [_]T{ 3, 99, 1, 7 };
-    const A = NamedArray(AB, T){
-        .idx = NamedIndex(AB).initContiguous(.{ .a = 2, .b = 2 }),
-        .buf = &a_buf,
-    };
+    const A = NamedArray(AB, T).init(NamedIndex(AB).initContiguous(.{ .a = 2, .b = 2 }), &a_buf);
 
     // x physical = [1, 2]; stride -1 → logical x = [2, 1]
     const x_buf = [_]T{ 1, 2 };
     var x_idx = NamedIndex(B).initContiguous(.{ .b = 2 });
     x_idx = x_idx.stride(.{ .b = -1 });
-    const x = NamedArrayConst(B, T){
-        .idx = x_idx,
-        .buf = &x_buf,
-    };
+    const x = NamedArrayConst(B, T).init(x_idx, &x_buf);
 
     // alpha = 2
     // x*x^T = [[4, 2], [2, 1]]
@@ -5248,19 +4831,13 @@ test "syr column-major matrix" {
     // A_init = [[1, _], [2, 3]]
     // Column-major buffer: col0=[1, 2], col1=[sentinel, 3]
     var a_buf = [_]T{ 1, 2, 99, 3 };
-    const A = NamedArray(IJ, T){
-        .idx = .{
-            .shape = .{ .i = 2, .j = 2 },
-            .strides = .{ .i = 1, .j = 2 },
-        },
-        .buf = &a_buf,
-    };
+    const A = NamedArray(IJ, T).init(.{
+        .shape = .{ .i = 2, .j = 2 },
+        .strides = .{ .i = 1, .j = 2 },
+    }, &a_buf);
 
     const x_buf = [_]T{ 1, 2 };
-    const x = NamedArrayConst(J, T){
-        .idx = NamedIndex(J).initContiguous(.{ .j = 2 }),
-        .buf = &x_buf,
-    };
+    const x = NamedArrayConst(J, T).init(NamedIndex(J).initContiguous(.{ .j = 2 }), &x_buf);
 
     // x*x^T = [[1, 2], [2, 4]]
     // A_new lower = [[1+1, _], [2+2, 3+4]] = [[2, _], [4, 7]]
@@ -5287,19 +4864,13 @@ test "her complex (triangle = second axis)" {
         .{ .re = 1, .im = 0 },   .{ .re = 2, .im = 1 },
         .{ .re = 99, .im = 99 }, .{ .re = 3, .im = 0 },
     };
-    const A = NamedArray(MK, T){
-        .idx = NamedIndex(MK).initContiguous(.{ .m = 2, .k = 2 }),
-        .buf = &a_buf,
-    };
+    const A = NamedArray(MK, T).init(NamedIndex(MK).initContiguous(.{ .m = 2, .k = 2 }), &a_buf);
 
     const x_buf = [_]T{
         .{ .re = 1, .im = 1 },
         .{ .re = 2, .im = 0 },
     };
-    const x = NamedArrayConst(K, T){
-        .idx = NamedIndex(K).initContiguous(.{ .k = 2 }),
-        .buf = &x_buf,
-    };
+    const x = NamedArrayConst(K, T).init(NamedIndex(K).initContiguous(.{ .k = 2 }), &x_buf);
 
     // alpha = 1 (real)
     // x*x^H = [[|1+i|^2, (1+i)*conj(2)], [(2)*conj(1+i), |2|^2]]
@@ -5334,10 +4905,7 @@ test "her complex nontrivial strides" {
         .{ .re = 5, .im = 0 },  .{ .re = 99, .im = 99 },
         .{ .re = 1, .im = -1 }, .{ .re = 3, .im = 0 },
     };
-    const A = NamedArray(AB, T){
-        .idx = NamedIndex(AB).initContiguous(.{ .a = 2, .b = 2 }),
-        .buf = &a_buf,
-    };
+    const A = NamedArray(AB, T).init(NamedIndex(AB).initContiguous(.{ .a = 2, .b = 2 }), &a_buf);
 
     // x physical = [1+i, i]; stride -1 → logical x = [i, 1+i]
     const x_buf = [_]T{
@@ -5346,10 +4914,7 @@ test "her complex nontrivial strides" {
     };
     var x_idx = NamedIndex(A_).initContiguous(.{ .a = 2 });
     x_idx = x_idx.stride(.{ .a = -1 });
-    const x = NamedArrayConst(A_, T){
-        .idx = x_idx,
-        .buf = &x_buf,
-    };
+    const x = NamedArrayConst(A_, T).init(x_idx, &x_buf);
 
     // alpha = 2 (real)
     // x*x^H with logical x = [i, 1+i]:
@@ -5386,22 +4951,16 @@ test "her column-major matrix" {
         .{ .re = 3, .im = 0 },   .{ .re = 1, .im = 1 },
         .{ .re = 99, .im = 99 }, .{ .re = 5, .im = 0 },
     };
-    const A = NamedArray(IJ, T){
-        .idx = .{
-            .shape = .{ .i = 2, .j = 2 },
-            .strides = .{ .i = 1, .j = 2 },
-        },
-        .buf = &a_buf,
-    };
+    const A = NamedArray(IJ, T).init(.{
+        .shape = .{ .i = 2, .j = 2 },
+        .strides = .{ .i = 1, .j = 2 },
+    }, &a_buf);
 
     const x_buf = [_]T{
         .{ .re = 1, .im = 0 },
         .{ .re = 1, .im = 1 },
     };
-    const x = NamedArrayConst(J, T){
-        .idx = NamedIndex(J).initContiguous(.{ .j = 2 }),
-        .buf = &x_buf,
-    };
+    const x = NamedArrayConst(J, T).init(NamedIndex(J).initContiguous(.{ .j = 2 }), &x_buf);
 
     // alpha = 1 (real, default)
     // x*x^H = [[|1|^2, 1*conj(1+i)], [(1+i)*conj(1), |1+i|^2]]
@@ -5439,22 +4998,13 @@ test "syr2 real (triangle = second axis)" {
         99, 5,  6,
         99, 99, 9,
     };
-    const A = NamedArray(MK, T){
-        .idx = NamedIndex(MK).initContiguous(.{ .m = 3, .k = 3 }),
-        .buf = &a_buf,
-    };
+    const A = NamedArray(MK, T).init(NamedIndex(MK).initContiguous(.{ .m = 3, .k = 3 }), &a_buf);
 
     const x_buf = [_]T{ 1, 2, 3 };
-    const x = NamedArrayConst(M, T){
-        .idx = NamedIndex(M).initContiguous(.{ .m = 3 }),
-        .buf = &x_buf,
-    };
+    const x = NamedArrayConst(M, T).init(NamedIndex(M).initContiguous(.{ .m = 3 }), &x_buf);
 
     const y_buf = [_]T{ 4, 5, 6 };
-    const y = NamedArrayConst(K, T){
-        .idx = NamedIndex(K).initContiguous(.{ .k = 3 }),
-        .buf = &y_buf,
-    };
+    const y = NamedArrayConst(K, T).init(NamedIndex(K).initContiguous(.{ .k = 3 }), &y_buf);
 
     // alpha = 1 (default)
     // x*y^T = [[4,5,6],[8,10,12],[12,15,18]]
@@ -5490,25 +5040,16 @@ test "syr2 real nontrivial strides" {
     //   [[3, _ ],
     //    [1, 7 ]]
     var a_buf = [_]T{ 3, 99, 1, 7 };
-    const A = NamedArray(AB, T){
-        .idx = NamedIndex(AB).initContiguous(.{ .a = 2, .b = 2 }),
-        .buf = &a_buf,
-    };
+    const A = NamedArray(AB, T).init(NamedIndex(AB).initContiguous(.{ .a = 2, .b = 2 }), &a_buf);
 
     // x physical = [1, 2]; stride -1 → logical x = [2, 1]
     const x_buf = [_]T{ 1, 2 };
     var x_idx = NamedIndex(B).initContiguous(.{ .b = 2 });
     x_idx = x_idx.stride(.{ .b = -1 });
-    const x = NamedArrayConst(B, T){
-        .idx = x_idx,
-        .buf = &x_buf,
-    };
+    const x = NamedArrayConst(B, T).init(x_idx, &x_buf);
 
     const y_buf = [_]T{ 3, 4 };
-    const y = NamedArrayConst(A_, T){
-        .idx = NamedIndex(A_).initContiguous(.{ .a = 2 }),
-        .buf = &y_buf,
-    };
+    const y = NamedArrayConst(A_, T).init(NamedIndex(A_).initContiguous(.{ .a = 2 }), &y_buf);
 
     // alpha = 2
     // logical x = [2, 1], y = [3, 4]
@@ -5537,25 +5078,16 @@ test "syr2 column-major matrix" {
     // A_init = [[1, _], [2, 5]]
     // Column-major buffer: col0=[1, 2], col1=[sentinel, 5]
     var a_buf = [_]T{ 1, 2, 99, 5 };
-    const A = NamedArray(IJ, T){
-        .idx = .{
-            .shape = .{ .i = 2, .j = 2 },
-            .strides = .{ .i = 1, .j = 2 },
-        },
-        .buf = &a_buf,
-    };
+    const A = NamedArray(IJ, T).init(.{
+        .shape = .{ .i = 2, .j = 2 },
+        .strides = .{ .i = 1, .j = 2 },
+    }, &a_buf);
 
     const x_buf = [_]T{ 1, 2 };
-    const x = NamedArrayConst(I, T){
-        .idx = NamedIndex(I).initContiguous(.{ .i = 2 }),
-        .buf = &x_buf,
-    };
+    const x = NamedArrayConst(I, T).init(NamedIndex(I).initContiguous(.{ .i = 2 }), &x_buf);
 
     const y_buf = [_]T{ 3, 4 };
-    const y = NamedArrayConst(J, T){
-        .idx = NamedIndex(J).initContiguous(.{ .j = 2 }),
-        .buf = &y_buf,
-    };
+    const y = NamedArrayConst(J, T).init(NamedIndex(J).initContiguous(.{ .j = 2 }), &y_buf);
 
     // alpha = 1 (default)
     // x*y^T = [[3,4],[6,8]], y*x^T = [[3,6],[4,8]]
@@ -5586,28 +5118,19 @@ test "her2 complex (triangle = second axis)" {
         .{ .re = 1, .im = 0 },   .{ .re = 2, .im = 1 },
         .{ .re = 99, .im = 99 }, .{ .re = 3, .im = 0 },
     };
-    const A = NamedArray(MK, T){
-        .idx = NamedIndex(MK).initContiguous(.{ .m = 2, .k = 2 }),
-        .buf = &a_buf,
-    };
+    const A = NamedArray(MK, T).init(NamedIndex(MK).initContiguous(.{ .m = 2, .k = 2 }), &a_buf);
 
     const x_buf = [_]T{
         .{ .re = 1, .im = 1 },
         .{ .re = 2, .im = 0 },
     };
-    const x = NamedArrayConst(M, T){
-        .idx = NamedIndex(M).initContiguous(.{ .m = 2 }),
-        .buf = &x_buf,
-    };
+    const x = NamedArrayConst(M, T).init(NamedIndex(M).initContiguous(.{ .m = 2 }), &x_buf);
 
     const y_buf = [_]T{
         .{ .re = 0, .im = 1 },
         .{ .re = 1, .im = -1 },
     };
-    const y = NamedArrayConst(K, T){
-        .idx = NamedIndex(K).initContiguous(.{ .k = 2 }),
-        .buf = &y_buf,
-    };
+    const y = NamedArrayConst(K, T).init(NamedIndex(K).initContiguous(.{ .k = 2 }), &y_buf);
 
     // alpha = 1+0i (default)
     // x = [1+i, 2], y = [i, 1-i]
@@ -5657,10 +5180,7 @@ test "her2 complex nontrivial strides" {
         .{ .re = 5, .im = 0 },  .{ .re = 99, .im = 99 },
         .{ .re = 1, .im = -1 }, .{ .re = 3, .im = 0 },
     };
-    const A = NamedArray(AB, T){
-        .idx = NamedIndex(AB).initContiguous(.{ .a = 2, .b = 2 }),
-        .buf = &a_buf,
-    };
+    const A = NamedArray(AB, T).init(NamedIndex(AB).initContiguous(.{ .a = 2, .b = 2 }), &a_buf);
 
     // x physical = [1+i, i]; stride -1 → logical x = [i, 1+i]
     const x_buf = [_]T{
@@ -5669,19 +5189,13 @@ test "her2 complex nontrivial strides" {
     };
     var x_idx = NamedIndex(B).initContiguous(.{ .b = 2 });
     x_idx = x_idx.stride(.{ .b = -1 });
-    const x = NamedArrayConst(B, T){
-        .idx = x_idx,
-        .buf = &x_buf,
-    };
+    const x = NamedArrayConst(B, T).init(x_idx, &x_buf);
 
     const y_buf = [_]T{
         .{ .re = 1, .im = 0 },
         .{ .re = 0, .im = 1 },
     };
-    const y = NamedArrayConst(A_, T){
-        .idx = NamedIndex(A_).initContiguous(.{ .a = 2 }),
-        .buf = &y_buf,
-    };
+    const y = NamedArrayConst(A_, T).init(NamedIndex(A_).initContiguous(.{ .a = 2 }), &y_buf);
 
     // alpha = 2+i
     // logical x = [i, 1+i], y = [1, i]
@@ -5755,25 +5269,16 @@ test "gbmv real" {
         1, 2, 1,
         1, 2, 0,
     };
-    const AB = NamedArrayConst(BK, T){
-        .idx = .{
-            .shape = .{ .band = 3, .k = 4 },
-            .strides = .{ .band = 1, .k = 3 },
-        },
-        .buf = &ab_buf,
-    };
+    const AB = NamedArrayConst(BK, T).init(.{
+        .shape = .{ .band = 3, .k = 4 },
+        .strides = .{ .band = 1, .k = 3 },
+    }, &ab_buf);
 
     const x_buf = [_]T{ 1, 2, 3, 4 };
-    const x = NamedArrayConst(K, T){
-        .idx = NamedIndex(K).initContiguous(.{ .k = 4 }),
-        .buf = &x_buf,
-    };
+    const x = NamedArrayConst(K, T).init(NamedIndex(K).initContiguous(.{ .k = 4 }), &x_buf);
 
     var y_buf = [_]T{ 0, 0, 0, 0 };
-    const y = NamedArray(M, T){
-        .idx = NamedIndex(M).initContiguous(.{ .m = 4 }),
-        .buf = &y_buf,
-    };
+    const y = NamedArray(M, T).init(NamedIndex(M).initContiguous(.{ .m = 4 }), &y_buf);
 
     blas.gbmv(T, BK, K, M, blas.BlasBand(T, BK, K).init(AB), x, y, .{ .alpha = 1.0, .beta = 0.0 }, .{ .kl = 1, .ku = 1 });
 
@@ -5802,25 +5307,16 @@ test "gbmv real rectangular" {
         1, 2, 1,
         1, 2, 0,
     };
-    const AB = NamedArrayConst(BK, T){
-        .idx = .{
-            .shape = .{ .band = 3, .k = 4 },
-            .strides = .{ .band = 1, .k = 3 },
-        },
-        .buf = &ab_buf,
-    };
+    const AB = NamedArrayConst(BK, T).init(.{
+        .shape = .{ .band = 3, .k = 4 },
+        .strides = .{ .band = 1, .k = 3 },
+    }, &ab_buf);
 
     const x_buf = [_]T{ 1, 2, 3, 4 };
-    const x = NamedArrayConst(K, T){
-        .idx = NamedIndex(K).initContiguous(.{ .k = 4 }),
-        .buf = &x_buf,
-    };
+    const x = NamedArrayConst(K, T).init(NamedIndex(K).initContiguous(.{ .k = 4 }), &x_buf);
 
     var y_buf = [_]T{ 0, 0, 0 };
-    const y = NamedArray(M, T){
-        .idx = NamedIndex(M).initContiguous(.{ .m = 3 }),
-        .buf = &y_buf,
-    };
+    const y = NamedArray(M, T).init(NamedIndex(M).initContiguous(.{ .m = 3 }), &y_buf);
 
     blas.gbmv(T, BK, K, M, blas.BlasBand(T, BK, K).init(AB), x, y, .{ .alpha = 1.0, .beta = 0.0 }, .{ .kl = 1, .ku = 1 });
 
@@ -5845,25 +5341,16 @@ test "gbmv column-major matrix" {
         1, 2, 1,
         1, 2, 0,
     };
-    const AB = NamedArrayConst(BK, T){
-        .idx = .{
-            .shape = .{ .band = 3, .k = 4 },
-            .strides = .{ .band = 1, .k = 3 },
-        },
-        .buf = &ab_buf,
-    };
+    const AB = NamedArrayConst(BK, T).init(.{
+        .shape = .{ .band = 3, .k = 4 },
+        .strides = .{ .band = 1, .k = 3 },
+    }, &ab_buf);
 
     const x_buf = [_]T{ 1, 2, 3, 4 };
-    const x = NamedArrayConst(K, T){
-        .idx = NamedIndex(K).initContiguous(.{ .k = 4 }),
-        .buf = &x_buf,
-    };
+    const x = NamedArrayConst(K, T).init(NamedIndex(K).initContiguous(.{ .k = 4 }), &x_buf);
 
     var y_buf = [_]T{ 0, 0, 0, 0 };
-    const y = NamedArray(M, T){
-        .idx = NamedIndex(M).initContiguous(.{ .m = 4 }),
-        .buf = &y_buf,
-    };
+    const y = NamedArray(M, T).init(NamedIndex(M).initContiguous(.{ .m = 4 }), &y_buf);
 
     blas.gbmv(T, BK, K, M, blas.BlasBand(T, BK, K).init(AB), x, y, .{ .alpha = 1.0, .beta = 0.0 }, .{ .kl = 1, .ku = 1 });
 
@@ -5891,25 +5378,16 @@ test "sbmv real upper" {
         1, 2,
         1, 2,
     };
-    const AB = NamedArrayConst(BK, T){
-        .idx = .{
-            .shape = .{ .band = 2, .k = 4 },
-            .strides = .{ .band = 1, .k = 2 },
-        },
-        .buf = &ab_buf,
-    };
+    const AB = NamedArrayConst(BK, T).init(.{
+        .shape = .{ .band = 2, .k = 4 },
+        .strides = .{ .band = 1, .k = 2 },
+    }, &ab_buf);
 
     const x_buf = [_]T{ 1, 2, 3, 4 };
-    const x = NamedArrayConst(K, T){
-        .idx = NamedIndex(K).initContiguous(.{ .k = 4 }),
-        .buf = &x_buf,
-    };
+    const x = NamedArrayConst(K, T).init(NamedIndex(K).initContiguous(.{ .k = 4 }), &x_buf);
 
     var y_buf = [_]T{ 0, 0, 0, 0 };
-    const y = NamedArray(K, T){
-        .idx = NamedIndex(K).initContiguous(.{ .k = 4 }),
-        .buf = &y_buf,
-    };
+    const y = NamedArray(K, T).init(NamedIndex(K).initContiguous(.{ .k = 4 }), &y_buf);
 
     // triangle = .k (second axis, ordinal 1) → Upper
     blas.sbmv(T, BK, K, .{ .triangle = .k, .data = AB }, x, y, .{ .alpha = 1.0, .beta = 0.0 });
@@ -5933,25 +5411,16 @@ test "sbmv column-major matrix" {
         1, 2,
         1, 2,
     };
-    const AB = NamedArrayConst(BK, T){
-        .idx = .{
-            .shape = .{ .band = 2, .k = 4 },
-            .strides = .{ .band = 1, .k = 2 },
-        },
-        .buf = &ab_buf,
-    };
+    const AB = NamedArrayConst(BK, T).init(.{
+        .shape = .{ .band = 2, .k = 4 },
+        .strides = .{ .band = 1, .k = 2 },
+    }, &ab_buf);
 
     const x_buf = [_]T{ 1, 2, 3, 4 };
-    const x = NamedArrayConst(K, T){
-        .idx = NamedIndex(K).initContiguous(.{ .k = 4 }),
-        .buf = &x_buf,
-    };
+    const x = NamedArrayConst(K, T).init(NamedIndex(K).initContiguous(.{ .k = 4 }), &x_buf);
 
     var y_buf = [_]T{ 0, 0, 0, 0 };
-    const y = NamedArray(K, T){
-        .idx = NamedIndex(K).initContiguous(.{ .k = 4 }),
-        .buf = &y_buf,
-    };
+    const y = NamedArray(K, T).init(NamedIndex(K).initContiguous(.{ .k = 4 }), &y_buf);
 
     blas.sbmv(T, BK, K, .{ .triangle = .k, .data = AB }, x, y, .{ .alpha = 1.0, .beta = 0.0 });
 
@@ -5979,13 +5448,10 @@ test "hbmv complex upper" {
         .{ .re = 2, .im = 1 }, .{ .re = 4, .im = 0 },
         .{ .re = 1, .im = 1 }, .{ .re = 5, .im = 0 },
     };
-    const AB = NamedArrayConst(BK, T){
-        .idx = .{
-            .shape = .{ .band = 2, .k = 4 },
-            .strides = .{ .band = 1, .k = 2 },
-        },
-        .buf = &ab_buf,
-    };
+    const AB = NamedArrayConst(BK, T).init(.{
+        .shape = .{ .band = 2, .k = 4 },
+        .strides = .{ .band = 1, .k = 2 },
+    }, &ab_buf);
 
     const x_buf = [_]T{
         .{ .re = 1, .im = 0 },
@@ -5993,10 +5459,7 @@ test "hbmv complex upper" {
         .{ .re = 1, .im = 0 },
         .{ .re = 1, .im = 0 },
     };
-    const x = NamedArrayConst(K, T){
-        .idx = NamedIndex(K).initContiguous(.{ .k = 4 }),
-        .buf = &x_buf,
-    };
+    const x = NamedArrayConst(K, T).init(NamedIndex(K).initContiguous(.{ .k = 4 }), &x_buf);
 
     var y_buf = [_]T{
         .{ .re = 0, .im = 0 },
@@ -6004,10 +5467,7 @@ test "hbmv complex upper" {
         .{ .re = 0, .im = 0 },
         .{ .re = 0, .im = 0 },
     };
-    const y = NamedArray(K, T){
-        .idx = NamedIndex(K).initContiguous(.{ .k = 4 }),
-        .buf = &y_buf,
-    };
+    const y = NamedArray(K, T).init(NamedIndex(K).initContiguous(.{ .k = 4 }), &y_buf);
 
     blas.hbmv(T, BK, K, .{ .triangle = .k, .data = AB }, x, y, .{
         .alpha = .{ .re = 1, .im = 0 },
@@ -6040,13 +5500,10 @@ test "hbmv column-major matrix" {
         .{ .re = 2, .im = 1 }, .{ .re = 4, .im = 0 },
         .{ .re = 1, .im = 1 }, .{ .re = 5, .im = 0 },
     };
-    const AB = NamedArrayConst(BK, T){
-        .idx = .{
-            .shape = .{ .band = 2, .k = 4 },
-            .strides = .{ .band = 1, .k = 2 },
-        },
-        .buf = &ab_buf,
-    };
+    const AB = NamedArrayConst(BK, T).init(.{
+        .shape = .{ .band = 2, .k = 4 },
+        .strides = .{ .band = 1, .k = 2 },
+    }, &ab_buf);
 
     const x_buf = [_]T{
         .{ .re = 1, .im = 0 },
@@ -6054,10 +5511,7 @@ test "hbmv column-major matrix" {
         .{ .re = 1, .im = 0 },
         .{ .re = 1, .im = 0 },
     };
-    const x = NamedArrayConst(K, T){
-        .idx = NamedIndex(K).initContiguous(.{ .k = 4 }),
-        .buf = &x_buf,
-    };
+    const x = NamedArrayConst(K, T).init(NamedIndex(K).initContiguous(.{ .k = 4 }), &x_buf);
 
     var y_buf = [_]T{
         .{ .re = 0, .im = 0 },
@@ -6065,10 +5519,7 @@ test "hbmv column-major matrix" {
         .{ .re = 0, .im = 0 },
         .{ .re = 0, .im = 0 },
     };
-    const y = NamedArray(K, T){
-        .idx = NamedIndex(K).initContiguous(.{ .k = 4 }),
-        .buf = &y_buf,
-    };
+    const y = NamedArray(K, T).init(NamedIndex(K).initContiguous(.{ .k = 4 }), &y_buf);
 
     blas.hbmv(T, BK, K, .{ .triangle = .k, .data = AB }, x, y, .{
         .alpha = .{ .re = 1, .im = 0 },
@@ -6106,19 +5557,13 @@ test "tbmv real upper" {
         1, 4,
         1, 5,
     };
-    const AB = NamedArrayConst(BK, T){
-        .idx = .{
-            .shape = .{ .band = 2, .k = 4 },
-            .strides = .{ .band = 1, .k = 2 },
-        },
-        .buf = &ab_buf,
-    };
+    const AB = NamedArrayConst(BK, T).init(.{
+        .shape = .{ .band = 2, .k = 4 },
+        .strides = .{ .band = 1, .k = 2 },
+    }, &ab_buf);
 
     var x_buf = [_]T{ 1, 2, 3, 4 };
-    const x = NamedArray(K, T){
-        .idx = NamedIndex(K).initContiguous(.{ .k = 4 }),
-        .buf = &x_buf,
-    };
+    const x = NamedArray(K, T).init(NamedIndex(K).initContiguous(.{ .k = 4 }), &x_buf);
 
     // triangle = .k (second axis) → Upper
     blas.tbmv(T, BK, K, .{ .triangle = .k, .data = AB }, .non_unit, x);
@@ -6142,19 +5587,13 @@ test "tbmv column-major matrix" {
         1, 4,
         1, 5,
     };
-    const AB = NamedArrayConst(BK, T){
-        .idx = .{
-            .shape = .{ .band = 2, .k = 4 },
-            .strides = .{ .band = 1, .k = 2 },
-        },
-        .buf = &ab_buf,
-    };
+    const AB = NamedArrayConst(BK, T).init(.{
+        .shape = .{ .band = 2, .k = 4 },
+        .strides = .{ .band = 1, .k = 2 },
+    }, &ab_buf);
 
     var x_buf = [_]T{ 1, 2, 3, 4 };
-    const x = NamedArray(K, T){
-        .idx = NamedIndex(K).initContiguous(.{ .k = 4 }),
-        .buf = &x_buf,
-    };
+    const x = NamedArray(K, T).init(NamedIndex(K).initContiguous(.{ .k = 4 }), &x_buf);
 
     blas.tbmv(T, BK, K, .{ .triangle = .k, .data = AB }, .non_unit, x);
 
@@ -6182,19 +5621,13 @@ test "tbsv real upper" {
         1, 4,
         1, 5,
     };
-    const AB = NamedArrayConst(BK, T){
-        .idx = .{
-            .shape = .{ .band = 2, .k = 4 },
-            .strides = .{ .band = 1, .k = 2 },
-        },
-        .buf = &ab_buf,
-    };
+    const AB = NamedArrayConst(BK, T).init(.{
+        .shape = .{ .band = 2, .k = 4 },
+        .strides = .{ .band = 1, .k = 2 },
+    }, &ab_buf);
 
     var x_buf = [_]T{ 4, 9, 16, 20 };
-    const x = NamedArray(K, T){
-        .idx = NamedIndex(K).initContiguous(.{ .k = 4 }),
-        .buf = &x_buf,
-    };
+    const x = NamedArray(K, T).init(NamedIndex(K).initContiguous(.{ .k = 4 }), &x_buf);
 
     blas.tbsv(T, BK, K, .{ .triangle = .k, .data = AB }, .non_unit, x);
 
@@ -6216,19 +5649,13 @@ test "tbsv column-major matrix" {
         1, 4,
         1, 5,
     };
-    const AB = NamedArrayConst(BK, T){
-        .idx = .{
-            .shape = .{ .band = 2, .k = 4 },
-            .strides = .{ .band = 1, .k = 2 },
-        },
-        .buf = &ab_buf,
-    };
+    const AB = NamedArrayConst(BK, T).init(.{
+        .shape = .{ .band = 2, .k = 4 },
+        .strides = .{ .band = 1, .k = 2 },
+    }, &ab_buf);
 
     var x_buf = [_]T{ 4, 9, 16, 20 };
-    const x = NamedArray(K, T){
-        .idx = NamedIndex(K).initContiguous(.{ .k = 4 }),
-        .buf = &x_buf,
-    };
+    const x = NamedArray(K, T).init(NamedIndex(K).initContiguous(.{ .k = 4 }), &x_buf);
 
     blas.tbsv(T, BK, K, .{ .triangle = .k, .data = AB }, .non_unit, x);
 
@@ -6251,31 +5678,22 @@ test "her2 column-major matrix" {
         .{ .re = 2, .im = 0 },   .{ .re = 1, .im = -1 },
         .{ .re = 99, .im = 99 }, .{ .re = 4, .im = 0 },
     };
-    const A = NamedArray(IJ, T){
-        .idx = .{
-            .shape = .{ .i = 2, .j = 2 },
-            .strides = .{ .i = 1, .j = 2 },
-        },
-        .buf = &a_buf,
-    };
+    const A = NamedArray(IJ, T).init(.{
+        .shape = .{ .i = 2, .j = 2 },
+        .strides = .{ .i = 1, .j = 2 },
+    }, &a_buf);
 
     const x_buf = [_]T{
         .{ .re = 1, .im = 0 },
         .{ .re = 0, .im = 1 },
     };
-    const x = NamedArrayConst(I, T){
-        .idx = NamedIndex(I).initContiguous(.{ .i = 2 }),
-        .buf = &x_buf,
-    };
+    const x = NamedArrayConst(I, T).init(NamedIndex(I).initContiguous(.{ .i = 2 }), &x_buf);
 
     const y_buf = [_]T{
         .{ .re = 1, .im = 0 },
         .{ .re = 1, .im = 1 },
     };
-    const y = NamedArrayConst(J, T){
-        .idx = NamedIndex(J).initContiguous(.{ .j = 2 }),
-        .buf = &y_buf,
-    };
+    const y = NamedArrayConst(J, T).init(NamedIndex(J).initContiguous(.{ .j = 2 }), &y_buf);
 
     // alpha = 1+0i (default)
     // x = [1, i], y = [1, 1+i]
@@ -6326,16 +5744,10 @@ test "spmv real upper" {
     const ap = [_]T{ 1, 2, 5, 3, 6, 9 };
 
     const x_buf = [_]T{ 1, 2, 3 };
-    const x = NamedArrayConst(K, T){
-        .idx = NamedIndex(K).initContiguous(.{ .k = 3 }),
-        .buf = &x_buf,
-    };
+    const x = NamedArrayConst(K, T).init(NamedIndex(K).initContiguous(.{ .k = 3 }), &x_buf);
 
     var y_buf = [_]T{ 0, 0, 0 };
-    const y = NamedArray(M, T){
-        .idx = NamedIndex(M).initContiguous(.{ .m = 3 }),
-        .buf = &y_buf,
-    };
+    const y = NamedArray(M, T).init(NamedIndex(M).initContiguous(.{ .m = 3 }), &y_buf);
 
     // triangle = .k (second axis) → Upper
     blas.spmv(T, MK, K, M, .{ .triangle = .k, .major = .k, .data = &ap }, x, y, .{ .alpha = 1.0, .beta = 0.0 });
@@ -6357,16 +5769,10 @@ test "spmv real lower" {
     const ap = [_]T{ 1, 2, 3, 5, 6, 9 };
 
     const x_buf = [_]T{ 1, 2, 3 };
-    const x = NamedArrayConst(K, T){
-        .idx = NamedIndex(K).initContiguous(.{ .k = 3 }),
-        .buf = &x_buf,
-    };
+    const x = NamedArrayConst(K, T).init(NamedIndex(K).initContiguous(.{ .k = 3 }), &x_buf);
 
     var y_buf = [_]T{ 0, 0, 0 };
-    const y = NamedArray(M, T){
-        .idx = NamedIndex(M).initContiguous(.{ .m = 3 }),
-        .buf = &y_buf,
-    };
+    const y = NamedArray(M, T).init(NamedIndex(M).initContiguous(.{ .m = 3 }), &y_buf);
 
     // triangle = .m (first axis) → Lower
     blas.spmv(T, MK, K, M, .{ .triangle = .m, .major = .k, .data = &ap }, x, y, .{ .alpha = 1.0, .beta = 0.0 });
@@ -6392,16 +5798,10 @@ test "spmv real upper row-major" {
     const ap = [_]T{ 1, 2, 3, 5, 6, 9 };
 
     const x_buf = [_]T{ 1, 2, 3 };
-    const x = NamedArrayConst(K, T){
-        .idx = NamedIndex(K).initContiguous(.{ .k = 3 }),
-        .buf = &x_buf,
-    };
+    const x = NamedArrayConst(K, T).init(NamedIndex(K).initContiguous(.{ .k = 3 }), &x_buf);
 
     var y_buf = [_]T{ 0, 0, 0 };
-    const y = NamedArray(M, T){
-        .idx = NamedIndex(M).initContiguous(.{ .m = 3 }),
-        .buf = &y_buf,
-    };
+    const y = NamedArray(M, T).init(NamedIndex(M).initContiguous(.{ .m = 3 }), &y_buf);
 
     // triangle = .k (upper), major = .m (first axis → row-major)
     blas.spmv(T, MK, K, M, .{ .triangle = .k, .major = .m, .data = &ap }, x, y, .{ .alpha = 1.0, .beta = 0.0 });
@@ -6423,17 +5823,11 @@ test "spmv real nontrivial scalars and strides" {
 
     // x = [1, 2, 3] stored with stride 2
     const x_buf = [_]T{ 1, 0, 2, 0, 3 };
-    const x = NamedArrayConst(K, T){
-        .idx = .{ .shape = .{ .k = 3 }, .strides = .{ .k = 2 } },
-        .buf = &x_buf,
-    };
+    const x = NamedArrayConst(K, T).init(.{ .shape = .{ .k = 3 }, .strides = .{ .k = 2 } }, &x_buf);
 
     // y = [1, 1, 1] stored with stride 2, expect y = 2*A*x + y = [29, 61, 85]
     var y_buf = [_]T{ 1, 0, 1, 0, 1 };
-    const y = NamedArray(M, T){
-        .idx = .{ .shape = .{ .m = 3 }, .strides = .{ .m = 2 } },
-        .buf = &y_buf,
-    };
+    const y = NamedArray(M, T).init(.{ .shape = .{ .m = 3 }, .strides = .{ .m = 2 } }, &y_buf);
 
     blas.spmv(T, MK, K, M, .{ .triangle = .k, .major = .k, .data = &ap }, x, y, .{ .alpha = 2.0, .beta = 1.0 });
 
@@ -6469,20 +5863,14 @@ test "hpmv complex upper" {
         .{ .re = 1, .im = 0 },
         .{ .re = 1, .im = 0 },
     };
-    const x = NamedArrayConst(K, T){
-        .idx = NamedIndex(K).initContiguous(.{ .k = 3 }),
-        .buf = &x_buf,
-    };
+    const x = NamedArrayConst(K, T).init(NamedIndex(K).initContiguous(.{ .k = 3 }), &x_buf);
 
     var y_buf = [_]T{
         .{ .re = 0, .im = 0 },
         .{ .re = 0, .im = 0 },
         .{ .re = 0, .im = 0 },
     };
-    const y = NamedArray(M, T){
-        .idx = NamedIndex(M).initContiguous(.{ .m = 3 }),
-        .buf = &y_buf,
-    };
+    const y = NamedArray(M, T).init(NamedIndex(M).initContiguous(.{ .m = 3 }), &y_buf);
 
     blas.hpmv(T, MK, K, M, .{ .triangle = .k, .major = .k, .data = &ap }, x, y, .{
         .alpha = .{ .re = 1, .im = 0 },
@@ -6523,20 +5911,14 @@ test "hpmv complex lower" {
         .{ .re = 1, .im = 0 },
         .{ .re = 1, .im = 0 },
     };
-    const x = NamedArrayConst(K, T){
-        .idx = NamedIndex(K).initContiguous(.{ .k = 3 }),
-        .buf = &x_buf,
-    };
+    const x = NamedArrayConst(K, T).init(NamedIndex(K).initContiguous(.{ .k = 3 }), &x_buf);
 
     var y_buf = [_]T{
         .{ .re = 0, .im = 0 },
         .{ .re = 0, .im = 0 },
         .{ .re = 0, .im = 0 },
     };
-    const y = NamedArray(M, T){
-        .idx = NamedIndex(M).initContiguous(.{ .m = 3 }),
-        .buf = &y_buf,
-    };
+    const y = NamedArray(M, T).init(NamedIndex(M).initContiguous(.{ .m = 3 }), &y_buf);
 
     // triangle = .m (first axis) → Lower
     blas.hpmv(T, MK, K, M, .{ .triangle = .m, .major = .k, .data = &ap }, x, y, .{
@@ -6582,20 +5964,14 @@ test "hpmv complex upper row-major" {
         .{ .re = 1, .im = 0 },
         .{ .re = 1, .im = 0 },
     };
-    const x = NamedArrayConst(K, T){
-        .idx = NamedIndex(K).initContiguous(.{ .k = 3 }),
-        .buf = &x_buf,
-    };
+    const x = NamedArrayConst(K, T).init(NamedIndex(K).initContiguous(.{ .k = 3 }), &x_buf);
 
     var y_buf = [_]T{
         .{ .re = 0, .im = 0 },
         .{ .re = 0, .im = 0 },
         .{ .re = 0, .im = 0 },
     };
-    const y = NamedArray(M, T){
-        .idx = NamedIndex(M).initContiguous(.{ .m = 3 }),
-        .buf = &y_buf,
-    };
+    const y = NamedArray(M, T).init(NamedIndex(M).initContiguous(.{ .m = 3 }), &y_buf);
 
     // triangle = .k (upper), major = .m (first axis → row-major)
     blas.hpmv(T, MK, K, M, .{ .triangle = .k, .major = .m, .data = &ap }, x, y, .{
@@ -6629,10 +6005,7 @@ test "tpmv real upper" {
     const ap = [_]T{ 2, 1, 4, 3, 2, 5 };
 
     var x_buf = [_]T{ 1, 2, 3 };
-    const x = NamedArray(K, T){
-        .idx = NamedIndex(K).initContiguous(.{ .k = 3 }),
-        .buf = &x_buf,
-    };
+    const x = NamedArray(K, T).init(NamedIndex(K).initContiguous(.{ .k = 3 }), &x_buf);
 
     // triangle = .k (second axis) → Upper
     blas.tpmv(T, MK, K, .{ .triangle = .k, .major = .k, .data = &ap }, .non_unit, x);
@@ -6657,10 +6030,7 @@ test "tpmv real lower" {
     const ap = [_]T{ 2, 1, 3, 4, 2, 5 };
 
     var x_buf = [_]T{ 1, 2, 3 };
-    const x = NamedArray(K, T){
-        .idx = NamedIndex(K).initContiguous(.{ .k = 3 }),
-        .buf = &x_buf,
-    };
+    const x = NamedArray(K, T).init(NamedIndex(K).initContiguous(.{ .k = 3 }), &x_buf);
 
     // triangle = .m (first axis) → Lower
     blas.tpmv(T, MK, K, .{ .triangle = .m, .major = .k, .data = &ap }, .non_unit, x);
@@ -6685,10 +6055,7 @@ test "tpmv real unit diagonal" {
     const ap = [_]T{ 0, 2, 0, 3, 1, 0 }; // diagonal positions contain 0 (ignored)
 
     var x_buf = [_]T{ 1, 2, 3 };
-    const x = NamedArray(K, T){
-        .idx = NamedIndex(K).initContiguous(.{ .k = 3 }),
-        .buf = &x_buf,
-    };
+    const x = NamedArray(K, T).init(NamedIndex(K).initContiguous(.{ .k = 3 }), &x_buf);
 
     blas.tpmv(T, MK, K, .{ .triangle = .k, .major = .k, .data = &ap }, .unit, x);
 
@@ -6723,10 +6090,7 @@ test "tpmv complex upper" {
         .{ .re = 2, .im = 0 },
         .{ .re = 3, .im = 0 },
     };
-    const x = NamedArray(K, T){
-        .idx = NamedIndex(K).initContiguous(.{ .k = 3 }),
-        .buf = &x_buf,
-    };
+    const x = NamedArray(K, T).init(NamedIndex(K).initContiguous(.{ .k = 3 }), &x_buf);
 
     blas.tpmv(T, MK, K, .{ .triangle = .k, .major = .k, .data = &ap }, .non_unit, x);
 
@@ -6752,10 +6116,7 @@ test "tpmv nontrivial strides" {
 
     // x = [1, 2, 3] stored with stride 2
     var x_buf = [_]T{ 1, 0, 2, 0, 3 };
-    const x = NamedArray(B, T){
-        .idx = .{ .shape = .{ .b = 3 }, .strides = .{ .b = 2 } },
-        .buf = &x_buf,
-    };
+    const x = NamedArray(B, T).init(.{ .shape = .{ .b = 3 }, .strides = .{ .b = 2 } }, &x_buf);
 
     blas.tpmv(T, AB, B, .{ .triangle = .b, .major = .b, .data = &ap }, .non_unit, x);
 
@@ -6779,10 +6140,7 @@ test "tpsv real upper" {
     const ap = [_]T{ 2, 1, 4, 3, 2, 5 };
 
     var x_buf = [_]T{ 13, 14, 15 };
-    const x = NamedArray(K, T){
-        .idx = NamedIndex(K).initContiguous(.{ .k = 3 }),
-        .buf = &x_buf,
-    };
+    const x = NamedArray(K, T).init(NamedIndex(K).initContiguous(.{ .k = 3 }), &x_buf);
 
     blas.tpsv(T, MK, K, .{ .triangle = .k, .major = .k, .data = &ap }, .non_unit, x);
 
@@ -6806,10 +6164,7 @@ test "tpsv real lower" {
     const ap = [_]T{ 2, 1, 3, 4, 2, 5 };
 
     var x_buf = [_]T{ 2, 9, 22 };
-    const x = NamedArray(K, T){
-        .idx = NamedIndex(K).initContiguous(.{ .k = 3 }),
-        .buf = &x_buf,
-    };
+    const x = NamedArray(K, T).init(NamedIndex(K).initContiguous(.{ .k = 3 }), &x_buf);
 
     blas.tpsv(T, MK, K, .{ .triangle = .m, .major = .k, .data = &ap }, .non_unit, x);
 
@@ -6833,10 +6188,7 @@ test "tpsv real unit diagonal" {
     const ap = [_]T{ 0, 2, 0, 3, 1, 0 };
 
     var x_buf = [_]T{ 14, 5, 3 };
-    const x = NamedArray(K, T){
-        .idx = NamedIndex(K).initContiguous(.{ .k = 3 }),
-        .buf = &x_buf,
-    };
+    const x = NamedArray(K, T).init(NamedIndex(K).initContiguous(.{ .k = 3 }), &x_buf);
 
     blas.tpsv(T, MK, K, .{ .triangle = .k, .major = .k, .data = &ap }, .unit, x);
 
@@ -6856,10 +6208,7 @@ test "tpsv nontrivial strides" {
 
     // b = [13, 14, 15] stored with stride 2
     var x_buf = [_]T{ 13, 0, 14, 0, 15 };
-    const x = NamedArray(B, T){
-        .idx = .{ .shape = .{ .b = 3 }, .strides = .{ .b = 2 } },
-        .buf = &x_buf,
-    };
+    const x = NamedArray(B, T).init(.{ .shape = .{ .b = 3 }, .strides = .{ .b = 2 } }, &x_buf);
 
     blas.tpsv(T, AB, B, .{ .triangle = .b, .major = .b, .data = &ap }, .non_unit, x);
 
@@ -6887,10 +6236,7 @@ test "spr real upper" {
     var ap = [_]T{ 1, 2, 5, 3, 6, 9 };
 
     const x_buf = [_]T{ 1, 2, 3 };
-    const x = NamedArrayConst(K, T){
-        .idx = NamedIndex(K).initContiguous(.{ .k = 3 }),
-        .buf = &x_buf,
-    };
+    const x = NamedArrayConst(K, T).init(NamedIndex(K).initContiguous(.{ .k = 3 }), &x_buf);
 
     blas.spr(T, MK, K, .{ .triangle = .k, .major = .k, .data = &ap }, x, .{});
 
@@ -6910,10 +6256,7 @@ test "spr real lower" {
     var ap = [_]T{ 1, 2, 3, 5, 6, 9 };
 
     const x_buf = [_]T{ 1, 2, 3 };
-    const x = NamedArrayConst(K, T){
-        .idx = NamedIndex(K).initContiguous(.{ .k = 3 }),
-        .buf = &x_buf,
-    };
+    const x = NamedArrayConst(K, T).init(NamedIndex(K).initContiguous(.{ .k = 3 }), &x_buf);
 
     // triangle = .m (first axis) → Lower
     blas.spr(T, MK, K, .{ .triangle = .m, .major = .k, .data = &ap }, x, .{});
@@ -6941,10 +6284,7 @@ test "spr real upper row-major" {
     var ap = [_]T{ 1, 2, 3, 5, 6, 9 };
 
     const x_buf = [_]T{ 1, 2, 3 };
-    const x = NamedArrayConst(K, T){
-        .idx = NamedIndex(K).initContiguous(.{ .k = 3 }),
-        .buf = &x_buf,
-    };
+    const x = NamedArrayConst(K, T).init(NamedIndex(K).initContiguous(.{ .k = 3 }), &x_buf);
 
     // triangle = .k (upper), major = .m (first axis → row-major)
     blas.spr(T, MK, K, .{ .triangle = .k, .major = .m, .data = &ap }, x, .{});
@@ -6968,10 +6308,7 @@ test "spr nontrivial alpha and strides" {
     var ap = [_]T{ 1, 2, 5, 3, 6, 9 };
 
     const x_buf = [_]T{ 1, 0, 2, 0, 3 };
-    const x = NamedArrayConst(K, T){
-        .idx = .{ .shape = .{ .k = 3 }, .strides = .{ .k = 2 } },
-        .buf = &x_buf,
-    };
+    const x = NamedArrayConst(K, T).init(.{ .shape = .{ .k = 3 }, .strides = .{ .k = 2 } }, &x_buf);
 
     blas.spr(T, MK, K, .{ .triangle = .k, .major = .k, .data = &ap }, x, .{ .alpha = 2.0 });
 
@@ -7011,10 +6348,7 @@ test "hpr complex upper" {
         .{ .re = 1, .im = 1 },
         .{ .re = 2, .im = 0 },
     };
-    const x = NamedArrayConst(K, T){
-        .idx = NamedIndex(K).initContiguous(.{ .k = 2 }),
-        .buf = &x_buf,
-    };
+    const x = NamedArrayConst(K, T).init(NamedIndex(K).initContiguous(.{ .k = 2 }), &x_buf);
 
     blas.hpr(f64, MK, K, .{ .triangle = .k, .major = .k, .data = &ap }, x, .{});
 
@@ -7047,10 +6381,7 @@ test "hpr complex lower" {
         .{ .re = 1, .im = 1 },
         .{ .re = 2, .im = 0 },
     };
-    const x = NamedArrayConst(K, T){
-        .idx = NamedIndex(K).initContiguous(.{ .k = 2 }),
-        .buf = &x_buf,
-    };
+    const x = NamedArrayConst(K, T).init(NamedIndex(K).initContiguous(.{ .k = 2 }), &x_buf);
 
     // triangle = .m (first axis) → Lower
     blas.hpr(f64, MK, K, .{ .triangle = .m, .major = .k, .data = &ap }, x, .{});
@@ -7086,10 +6417,7 @@ test "hpr nontrivial alpha and strides" {
         .{ .re = 0, .im = 0 },
         .{ .re = 2, .im = 0 },
     };
-    const x = NamedArrayConst(K, T){
-        .idx = .{ .shape = .{ .k = 2 }, .strides = .{ .k = 2 } },
-        .buf = &x_buf,
-    };
+    const x = NamedArrayConst(K, T).init(.{ .shape = .{ .k = 2 }, .strides = .{ .k = 2 } }, &x_buf);
 
     blas.hpr(f32, MK, K, .{ .triangle = .k, .major = .k, .data = &ap }, x, .{ .alpha = 2.0 });
 
@@ -7120,16 +6448,10 @@ test "spr2 real upper" {
     var ap = [_]T{ 1, 2, 5, 3, 6, 9 };
 
     const x_buf = [_]T{ 1, 2, 3 };
-    const x = NamedArrayConst(K, T){
-        .idx = NamedIndex(K).initContiguous(.{ .k = 3 }),
-        .buf = &x_buf,
-    };
+    const x = NamedArrayConst(K, T).init(NamedIndex(K).initContiguous(.{ .k = 3 }), &x_buf);
 
     const y_buf = [_]T{ 1, 0, 1 };
-    const y = NamedArrayConst(M, T){
-        .idx = NamedIndex(M).initContiguous(.{ .m = 3 }),
-        .buf = &y_buf,
-    };
+    const y = NamedArrayConst(M, T).init(NamedIndex(M).initContiguous(.{ .m = 3 }), &y_buf);
 
     blas.spr2(T, MK, K, M, .{ .triangle = .k, .major = .k, .data = &ap }, x, y, .{});
 
@@ -7152,16 +6474,10 @@ test "spr2 real lower" {
     var ap = [_]T{ 1, 2, 3, 5, 6, 9 };
 
     const x_buf = [_]T{ 1, 2, 3 };
-    const x = NamedArrayConst(K, T){
-        .idx = NamedIndex(K).initContiguous(.{ .k = 3 }),
-        .buf = &x_buf,
-    };
+    const x = NamedArrayConst(K, T).init(NamedIndex(K).initContiguous(.{ .k = 3 }), &x_buf);
 
     const y_buf = [_]T{ 1, 0, 1 };
-    const y = NamedArrayConst(M, T){
-        .idx = NamedIndex(M).initContiguous(.{ .m = 3 }),
-        .buf = &y_buf,
-    };
+    const y = NamedArrayConst(M, T).init(NamedIndex(M).initContiguous(.{ .m = 3 }), &y_buf);
 
     // triangle = .m (first axis) → Lower
     blas.spr2(T, MK, K, M, .{ .triangle = .m, .major = .k, .data = &ap }, x, y, .{});
@@ -7185,16 +6501,10 @@ test "spr2 nontrivial alpha and strides" {
     var ap = [_]T{ 1, 2, 5, 3, 6, 9 };
 
     const x_buf = [_]T{ 1, 0, 2, 0, 3 };
-    const x = NamedArrayConst(K, T){
-        .idx = .{ .shape = .{ .k = 3 }, .strides = .{ .k = 2 } },
-        .buf = &x_buf,
-    };
+    const x = NamedArrayConst(K, T).init(.{ .shape = .{ .k = 3 }, .strides = .{ .k = 2 } }, &x_buf);
 
     const y_buf = [_]T{ 1, 0, 0, 0, 1 };
-    const y = NamedArrayConst(M, T){
-        .idx = .{ .shape = .{ .m = 3 }, .strides = .{ .m = 2 } },
-        .buf = &y_buf,
-    };
+    const y = NamedArrayConst(M, T).init(.{ .shape = .{ .m = 3 }, .strides = .{ .m = 2 } }, &y_buf);
 
     blas.spr2(T, MK, K, M, .{ .triangle = .k, .major = .k, .data = &ap }, x, y, .{ .alpha = 2.0 });
 
@@ -7243,19 +6553,13 @@ test "hpr2 complex upper" {
         .{ .re = 1, .im = 1 },
         .{ .re = 2, .im = 0 },
     };
-    const x = NamedArrayConst(M, T){
-        .idx = NamedIndex(M).initContiguous(.{ .m = 2 }),
-        .buf = &x_buf,
-    };
+    const x = NamedArrayConst(M, T).init(NamedIndex(M).initContiguous(.{ .m = 2 }), &x_buf);
 
     const y_buf = [_]T{
         .{ .re = 0, .im = 1 },
         .{ .re = 1, .im = -1 },
     };
-    const y = NamedArrayConst(K, T){
-        .idx = NamedIndex(K).initContiguous(.{ .k = 2 }),
-        .buf = &y_buf,
-    };
+    const y = NamedArrayConst(K, T).init(NamedIndex(K).initContiguous(.{ .k = 2 }), &y_buf);
 
     blas.hpr2(T, MK, M, K, .{ .triangle = .k, .major = .k, .data = &ap }, x, y, .{});
 
@@ -7290,19 +6594,13 @@ test "hpr2 complex lower" {
         .{ .re = 1, .im = 1 },
         .{ .re = 2, .im = 0 },
     };
-    const x = NamedArrayConst(M, T){
-        .idx = NamedIndex(M).initContiguous(.{ .m = 2 }),
-        .buf = &x_buf,
-    };
+    const x = NamedArrayConst(M, T).init(NamedIndex(M).initContiguous(.{ .m = 2 }), &x_buf);
 
     const y_buf = [_]T{
         .{ .re = 0, .im = 1 },
         .{ .re = 1, .im = -1 },
     };
-    const y = NamedArrayConst(K, T){
-        .idx = NamedIndex(K).initContiguous(.{ .k = 2 }),
-        .buf = &y_buf,
-    };
+    const y = NamedArrayConst(K, T).init(NamedIndex(K).initContiguous(.{ .k = 2 }), &y_buf);
 
     // triangle = .m (first axis) → Lower
     blas.hpr2(T, MK, M, K, .{ .triangle = .m, .major = .k, .data = &ap }, x, y, .{});
@@ -7368,19 +6666,13 @@ test "hpr2 nontrivial alpha and strides" {
         .{ .re = 0, .im = 0 },
         .{ .re = 1, .im = 1 },
     };
-    const x = NamedArrayConst(M, T){
-        .idx = .{ .shape = .{ .m = 2 }, .strides = .{ .m = 2 } },
-        .buf = &x_buf,
-    };
+    const x = NamedArrayConst(M, T).init(.{ .shape = .{ .m = 2 }, .strides = .{ .m = 2 } }, &x_buf);
 
     const y_buf = [_]T{
         .{ .re = 1, .im = 0 },
         .{ .re = 0, .im = 1 },
     };
-    const y = NamedArrayConst(K, T){
-        .idx = NamedIndex(K).initContiguous(.{ .k = 2 }),
-        .buf = &y_buf,
-    };
+    const y = NamedArrayConst(K, T).init(NamedIndex(K).initContiguous(.{ .k = 2 }), &y_buf);
 
     blas.hpr2(T, MK, M, K, .{ .triangle = .k, .major = .k, .data = &ap }, x, y, .{ .alpha = .{ .re = 2, .im = 1 } });
 
@@ -7461,23 +6753,14 @@ test "gemm real 3x3" {
 
     // A = [[1, 2, 3], [4, 5, 6], [7, 8, 9]]
     const a_buf = [_]T{ 1, 2, 3, 4, 5, 6, 7, 8, 9 };
-    const A = NamedArrayConst(MK, T){
-        .idx = NamedIndex(MK).initContiguous(.{ .m = 3, .k = 3 }),
-        .buf = &a_buf,
-    };
+    const A = NamedArrayConst(MK, T).init(NamedIndex(MK).initContiguous(.{ .m = 3, .k = 3 }), &a_buf);
 
     // B = [[1, 0, 0], [0, 1, 0], [0, 0, 1]] (identity)
     const b_buf = [_]T{ 1, 0, 0, 0, 1, 0, 0, 0, 1 };
-    const B = NamedArrayConst(KN, T){
-        .idx = NamedIndex(KN).initContiguous(.{ .k = 3, .n = 3 }),
-        .buf = &b_buf,
-    };
+    const B = NamedArrayConst(KN, T).init(NamedIndex(KN).initContiguous(.{ .k = 3, .n = 3 }), &b_buf);
 
     var c_buf = [_]T{ 0, 0, 0, 0, 0, 0, 0, 0, 0 };
-    const C = NamedArray(MN, T){
-        .idx = NamedIndex(MN).initContiguous(.{ .m = 3, .n = 3 }),
-        .buf = &c_buf,
-    };
+    const C = NamedArray(MN, T).init(NamedIndex(MN).initContiguous(.{ .m = 3, .n = 3 }), &c_buf);
 
     // C = 1*A*I + 0*C = A
     blas.gemm(T, MK, KN, MN, A, B, C, .{ .alpha = 1.0, .beta = 0.0 });
@@ -7495,23 +6778,14 @@ test "gemm real rectangular" {
 
     // A (2x3) = [[1, 2, 3], [4, 5, 6]]
     const a_buf = [_]T{ 1, 2, 3, 4, 5, 6 };
-    const A = NamedArrayConst(MK, T){
-        .idx = NamedIndex(MK).initContiguous(.{ .m = 2, .k = 3 }),
-        .buf = &a_buf,
-    };
+    const A = NamedArrayConst(MK, T).init(NamedIndex(MK).initContiguous(.{ .m = 2, .k = 3 }), &a_buf);
 
     // B (3x2) = [[7, 8], [9, 10], [11, 12]]
     const b_buf = [_]T{ 7, 8, 9, 10, 11, 12 };
-    const B = NamedArrayConst(KN, T){
-        .idx = NamedIndex(KN).initContiguous(.{ .k = 3, .n = 2 }),
-        .buf = &b_buf,
-    };
+    const B = NamedArrayConst(KN, T).init(NamedIndex(KN).initContiguous(.{ .k = 3, .n = 2 }), &b_buf);
 
     var c_buf = [_]T{ 0, 0, 0, 0 };
-    const C = NamedArray(MN, T){
-        .idx = NamedIndex(MN).initContiguous(.{ .m = 2, .n = 2 }),
-        .buf = &c_buf,
-    };
+    const C = NamedArray(MN, T).init(NamedIndex(MN).initContiguous(.{ .m = 2, .n = 2 }), &c_buf);
 
     // C = A*B = [[58, 64], [139, 154]]
     blas.gemm(T, MK, KN, MN, A, B, C, .{ .alpha = 1.0, .beta = 0.0 });
@@ -7530,24 +6804,15 @@ test "gemm real nontrivial scalars" {
 
     // A (2x2) = [[1, 2], [3, 4]]
     const a_buf = [_]T{ 1, 2, 3, 4 };
-    const A = NamedArrayConst(MK, T){
-        .idx = NamedIndex(MK).initContiguous(.{ .m = 2, .k = 2 }),
-        .buf = &a_buf,
-    };
+    const A = NamedArrayConst(MK, T).init(NamedIndex(MK).initContiguous(.{ .m = 2, .k = 2 }), &a_buf);
 
     // B (2x2) = [[5, 6], [7, 8]]
     const b_buf = [_]T{ 5, 6, 7, 8 };
-    const B = NamedArrayConst(KN, T){
-        .idx = NamedIndex(KN).initContiguous(.{ .k = 2, .n = 2 }),
-        .buf = &b_buf,
-    };
+    const B = NamedArrayConst(KN, T).init(NamedIndex(KN).initContiguous(.{ .k = 2, .n = 2 }), &b_buf);
 
     // C (2x2) = [[1, 1], [1, 1]]
     var c_buf = [_]T{ 1, 1, 1, 1 };
-    const C = NamedArray(MN, T){
-        .idx = NamedIndex(MN).initContiguous(.{ .m = 2, .n = 2 }),
-        .buf = &c_buf,
-    };
+    const C = NamedArray(MN, T).init(NamedIndex(MN).initContiguous(.{ .m = 2, .n = 2 }), &c_buf);
 
     // C = 2*A*B + 3*C
     // A*B = [[19, 22], [43, 50]]
@@ -7570,27 +6835,18 @@ test "gemm real column-major C" {
 
     // A (2x2) row-major = [[1, 2], [3, 4]]
     const a_buf = [_]T{ 1, 2, 3, 4 };
-    const A = NamedArrayConst(MK, T){
-        .idx = NamedIndex(MK).initContiguous(.{ .m = 2, .k = 2 }),
-        .buf = &a_buf,
-    };
+    const A = NamedArrayConst(MK, T).init(NamedIndex(MK).initContiguous(.{ .m = 2, .k = 2 }), &a_buf);
 
     // B (2x2) row-major = [[5, 6], [7, 8]]
     const b_buf = [_]T{ 5, 6, 7, 8 };
-    const B = NamedArrayConst(KN, T){
-        .idx = NamedIndex(KN).initContiguous(.{ .k = 2, .n = 2 }),
-        .buf = &b_buf,
-    };
+    const B = NamedArrayConst(KN, T).init(NamedIndex(KN).initContiguous(.{ .k = 2, .n = 2 }), &b_buf);
 
     // C column-major: col0=[0,0], col1=[0,0]
     var c_buf = [_]T{ 0, 0, 0, 0 };
-    const C = NamedArray(MN, T){
-        .idx = .{
-            .shape = .{ .m = 2, .n = 2 },
-            .strides = .{ .m = 1, .n = 2 },
-        },
-        .buf = &c_buf,
-    };
+    const C = NamedArray(MN, T).init(.{
+        .shape = .{ .m = 2, .n = 2 },
+        .strides = .{ .m = 1, .n = 2 },
+    }, &c_buf);
 
     // C = A*B = [[19, 22], [43, 50]]
     // Column-major storage: [19, 43, 22, 50]
@@ -7613,29 +6869,20 @@ test "gemm complex" {
         .{ .re = 1, .im = 1 }, .{ .re = 2, .im = 0 },
         .{ .re = 0, .im = 1 }, .{ .re = 1, .im = 0 },
     };
-    const A = NamedArrayConst(MK, T){
-        .idx = NamedIndex(MK).initContiguous(.{ .m = 2, .k = 2 }),
-        .buf = &a_buf,
-    };
+    const A = NamedArrayConst(MK, T).init(NamedIndex(MK).initContiguous(.{ .m = 2, .k = 2 }), &a_buf);
 
     // B (2x2): [[1+0i, 0+i], [0+0i, 1+i]]
     const b_buf = [_]T{
         .{ .re = 1, .im = 0 }, .{ .re = 0, .im = 1 },
         .{ .re = 0, .im = 0 }, .{ .re = 1, .im = 1 },
     };
-    const B = NamedArrayConst(KN, T){
-        .idx = NamedIndex(KN).initContiguous(.{ .k = 2, .n = 2 }),
-        .buf = &b_buf,
-    };
+    const B = NamedArrayConst(KN, T).init(NamedIndex(KN).initContiguous(.{ .k = 2, .n = 2 }), &b_buf);
 
     var c_buf = [_]T{
         .{ .re = 0, .im = 0 }, .{ .re = 0, .im = 0 },
         .{ .re = 0, .im = 0 }, .{ .re = 0, .im = 0 },
     };
-    const C = NamedArray(MN, T){
-        .idx = NamedIndex(MN).initContiguous(.{ .m = 2, .n = 2 }),
-        .buf = &c_buf,
-    };
+    const C = NamedArray(MN, T).init(NamedIndex(MN).initContiguous(.{ .m = 2, .n = 2 }), &c_buf);
 
     // C = A*B:
     // C[0,0] = (1+i)*1 + 2*0 = 1+i
@@ -7667,20 +6914,11 @@ test "gemm real 1x1" {
     const T = f64;
 
     const a_buf = [_]T{3.0};
-    const A = NamedArrayConst(MK, T){
-        .idx = NamedIndex(MK).initContiguous(.{ .m = 1, .k = 1 }),
-        .buf = &a_buf,
-    };
+    const A = NamedArrayConst(MK, T).init(NamedIndex(MK).initContiguous(.{ .m = 1, .k = 1 }), &a_buf);
     const b_buf = [_]T{4.0};
-    const B = NamedArrayConst(KN, T){
-        .idx = NamedIndex(KN).initContiguous(.{ .k = 1, .n = 1 }),
-        .buf = &b_buf,
-    };
+    const B = NamedArrayConst(KN, T).init(NamedIndex(KN).initContiguous(.{ .k = 1, .n = 1 }), &b_buf);
     var c_buf = [_]T{1.0};
-    const C = NamedArray(MN, T){
-        .idx = NamedIndex(MN).initContiguous(.{ .m = 1, .n = 1 }),
-        .buf = &c_buf,
-    };
+    const C = NamedArray(MN, T).init(NamedIndex(MN).initContiguous(.{ .m = 1, .n = 1 }), &c_buf);
 
     // C = 2*3*4 + 5*1 = 24 + 5 = 29
     blas.gemm(T, MK, KN, MN, A, B, C, .{ .alpha = 2.0, .beta = 5.0 });
@@ -7695,24 +6933,15 @@ test "gemm all column-major" {
 
     // A (2x2) col-major: [[1, 3], [2, 4]] stored as [1, 2, 3, 4]
     const a_buf = [_]T{ 1, 2, 3, 4 };
-    const A = NamedArrayConst(MK, T){
-        .idx = .{ .shape = .{ .m = 2, .k = 2 }, .strides = .{ .m = 1, .k = 2 } },
-        .buf = &a_buf,
-    };
+    const A = NamedArrayConst(MK, T).init(.{ .shape = .{ .m = 2, .k = 2 }, .strides = .{ .m = 1, .k = 2 } }, &a_buf);
 
     // B (2x2) col-major: [[5, 7], [6, 8]] stored as [5, 6, 7, 8]
     const b_buf = [_]T{ 5, 6, 7, 8 };
-    const B = NamedArrayConst(KN, T){
-        .idx = .{ .shape = .{ .k = 2, .n = 2 }, .strides = .{ .k = 1, .n = 2 } },
-        .buf = &b_buf,
-    };
+    const B = NamedArrayConst(KN, T).init(.{ .shape = .{ .k = 2, .n = 2 }, .strides = .{ .k = 1, .n = 2 } }, &b_buf);
 
     // C (2x2) col-major
     var c_buf = [_]T{ 0, 0, 0, 0 };
-    const C = NamedArray(MN, T){
-        .idx = .{ .shape = .{ .m = 2, .n = 2 }, .strides = .{ .m = 1, .n = 2 } },
-        .buf = &c_buf,
-    };
+    const C = NamedArray(MN, T).init(.{ .shape = .{ .m = 2, .n = 2 }, .strides = .{ .m = 1, .n = 2 } }, &c_buf);
 
     // A = [[1, 3], [2, 4]], B = [[5, 7], [6, 8]]
     // A*B = [[1*5+3*6, 1*7+3*8], [2*5+4*6, 2*7+4*8]] = [[23, 31], [34, 46]]
@@ -7734,23 +6963,14 @@ test "symm real left (triangle = second axis)" {
     // A (3x3) symmetric upper: [[1, 2, 3], [2, 5, 6], [3, 6, 9]]
     // Only upper triangle is read: 1, 2, 3, *, 5, 6, *, *, 9
     const a_buf = [_]T{ 1, 2, 3, 2, 5, 6, 3, 6, 9 };
-    const A = NamedArrayConst(MK, T){
-        .idx = NamedIndex(MK).initContiguous(.{ .m = 3, .k = 3 }),
-        .buf = &a_buf,
-    };
+    const A = NamedArrayConst(MK, T).init(NamedIndex(MK).initContiguous(.{ .m = 3, .k = 3 }), &a_buf);
 
     // B (3x2) = [[1, 0], [0, 1], [1, 1]]
     const b_buf = [_]T{ 1, 0, 0, 1, 1, 1 };
-    const B = NamedArrayConst(KN, T){
-        .idx = NamedIndex(KN).initContiguous(.{ .k = 3, .n = 2 }),
-        .buf = &b_buf,
-    };
+    const B = NamedArrayConst(KN, T).init(NamedIndex(KN).initContiguous(.{ .k = 3, .n = 2 }), &b_buf);
 
     var c_buf = [_]T{ 0, 0, 0, 0, 0, 0 };
-    const C = NamedArray(MN, T){
-        .idx = NamedIndex(MN).initContiguous(.{ .m = 3, .n = 2 }),
-        .buf = &c_buf,
-    };
+    const C = NamedArray(MN, T).init(NamedIndex(MN).initContiguous(.{ .m = 3, .n = 2 }), &c_buf);
 
     // C = A*B:
     // row0: 1*1+2*0+3*1=4, 1*0+2*1+3*1=5
@@ -7772,24 +6992,15 @@ test "symm real nontrivial scalars" {
 
     // A (2x2) symmetric: [[2, 1], [1, 3]]
     const a_buf = [_]T{ 2, 1, 1, 3 };
-    const A = NamedArrayConst(MK, T){
-        .idx = NamedIndex(MK).initContiguous(.{ .m = 2, .k = 2 }),
-        .buf = &a_buf,
-    };
+    const A = NamedArrayConst(MK, T).init(NamedIndex(MK).initContiguous(.{ .m = 2, .k = 2 }), &a_buf);
 
     // B (2x2) = [[1, 2], [3, 4]]
     const b_buf = [_]T{ 1, 2, 3, 4 };
-    const B = NamedArrayConst(KN, T){
-        .idx = NamedIndex(KN).initContiguous(.{ .k = 2, .n = 2 }),
-        .buf = &b_buf,
-    };
+    const B = NamedArrayConst(KN, T).init(NamedIndex(KN).initContiguous(.{ .k = 2, .n = 2 }), &b_buf);
 
     // C (2x2) = [[10, 10], [10, 10]]
     var c_buf = [_]T{ 10, 10, 10, 10 };
-    const C = NamedArray(MN, T){
-        .idx = NamedIndex(MN).initContiguous(.{ .m = 2, .n = 2 }),
-        .buf = &c_buf,
-    };
+    const C = NamedArray(MN, T).init(NamedIndex(MN).initContiguous(.{ .m = 2, .n = 2 }), &c_buf);
 
     // A*B = [[2+3, 4+4], [1+9, 2+12]] = [[5, 8], [10, 14]]
     // C = 2*A*B + 3*C = [[10+30, 16+30], [20+30, 28+30]] = [[40, 46], [50, 58]]
@@ -7809,24 +7020,15 @@ test "symm real column-major" {
 
     // A (2x2) symmetric col-major: [[2, 1], [1, 3]] stored as [2, 1, 1, 3]
     const a_buf = [_]T{ 2, 1, 1, 3 };
-    const A = NamedArrayConst(MK, T){
-        .idx = .{ .shape = .{ .m = 2, .k = 2 }, .strides = .{ .m = 1, .k = 2 } },
-        .buf = &a_buf,
-    };
+    const A = NamedArrayConst(MK, T).init(.{ .shape = .{ .m = 2, .k = 2 }, .strides = .{ .m = 1, .k = 2 } }, &a_buf);
 
     // B (2x2) col-major: [[1, 3], [2, 4]] stored as [1, 2, 3, 4]
     const b_buf = [_]T{ 1, 2, 3, 4 };
-    const B = NamedArrayConst(KN, T){
-        .idx = .{ .shape = .{ .k = 2, .n = 2 }, .strides = .{ .k = 1, .n = 2 } },
-        .buf = &b_buf,
-    };
+    const B = NamedArrayConst(KN, T).init(.{ .shape = .{ .k = 2, .n = 2 }, .strides = .{ .k = 1, .n = 2 } }, &b_buf);
 
     // C (2x2) col-major
     var c_buf = [_]T{ 0, 0, 0, 0 };
-    const C = NamedArray(MN, T){
-        .idx = .{ .shape = .{ .m = 2, .n = 2 }, .strides = .{ .m = 1, .n = 2 } },
-        .buf = &c_buf,
-    };
+    const C = NamedArray(MN, T).init(.{ .shape = .{ .m = 2, .n = 2 }, .strides = .{ .m = 1, .n = 2 } }, &c_buf);
 
     // A = [[2, 1], [1, 3]], B = [[1, 3], [2, 4]]
     // A*B = [[2+2, 6+4], [1+6, 3+12]] = [[4, 10], [7, 15]]
@@ -7851,29 +7053,20 @@ test "hemm complex left (triangle = second axis)" {
         .{ .re = 2, .im = 0 }, .{ .re = 1, .im = -1 },
         .{ .re = 1, .im = 1 }, .{ .re = 3, .im = 0 },
     };
-    const A = NamedArrayConst(MK, T){
-        .idx = NamedIndex(MK).initContiguous(.{ .m = 2, .k = 2 }),
-        .buf = &a_buf,
-    };
+    const A = NamedArrayConst(MK, T).init(NamedIndex(MK).initContiguous(.{ .m = 2, .k = 2 }), &a_buf);
 
     // B (2x1) = [[1+0i], [0+i]]
     const b_buf = [_]T{
         .{ .re = 1, .im = 0 },
         .{ .re = 0, .im = 1 },
     };
-    const B = NamedArrayConst(KN, T){
-        .idx = NamedIndex(KN).initContiguous(.{ .k = 2, .n = 1 }),
-        .buf = &b_buf,
-    };
+    const B = NamedArrayConst(KN, T).init(NamedIndex(KN).initContiguous(.{ .k = 2, .n = 1 }), &b_buf);
 
     var c_buf = [_]T{
         .{ .re = 0, .im = 0 },
         .{ .re = 0, .im = 0 },
     };
-    const C = NamedArray(MN, T){
-        .idx = NamedIndex(MN).initContiguous(.{ .m = 2, .n = 1 }),
-        .buf = &c_buf,
-    };
+    const C = NamedArray(MN, T).init(NamedIndex(MN).initContiguous(.{ .m = 2, .n = 1 }), &c_buf);
 
     // C = A*B:
     // row0: 2*1 + (1-i)*(i) = 2 + i-i² = 2+i+1 = 3+i
@@ -7904,10 +7097,7 @@ test "hemm complex column-major" {
         .{ .re = 1, .im = -1 },
         .{ .re = 3, .im = 0 },
     };
-    const A = NamedArrayConst(MK, T){
-        .idx = .{ .shape = .{ .m = 2, .k = 2 }, .strides = .{ .m = 1, .k = 2 } },
-        .buf = &a_buf,
-    };
+    const A = NamedArrayConst(MK, T).init(.{ .shape = .{ .m = 2, .k = 2 }, .strides = .{ .m = 1, .k = 2 } }, &a_buf);
 
     // B (2x2) col-major: [[1, 0], [0, 1]] stored as [1, 0, 0, 1]
     const b_buf = [_]T{
@@ -7916,10 +7106,7 @@ test "hemm complex column-major" {
         .{ .re = 0, .im = 0 },
         .{ .re = 1, .im = 0 },
     };
-    const B = NamedArrayConst(KN, T){
-        .idx = .{ .shape = .{ .k = 2, .n = 2 }, .strides = .{ .k = 1, .n = 2 } },
-        .buf = &b_buf,
-    };
+    const B = NamedArrayConst(KN, T).init(.{ .shape = .{ .k = 2, .n = 2 }, .strides = .{ .k = 1, .n = 2 } }, &b_buf);
 
     var c_buf = [_]T{
         .{ .re = 0, .im = 0 },
@@ -7927,10 +7114,7 @@ test "hemm complex column-major" {
         .{ .re = 0, .im = 0 },
         .{ .re = 0, .im = 0 },
     };
-    const C = NamedArray(MN, T){
-        .idx = .{ .shape = .{ .m = 2, .n = 2 }, .strides = .{ .m = 1, .n = 2 } },
-        .buf = &c_buf,
-    };
+    const C = NamedArray(MN, T).init(.{ .shape = .{ .m = 2, .n = 2 }, .strides = .{ .m = 1, .n = 2 } }, &c_buf);
 
     // C = A * I = A (col-major storage)
     // A = [[2, 1-i], [1+i, 3]]
@@ -7959,17 +7143,11 @@ test "syrk real upper (triangle = second axis)" {
 
     // A (2x3) = [[1, 2, 3], [4, 5, 6]]
     const a_buf = [_]T{ 1, 2, 3, 4, 5, 6 };
-    const A = NamedArrayConst(NK, T){
-        .idx = NamedIndex(NK).initContiguous(.{ .n = 2, .k = 3 }),
-        .buf = &a_buf,
-    };
+    const A = NamedArrayConst(NK, T).init(NamedIndex(NK).initContiguous(.{ .n = 2, .k = 3 }), &a_buf);
 
     // C (2x2) = [[0, 0], [0, 0]]
     var c_buf = [_]T{ 0, 0, 0, 0 };
-    const C = NamedArray(NN, T){
-        .idx = NamedIndex(NN).initContiguous(.{ .n = 2, .n2 = 2 }),
-        .buf = &c_buf,
-    };
+    const C = NamedArray(NN, T).init(NamedIndex(NN).initContiguous(.{ .n = 2, .n2 = 2 }), &c_buf);
 
     // C = A * Aᵀ:
     // C[0,0] = 1+4+9 = 14
@@ -7991,16 +7169,10 @@ test "syrk real lower (triangle = first axis)" {
 
     // A (2x3) = [[1, 2, 3], [4, 5, 6]]
     const a_buf = [_]T{ 1, 2, 3, 4, 5, 6 };
-    const A = NamedArrayConst(NK, T){
-        .idx = NamedIndex(NK).initContiguous(.{ .n = 2, .k = 3 }),
-        .buf = &a_buf,
-    };
+    const A = NamedArrayConst(NK, T).init(NamedIndex(NK).initContiguous(.{ .n = 2, .k = 3 }), &a_buf);
 
     var c_buf = [_]T{ 0, 0, 0, 0 };
-    const C = NamedArray(NN, T){
-        .idx = NamedIndex(NN).initContiguous(.{ .n = 2, .n2 = 2 }),
-        .buf = &c_buf,
-    };
+    const C = NamedArray(NN, T).init(NamedIndex(NN).initContiguous(.{ .n = 2, .n2 = 2 }), &c_buf);
 
     // C = A * Aᵀ (lower triangle):
     // C[0,0] = 14, C[1,0] = 32, C[1,1] = 77
@@ -8018,17 +7190,11 @@ test "syrk real nontrivial scalars" {
 
     // A (2x2) = [[1, 2], [3, 4]]
     const a_buf = [_]T{ 1, 2, 3, 4 };
-    const A = NamedArrayConst(NK, T){
-        .idx = NamedIndex(NK).initContiguous(.{ .n = 2, .k = 2 }),
-        .buf = &a_buf,
-    };
+    const A = NamedArrayConst(NK, T).init(NamedIndex(NK).initContiguous(.{ .n = 2, .k = 2 }), &a_buf);
 
     // C (2x2) = [[1, 1], [1, 1]]
     var c_buf = [_]T{ 1, 1, 1, 1 };
-    const C = NamedArray(NN, T){
-        .idx = NamedIndex(NN).initContiguous(.{ .n = 2, .n2 = 2 }),
-        .buf = &c_buf,
-    };
+    const C = NamedArray(NN, T).init(NamedIndex(NN).initContiguous(.{ .n = 2, .n2 = 2 }), &c_buf);
 
     // A*Aᵀ = [[1+4, 3+8], [3+8, 9+16]] = [[5, 11], [11, 25]]
     // C = 2*A*Aᵀ + 3*C = [[10+3, 22+3], [22+3, 50+3]] = [[13, 25], [25, 53]]
@@ -8046,17 +7212,11 @@ test "syrk column-major" {
 
     // A (2x2) col-major: [[1, 3], [2, 4]] stored as [1, 2, 3, 4]
     const a_buf = [_]T{ 1, 2, 3, 4 };
-    const A = NamedArrayConst(NK, T){
-        .idx = .{ .shape = .{ .n = 2, .k = 2 }, .strides = .{ .n = 1, .k = 2 } },
-        .buf = &a_buf,
-    };
+    const A = NamedArrayConst(NK, T).init(.{ .shape = .{ .n = 2, .k = 2 }, .strides = .{ .n = 1, .k = 2 } }, &a_buf);
 
     // C (2x2) col-major
     var c_buf = [_]T{ 0, 0, 0, 0 };
-    const C = NamedArray(NN, T){
-        .idx = .{ .shape = .{ .n = 2, .n2 = 2 }, .strides = .{ .n = 1, .n2 = 2 } },
-        .buf = &c_buf,
-    };
+    const C = NamedArray(NN, T).init(.{ .shape = .{ .n = 2, .n2 = 2 }, .strides = .{ .n = 1, .n2 = 2 } }, &c_buf);
 
     // A = [[1, 3], [2, 4]]
     // A*Aᵀ = [[1+9, 2+12], [2+12, 4+16]] = [[10, 14], [14, 20]]
@@ -8080,19 +7240,13 @@ test "herk complex upper" {
         .{ .re = 1, .im = 1 }, .{ .re = 2, .im = 0 },
         .{ .re = 0, .im = 1 }, .{ .re = 1, .im = -1 },
     };
-    const A = NamedArrayConst(NK, T){
-        .idx = NamedIndex(NK).initContiguous(.{ .n = 2, .k = 2 }),
-        .buf = &a_buf,
-    };
+    const A = NamedArrayConst(NK, T).init(NamedIndex(NK).initContiguous(.{ .n = 2, .k = 2 }), &a_buf);
 
     var c_buf = [_]T{
         .{ .re = 0, .im = 0 }, .{ .re = 0, .im = 0 },
         .{ .re = 0, .im = 0 }, .{ .re = 0, .im = 0 },
     };
-    const C = NamedArray(NN, T){
-        .idx = NamedIndex(NN).initContiguous(.{ .n = 2, .n2 = 2 }),
-        .buf = &c_buf,
-    };
+    const C = NamedArray(NN, T).init(NamedIndex(NN).initContiguous(.{ .n = 2, .n2 = 2 }), &c_buf);
 
     // C = A * Aᴴ:
     // C[0,0] = (1+i)(1-i) + 2*2 = 1+1 + 4 = 6 (real, since diagonal of Hermitian)
@@ -8125,19 +7279,13 @@ test "herk complex lower" {
         .{ .re = 1, .im = 1 },
         .{ .re = 2, .im = 0 },
     };
-    const A = NamedArrayConst(NK, T){
-        .idx = NamedIndex(NK).initContiguous(.{ .n = 2, .k = 1 }),
-        .buf = &a_buf,
-    };
+    const A = NamedArrayConst(NK, T).init(NamedIndex(NK).initContiguous(.{ .n = 2, .k = 1 }), &a_buf);
 
     var c_buf = [_]T{
         .{ .re = 0, .im = 0 }, .{ .re = 0, .im = 0 },
         .{ .re = 0, .im = 0 }, .{ .re = 0, .im = 0 },
     };
-    const C = NamedArray(NN, T){
-        .idx = NamedIndex(NN).initContiguous(.{ .n = 2, .n2 = 2 }),
-        .buf = &c_buf,
-    };
+    const C = NamedArray(NN, T).init(NamedIndex(NN).initContiguous(.{ .n = 2, .n2 = 2 }), &c_buf);
 
     // C = A * Aᴴ (lower triangle):
     // C[0,0] = (1+i)(1-i) = 2
@@ -8162,23 +7310,14 @@ test "syr2k real upper (triangle = second axis)" {
 
     // A (2x2) = [[1, 2], [3, 4]]
     const a_buf = [_]T{ 1, 2, 3, 4 };
-    const A = NamedArrayConst(MK, T){
-        .idx = NamedIndex(MK).initContiguous(.{ .m = 2, .k = 2 }),
-        .buf = &a_buf,
-    };
+    const A = NamedArrayConst(MK, T).init(NamedIndex(MK).initContiguous(.{ .m = 2, .k = 2 }), &a_buf);
 
     // B (2x2) = [[5, 6], [7, 8]]
     const b_buf = [_]T{ 5, 6, 7, 8 };
-    const B = NamedArrayConst(NK, T){
-        .idx = NamedIndex(NK).initContiguous(.{ .n = 2, .k = 2 }),
-        .buf = &b_buf,
-    };
+    const B = NamedArrayConst(NK, T).init(NamedIndex(NK).initContiguous(.{ .n = 2, .k = 2 }), &b_buf);
 
     var c_buf = [_]T{ 0, 0, 0, 0 };
-    const C = NamedArray(MN, T){
-        .idx = NamedIndex(MN).initContiguous(.{ .m = 2, .n = 2 }),
-        .buf = &c_buf,
-    };
+    const C = NamedArray(MN, T).init(NamedIndex(MN).initContiguous(.{ .m = 2, .n = 2 }), &c_buf);
 
     // C = A*Bᵀ + B*Aᵀ:
     // A*Bᵀ = [[1*5+2*6, 1*7+2*8], [3*5+4*6, 3*7+4*8]] = [[17, 23], [39, 53]]
@@ -8200,24 +7339,15 @@ test "syr2k real nontrivial scalars" {
 
     // A (2x1) = [[1], [2]]
     const a_buf = [_]T{ 1, 2 };
-    const A = NamedArrayConst(MK, T){
-        .idx = NamedIndex(MK).initContiguous(.{ .m = 2, .k = 1 }),
-        .buf = &a_buf,
-    };
+    const A = NamedArrayConst(MK, T).init(NamedIndex(MK).initContiguous(.{ .m = 2, .k = 1 }), &a_buf);
 
     // B (2x1) = [[3], [4]]
     const b_buf = [_]T{ 3, 4 };
-    const B = NamedArrayConst(NK, T){
-        .idx = NamedIndex(NK).initContiguous(.{ .n = 2, .k = 1 }),
-        .buf = &b_buf,
-    };
+    const B = NamedArrayConst(NK, T).init(NamedIndex(NK).initContiguous(.{ .n = 2, .k = 1 }), &b_buf);
 
     // C (2x2) = [[1, 1], [1, 1]]
     var c_buf = [_]T{ 1, 1, 1, 1 };
-    const C = NamedArray(MN, T){
-        .idx = NamedIndex(MN).initContiguous(.{ .m = 2, .n = 2 }),
-        .buf = &c_buf,
-    };
+    const C = NamedArray(MN, T).init(NamedIndex(MN).initContiguous(.{ .m = 2, .n = 2 }), &c_buf);
 
     // A*Bᵀ = [[3], [6]] * [[3, 4]] ... wait no
     // A is 2x1, Bᵀ is 1x2: A*Bᵀ = [[1*3, 1*4], [2*3, 2*4]] = [[3, 4], [6, 8]]
@@ -8239,23 +7369,14 @@ test "syr2k column-major" {
 
     // A (2x1) col-major = [[1], [2]] stored as [1, 2]
     const a_buf = [_]T{ 1, 2 };
-    const A = NamedArrayConst(MK, T){
-        .idx = .{ .shape = .{ .m = 2, .k = 1 }, .strides = .{ .m = 1, .k = 2 } },
-        .buf = &a_buf,
-    };
+    const A = NamedArrayConst(MK, T).init(.{ .shape = .{ .m = 2, .k = 1 }, .strides = .{ .m = 1, .k = 2 } }, &a_buf);
 
     // B (2x1) col-major = [[3], [4]] stored as [3, 4]
     const b_buf = [_]T{ 3, 4 };
-    const B = NamedArrayConst(NK, T){
-        .idx = .{ .shape = .{ .n = 2, .k = 1 }, .strides = .{ .n = 1, .k = 2 } },
-        .buf = &b_buf,
-    };
+    const B = NamedArrayConst(NK, T).init(.{ .shape = .{ .n = 2, .k = 1 }, .strides = .{ .n = 1, .k = 2 } }, &b_buf);
 
     var c_buf = [_]T{ 0, 0, 0, 0 };
-    const C = NamedArray(MN, T){
-        .idx = .{ .shape = .{ .m = 2, .n = 2 }, .strides = .{ .m = 1, .n = 2 } },
-        .buf = &c_buf,
-    };
+    const C = NamedArray(MN, T).init(.{ .shape = .{ .m = 2, .n = 2 }, .strides = .{ .m = 1, .n = 2 } }, &c_buf);
 
     // A*Bᵀ + B*Aᵀ = [[6, 10], [10, 16]]
     // Use lower triangle (.m = first axis, ordinal 0) so C[0,0], C[1,0], C[1,1] are written.
@@ -8279,29 +7400,20 @@ test "her2k complex upper" {
         .{ .re = 1, .im = 1 },
         .{ .re = 2, .im = 0 },
     };
-    const A = NamedArrayConst(MK, T){
-        .idx = NamedIndex(MK).initContiguous(.{ .m = 2, .k = 1 }),
-        .buf = &a_buf,
-    };
+    const A = NamedArrayConst(MK, T).init(NamedIndex(MK).initContiguous(.{ .m = 2, .k = 1 }), &a_buf);
 
     // B (2x1) = [[1+0i], [0+i]]
     const b_buf = [_]T{
         .{ .re = 1, .im = 0 },
         .{ .re = 0, .im = 1 },
     };
-    const B = NamedArrayConst(NK, T){
-        .idx = NamedIndex(NK).initContiguous(.{ .n = 2, .k = 1 }),
-        .buf = &b_buf,
-    };
+    const B = NamedArrayConst(NK, T).init(NamedIndex(NK).initContiguous(.{ .n = 2, .k = 1 }), &b_buf);
 
     var c_buf = [_]T{
         .{ .re = 0, .im = 0 }, .{ .re = 0, .im = 0 },
         .{ .re = 0, .im = 0 }, .{ .re = 0, .im = 0 },
     };
-    const C = NamedArray(MN, T){
-        .idx = NamedIndex(MN).initContiguous(.{ .m = 2, .n = 2 }),
-        .buf = &c_buf,
-    };
+    const C = NamedArray(MN, T).init(NamedIndex(MN).initContiguous(.{ .m = 2, .n = 2 }), &c_buf);
 
     // C = alpha*A*Bᴴ + conj(alpha)*B*Aᴴ, alpha = 1+0i:
     // A*Bᴴ = [[(1+i)*1, (1+i)*(-i)], [2*1, 2*(-i)]]
@@ -8339,29 +7451,20 @@ test "her2k column-major" {
         .{ .re = 1, .im = 0 },
         .{ .re = 0, .im = 1 },
     };
-    const A = NamedArrayConst(MK, T){
-        .idx = .{ .shape = .{ .m = 2, .k = 1 }, .strides = .{ .m = 1, .k = 2 } },
-        .buf = &a_buf,
-    };
+    const A = NamedArrayConst(MK, T).init(.{ .shape = .{ .m = 2, .k = 1 }, .strides = .{ .m = 1, .k = 2 } }, &a_buf);
 
     // B (2x1) col-major
     const b_buf = [_]T{
         .{ .re = 1, .im = 0 },
         .{ .re = 1, .im = 0 },
     };
-    const B = NamedArrayConst(NK, T){
-        .idx = .{ .shape = .{ .n = 2, .k = 1 }, .strides = .{ .n = 1, .k = 2 } },
-        .buf = &b_buf,
-    };
+    const B = NamedArrayConst(NK, T).init(.{ .shape = .{ .n = 2, .k = 1 }, .strides = .{ .n = 1, .k = 2 } }, &b_buf);
 
     var c_buf = [_]T{
         .{ .re = 0, .im = 0 }, .{ .re = 0, .im = 0 },
         .{ .re = 0, .im = 0 }, .{ .re = 0, .im = 0 },
     };
-    const C = NamedArray(MN, T){
-        .idx = .{ .shape = .{ .m = 2, .n = 2 }, .strides = .{ .m = 1, .n = 2 } },
-        .buf = &c_buf,
-    };
+    const C = NamedArray(MN, T).init(.{ .shape = .{ .m = 2, .n = 2 }, .strides = .{ .m = 1, .n = 2 } }, &c_buf);
 
     // A = [[1], [i]], B = [[1], [1]]
     // A*Bᴴ = [[1, 1], [i, i]]
@@ -8391,17 +7494,11 @@ test "trmm real left (triangle = second axis)" {
 
     // A (3x3) upper triangular: [[1, 2, 3], [0, 4, 5], [0, 0, 6]]
     const a_buf = [_]T{ 1, 2, 3, 0, 4, 5, 0, 0, 6 };
-    const A = NamedArrayConst(MK, T){
-        .idx = NamedIndex(MK).initContiguous(.{ .m = 3, .k = 3 }),
-        .buf = &a_buf,
-    };
+    const A = NamedArrayConst(MK, T).init(NamedIndex(MK).initContiguous(.{ .m = 3, .k = 3 }), &a_buf);
 
     // B (3x2) = [[1, 0], [0, 1], [1, 1]]
     var b_buf = [_]T{ 1, 0, 0, 1, 1, 1 };
-    const B = NamedArray(MN, T){
-        .idx = NamedIndex(MN).initContiguous(.{ .m = 3, .n = 2 }),
-        .buf = &b_buf,
-    };
+    const B = NamedArray(MN, T).init(NamedIndex(MN).initContiguous(.{ .m = 3, .n = 2 }), &b_buf);
 
     // B := A * B (left side):
     // row0: 1*1+2*0+3*1=4, 1*0+2*1+3*1=5
@@ -8422,17 +7519,11 @@ test "trmm real right" {
 
     // A (2x2) upper triangular: [[1, 2], [0, 3]], triangle = second axis = n
     const a_buf = [_]T{ 1, 2, 0, 3 };
-    const A = NamedArrayConst(KN, T){
-        .idx = NamedIndex(KN).initContiguous(.{ .k = 2, .n = 2 }),
-        .buf = &a_buf,
-    };
+    const A = NamedArrayConst(KN, T).init(NamedIndex(KN).initContiguous(.{ .k = 2, .n = 2 }), &a_buf);
 
     // B (3x2) = [[1, 0], [0, 1], [2, 3]]
     var b_buf = [_]T{ 1, 0, 0, 1, 2, 3 };
-    const B = NamedArray(MN, T){
-        .idx = NamedIndex(MN).initContiguous(.{ .m = 3, .n = 2 }),
-        .buf = &b_buf,
-    };
+    const B = NamedArray(MN, T).init(NamedIndex(MN).initContiguous(.{ .m = 3, .n = 2 }), &b_buf);
 
     // B := B * A (right side, A shares 'n' with B's second axis):
     // col0 of result: B * A col0 = B * [1, 0]ᵀ = B[:,0] = [1, 0, 2]
@@ -8453,17 +7544,11 @@ test "trmm real unit diagonal" {
 
     // A (2x2) upper triangular, unit diagonal: [[1, 3], [0, 1]] (diag assumed 1)
     const a_buf = [_]T{ 99, 3, 0, 99 }; // diagonal values should be ignored
-    const A = NamedArrayConst(MK, T){
-        .idx = NamedIndex(MK).initContiguous(.{ .m = 2, .k = 2 }),
-        .buf = &a_buf,
-    };
+    const A = NamedArrayConst(MK, T).init(NamedIndex(MK).initContiguous(.{ .m = 2, .k = 2 }), &a_buf);
 
     // B (2x2) = [[1, 2], [3, 4]]
     var b_buf = [_]T{ 1, 2, 3, 4 };
-    const B = NamedArray(MN, T){
-        .idx = NamedIndex(MN).initContiguous(.{ .m = 2, .n = 2 }),
-        .buf = &b_buf,
-    };
+    const B = NamedArray(MN, T).init(NamedIndex(MN).initContiguous(.{ .m = 2, .n = 2 }), &b_buf);
 
     // B := A * B with unit diagonal → A = [[1, 3], [0, 1]]
     // row0: 1*1+3*3=10, 1*2+3*4=14
@@ -8486,20 +7571,14 @@ test "trmm complex" {
         .{ .re = 1, .im = 1 }, .{ .re = 2, .im = 0 },
         .{ .re = 0, .im = 0 }, .{ .re = 1, .im = -1 },
     };
-    const A = NamedArrayConst(MK, T){
-        .idx = NamedIndex(MK).initContiguous(.{ .m = 2, .k = 2 }),
-        .buf = &a_buf,
-    };
+    const A = NamedArrayConst(MK, T).init(NamedIndex(MK).initContiguous(.{ .m = 2, .k = 2 }), &a_buf);
 
     // B (2x1) = [[1+0i], [0+i]]
     var b_buf = [_]T{
         .{ .re = 1, .im = 0 },
         .{ .re = 0, .im = 1 },
     };
-    const B = NamedArray(MN, T){
-        .idx = NamedIndex(MN).initContiguous(.{ .m = 2, .n = 1 }),
-        .buf = &b_buf,
-    };
+    const B = NamedArray(MN, T).init(NamedIndex(MN).initContiguous(.{ .m = 2, .n = 1 }), &b_buf);
 
     // B := A * B:
     // row0: (1+i)*1 + 2*(i) = 1+i+2i = 1+3i
@@ -8523,17 +7602,11 @@ test "trmm column-major" {
     // A (2x2) lower triangular col-major: [[2, 0], [3, 4]]
     // Col-major storage: col0=[2, 3], col1=[0, 4] → [2, 3, 0, 4]
     const a_buf = [_]T{ 2, 3, 0, 4 };
-    const A = NamedArrayConst(MK, T){
-        .idx = .{ .shape = .{ .m = 2, .k = 2 }, .strides = .{ .m = 1, .k = 2 } },
-        .buf = &a_buf,
-    };
+    const A = NamedArrayConst(MK, T).init(.{ .shape = .{ .m = 2, .k = 2 }, .strides = .{ .m = 1, .k = 2 } }, &a_buf);
 
     // B (2x2) col-major: [[1, 5], [2, 6]] stored as [1, 2, 5, 6]
     var b_buf = [_]T{ 1, 2, 5, 6 };
-    const B = NamedArray(MN, T){
-        .idx = .{ .shape = .{ .m = 2, .n = 2 }, .strides = .{ .m = 1, .n = 2 } },
-        .buf = &b_buf,
-    };
+    const B = NamedArray(MN, T).init(.{ .shape = .{ .m = 2, .n = 2 }, .strides = .{ .m = 1, .n = 2 } }, &b_buf);
 
     // B := A * B, A = [[2, 0], [3, 4]], B = [[1, 5], [2, 6]]
     // row0: 2*1+0*2=2, 2*5+0*6=10
@@ -8555,17 +7628,11 @@ test "trsm real left (triangle = second axis)" {
 
     // A (2x2) upper triangular: [[2, 1], [0, 3]]
     const a_buf = [_]T{ 2, 1, 0, 3 };
-    const A = NamedArrayConst(MK, T){
-        .idx = NamedIndex(MK).initContiguous(.{ .m = 2, .k = 2 }),
-        .buf = &a_buf,
-    };
+    const A = NamedArrayConst(MK, T).init(NamedIndex(MK).initContiguous(.{ .m = 2, .k = 2 }), &a_buf);
 
     // B (2x1) = [[5], [9]]
     var b_buf = [_]T{ 5, 9 };
-    const B = NamedArray(MN, T){
-        .idx = NamedIndex(MN).initContiguous(.{ .m = 2, .n = 1 }),
-        .buf = &b_buf,
-    };
+    const B = NamedArray(MN, T).init(NamedIndex(MN).initContiguous(.{ .m = 2, .n = 1 }), &b_buf);
 
     // Solve A * X = B:
     // [[2, 1], [0, 3]] * X = [[5], [9]]
@@ -8584,17 +7651,11 @@ test "trsm real right" {
 
     // A (2x2) upper triangular: [[2, 1], [0, 3]]
     const a_buf = [_]T{ 2, 1, 0, 3 };
-    const A = NamedArrayConst(KN, T){
-        .idx = NamedIndex(KN).initContiguous(.{ .k = 2, .n = 2 }),
-        .buf = &a_buf,
-    };
+    const A = NamedArrayConst(KN, T).init(NamedIndex(KN).initContiguous(.{ .k = 2, .n = 2 }), &a_buf);
 
     // B (2x2) = [[4, 3], [8, 6]]
     var b_buf = [_]T{ 4, 3, 8, 6 };
-    const B = NamedArray(MN, T){
-        .idx = NamedIndex(MN).initContiguous(.{ .m = 2, .n = 2 }),
-        .buf = &b_buf,
-    };
+    const B = NamedArray(MN, T).init(NamedIndex(MN).initContiguous(.{ .m = 2, .n = 2 }), &b_buf);
 
     // Solve X * A = B (right side, A shares 'n' with B):
     // X * [[2, 1], [0, 3]] = [[4, 3], [8, 6]]
@@ -8620,17 +7681,11 @@ test "trsm real unit diagonal" {
 
     // A (2x2) upper triangular, unit diagonal: [[1, 4], [0, 1]]
     const a_buf = [_]T{ 99, 4, 0, 99 }; // diagonal ignored
-    const A = NamedArrayConst(MK, T){
-        .idx = NamedIndex(MK).initContiguous(.{ .m = 2, .k = 2 }),
-        .buf = &a_buf,
-    };
+    const A = NamedArrayConst(MK, T).init(NamedIndex(MK).initContiguous(.{ .m = 2, .k = 2 }), &a_buf);
 
     // B (2x1) = [[7], [2]]
     var b_buf = [_]T{ 7, 2 };
-    const B = NamedArray(MN, T){
-        .idx = NamedIndex(MN).initContiguous(.{ .m = 2, .n = 1 }),
-        .buf = &b_buf,
-    };
+    const B = NamedArray(MN, T).init(NamedIndex(MN).initContiguous(.{ .m = 2, .n = 1 }), &b_buf);
 
     // Solve [[1, 4], [0, 1]] * X = [[7], [2]]
     // x1 = 2, x0 = 7 - 4*2 = -1
@@ -8650,10 +7705,7 @@ test "trsm complex" {
         .{ .re = 1, .im = 1 }, .{ .re = 2, .im = 0 },
         .{ .re = 0, .im = 0 }, .{ .re = 1, .im = -1 },
     };
-    const A = NamedArrayConst(MK, T){
-        .idx = NamedIndex(MK).initContiguous(.{ .m = 2, .k = 2 }),
-        .buf = &a_buf,
-    };
+    const A = NamedArrayConst(MK, T).init(NamedIndex(MK).initContiguous(.{ .m = 2, .k = 2 }), &a_buf);
 
     // Compute A * known_X, then solve to recover X.
     // X = [[1+0i], [0+i]]
@@ -8663,10 +7715,7 @@ test "trsm complex" {
         .{ .re = 1, .im = 3 },
         .{ .re = 1, .im = 1 },
     };
-    const B = NamedArray(MN, T){
-        .idx = NamedIndex(MN).initContiguous(.{ .m = 2, .n = 1 }),
-        .buf = &b_buf,
-    };
+    const B = NamedArray(MN, T).init(NamedIndex(MN).initContiguous(.{ .m = 2, .n = 1 }), &b_buf);
 
     blas.trsm(T, MK, MN, .{ .triangle = .k, .data = A }, .non_unit, B, .{
         .alpha = .{ .re = 1, .im = 0 },
@@ -8687,17 +7736,11 @@ test "trsm column-major" {
     // A (2x2) lower triangular col-major: [[3, 0], [1, 2]]
     // Col-major: [3, 1, 0, 2]
     const a_buf = [_]T{ 3, 1, 0, 2 };
-    const A = NamedArrayConst(MK, T){
-        .idx = .{ .shape = .{ .m = 2, .k = 2 }, .strides = .{ .m = 1, .k = 2 } },
-        .buf = &a_buf,
-    };
+    const A = NamedArrayConst(MK, T).init(.{ .shape = .{ .m = 2, .k = 2 }, .strides = .{ .m = 1, .k = 2 } }, &a_buf);
 
     // B (2x2) col-major: [[6, 3], [8, 6]] stored as [6, 8, 3, 6]
     var b_buf = [_]T{ 6, 8, 3, 6 };
-    const B = NamedArray(MN, T){
-        .idx = .{ .shape = .{ .m = 2, .n = 2 }, .strides = .{ .m = 1, .n = 2 } },
-        .buf = &b_buf,
-    };
+    const B = NamedArray(MN, T).init(.{ .shape = .{ .m = 2, .n = 2 }, .strides = .{ .m = 1, .n = 2 } }, &b_buf);
 
     // Solve A * X = B, A = [[3, 0], [1, 2]]
     // For col0: [[3,0],[1,2]] * x = [6, 8]
@@ -8723,17 +7766,11 @@ test "trmm with alpha" {
 
     // A (2x2) lower triangular: [[2, 0], [1, 3]]
     const a_buf = [_]T{ 2, 0, 1, 3 };
-    const A = NamedArrayConst(MK, T){
-        .idx = NamedIndex(MK).initContiguous(.{ .m = 2, .k = 2 }),
-        .buf = &a_buf,
-    };
+    const A = NamedArrayConst(MK, T).init(NamedIndex(MK).initContiguous(.{ .m = 2, .k = 2 }), &a_buf);
 
     // B (2x1) = [[1], [2]]
     var b_buf = [_]T{ 1, 2 };
-    const B = NamedArray(MN, T){
-        .idx = NamedIndex(MN).initContiguous(.{ .m = 2, .n = 1 }),
-        .buf = &b_buf,
-    };
+    const B = NamedArray(MN, T).init(NamedIndex(MN).initContiguous(.{ .m = 2, .n = 1 }), &b_buf);
 
     // B := alpha * A * B, alpha = 3
     // A * B = [[2*1+0], [1*1+3*2]] = [[2], [7]]
@@ -8751,17 +7788,11 @@ test "trsm with alpha" {
 
     // A (2x2) lower triangular: [[2, 0], [0, 4]]
     const a_buf = [_]T{ 2, 0, 0, 4 };
-    const A = NamedArrayConst(MK, T){
-        .idx = NamedIndex(MK).initContiguous(.{ .m = 2, .k = 2 }),
-        .buf = &a_buf,
-    };
+    const A = NamedArrayConst(MK, T).init(NamedIndex(MK).initContiguous(.{ .m = 2, .k = 2 }), &a_buf);
 
     // B (2x1) = [[6], [12]]
     var b_buf = [_]T{ 6, 12 };
-    const B = NamedArray(MN, T){
-        .idx = NamedIndex(MN).initContiguous(.{ .m = 2, .n = 1 }),
-        .buf = &b_buf,
-    };
+    const B = NamedArray(MN, T).init(NamedIndex(MN).initContiguous(.{ .m = 2, .n = 1 }), &b_buf);
 
     // Solve A * X = alpha * B, alpha = 2
     // A * X = 2*B = [[12], [24]]
@@ -8780,23 +7811,14 @@ test "gemm mixed layouts: A col, B/C row" {
 
     // A = [[1, 2], [3, 4]] col-major
     const a_buf = [_]T{ 1, 3, 2, 4 };
-    const A = NamedArrayConst(MK, T){
-        .idx = .{ .shape = .{ .m = 2, .k = 2 }, .strides = .{ .m = 1, .k = 2 } },
-        .buf = &a_buf,
-    };
+    const A = NamedArrayConst(MK, T).init(.{ .shape = .{ .m = 2, .k = 2 }, .strides = .{ .m = 1, .k = 2 } }, &a_buf);
 
     // B = [[5, 6], [7, 8]] row-major
     const b_buf = [_]T{ 5, 6, 7, 8 };
-    const B = NamedArrayConst(KN, T){
-        .idx = NamedIndex(KN).initContiguous(.{ .k = 2, .n = 2 }),
-        .buf = &b_buf,
-    };
+    const B = NamedArrayConst(KN, T).init(NamedIndex(KN).initContiguous(.{ .k = 2, .n = 2 }), &b_buf);
 
     var c_buf = [_]T{ 0, 0, 0, 0 };
-    const C = NamedArray(MN, T){
-        .idx = NamedIndex(MN).initContiguous(.{ .m = 2, .n = 2 }),
-        .buf = &c_buf,
-    };
+    const C = NamedArray(MN, T).init(NamedIndex(MN).initContiguous(.{ .m = 2, .n = 2 }), &c_buf);
 
     // C = A*B = [[19, 22], [43, 50]]
     blas.gemm(T, MK, KN, MN, A, B, C, .{ .alpha = 1.0, .beta = 0.0 });
@@ -8815,23 +7837,14 @@ test "gemm mixed layouts: B col, A/C row" {
 
     // A = [[1, 2], [3, 4]] row-major
     const a_buf = [_]T{ 1, 2, 3, 4 };
-    const A = NamedArrayConst(MK, T){
-        .idx = NamedIndex(MK).initContiguous(.{ .m = 2, .k = 2 }),
-        .buf = &a_buf,
-    };
+    const A = NamedArrayConst(MK, T).init(NamedIndex(MK).initContiguous(.{ .m = 2, .k = 2 }), &a_buf);
 
     // B = [[5, 6], [7, 8]] col-major
     const b_buf = [_]T{ 5, 7, 6, 8 };
-    const B = NamedArrayConst(KN, T){
-        .idx = .{ .shape = .{ .k = 2, .n = 2 }, .strides = .{ .k = 1, .n = 2 } },
-        .buf = &b_buf,
-    };
+    const B = NamedArrayConst(KN, T).init(.{ .shape = .{ .k = 2, .n = 2 }, .strides = .{ .k = 1, .n = 2 } }, &b_buf);
 
     var c_buf = [_]T{ 0, 0, 0, 0 };
-    const C = NamedArray(MN, T){
-        .idx = NamedIndex(MN).initContiguous(.{ .m = 2, .n = 2 }),
-        .buf = &c_buf,
-    };
+    const C = NamedArray(MN, T).init(NamedIndex(MN).initContiguous(.{ .m = 2, .n = 2 }), &c_buf);
 
     // C = A*B = [[19, 22], [43, 50]]
     blas.gemm(T, MK, KN, MN, A, B, C, .{ .alpha = 1.0, .beta = 0.0 });
@@ -8850,24 +7863,15 @@ test "gemm mixed layouts: A/B col, C row" {
 
     // A = [[1, 2], [3, 4]] col-major
     const a_buf = [_]T{ 1, 3, 2, 4 };
-    const A = NamedArrayConst(MK, T){
-        .idx = .{ .shape = .{ .m = 2, .k = 2 }, .strides = .{ .m = 1, .k = 2 } },
-        .buf = &a_buf,
-    };
+    const A = NamedArrayConst(MK, T).init(.{ .shape = .{ .m = 2, .k = 2 }, .strides = .{ .m = 1, .k = 2 } }, &a_buf);
 
     // B = [[5, 6], [7, 8]] col-major
     const b_buf = [_]T{ 5, 7, 6, 8 };
-    const B = NamedArrayConst(KN, T){
-        .idx = .{ .shape = .{ .k = 2, .n = 2 }, .strides = .{ .k = 1, .n = 2 } },
-        .buf = &b_buf,
-    };
+    const B = NamedArrayConst(KN, T).init(.{ .shape = .{ .k = 2, .n = 2 }, .strides = .{ .k = 1, .n = 2 } }, &b_buf);
 
     // C row-major
     var c_buf = [_]T{ 0, 0, 0, 0 };
-    const C = NamedArray(MN, T){
-        .idx = NamedIndex(MN).initContiguous(.{ .m = 2, .n = 2 }),
-        .buf = &c_buf,
-    };
+    const C = NamedArray(MN, T).init(NamedIndex(MN).initContiguous(.{ .m = 2, .n = 2 }), &c_buf);
 
     // C = A*B = [[19, 22], [43, 50]]
     blas.gemm(T, MK, KN, MN, A, B, C, .{ .alpha = 1.0, .beta = 0.0 });
@@ -8886,17 +7890,11 @@ test "syrk mixed layouts: A col, C row" {
     // A (2x3) = [[1, 2, 3], [4, 5, 6]] col-major
     // Col-major: col0=[1,4], col1=[2,5], col2=[3,6]
     const a_buf = [_]T{ 1, 4, 2, 5, 3, 6 };
-    const A = NamedArrayConst(NK, T){
-        .idx = .{ .shape = .{ .n = 2, .k = 3 }, .strides = .{ .n = 1, .k = 2 } },
-        .buf = &a_buf,
-    };
+    const A = NamedArrayConst(NK, T).init(.{ .shape = .{ .n = 2, .k = 3 }, .strides = .{ .n = 1, .k = 2 } }, &a_buf);
 
     // C (2x2) row-major
     var c_buf = [_]T{ 0, 0, 0, 0 };
-    const C = NamedArray(NN, T){
-        .idx = NamedIndex(NN).initContiguous(.{ .n = 2, .n2 = 2 }),
-        .buf = &c_buf,
-    };
+    const C = NamedArray(NN, T).init(NamedIndex(NN).initContiguous(.{ .n = 2, .n2 = 2 }), &c_buf);
 
     // C = A * Aᵀ (upper):
     // C[0,0] = 1+4+9 = 14, C[0,1] = 4+10+18 = 32, C[1,1] = 16+25+36 = 77
@@ -8915,24 +7913,15 @@ test "syr2k mixed layouts: A/B col, C row" {
 
     // A (2x2) = [[1, 2], [3, 4]] col-major
     const a_buf = [_]T{ 1, 3, 2, 4 };
-    const A = NamedArrayConst(MK, T){
-        .idx = .{ .shape = .{ .m = 2, .k = 2 }, .strides = .{ .m = 1, .k = 2 } },
-        .buf = &a_buf,
-    };
+    const A = NamedArrayConst(MK, T).init(.{ .shape = .{ .m = 2, .k = 2 }, .strides = .{ .m = 1, .k = 2 } }, &a_buf);
 
     // B (2x2) = [[5, 6], [7, 8]] col-major
     const b_buf = [_]T{ 5, 7, 6, 8 };
-    const B = NamedArrayConst(NK, T){
-        .idx = .{ .shape = .{ .n = 2, .k = 2 }, .strides = .{ .n = 1, .k = 2 } },
-        .buf = &b_buf,
-    };
+    const B = NamedArrayConst(NK, T).init(.{ .shape = .{ .n = 2, .k = 2 }, .strides = .{ .n = 1, .k = 2 } }, &b_buf);
 
     // C (2x2) row-major
     var c_buf = [_]T{ 0, 0, 0, 0 };
-    const C = NamedArray(MN, T){
-        .idx = NamedIndex(MN).initContiguous(.{ .m = 2, .n = 2 }),
-        .buf = &c_buf,
-    };
+    const C = NamedArray(MN, T).init(NamedIndex(MN).initContiguous(.{ .m = 2, .n = 2 }), &c_buf);
 
     // A*Bᵀ = [[17, 23], [39, 53]], B*Aᵀ = [[17, 39], [23, 53]]
     // C = A*Bᵀ + B*Aᵀ = [[34, 62], [62, 106]] (upper: .n)
@@ -8951,17 +7940,11 @@ test "trmm mixed layouts: A col, B row" {
     // A (2x2) upper triangular: [[1, 2], [0, 3]], triangle = .k (second axis)
     // Col-major: col0=[1, 0], col1=[2, 3]
     const a_buf = [_]T{ 1, 0, 2, 3 };
-    const A = NamedArrayConst(MK, T){
-        .idx = .{ .shape = .{ .m = 2, .k = 2 }, .strides = .{ .m = 1, .k = 2 } },
-        .buf = &a_buf,
-    };
+    const A = NamedArrayConst(MK, T).init(.{ .shape = .{ .m = 2, .k = 2 }, .strides = .{ .m = 1, .k = 2 } }, &a_buf);
 
     // B (2x2) = [[5, 6], [7, 8]] row-major
     var b_buf = [_]T{ 5, 6, 7, 8 };
-    const B = NamedArray(MN, T){
-        .idx = NamedIndex(MN).initContiguous(.{ .m = 2, .n = 2 }),
-        .buf = &b_buf,
-    };
+    const B = NamedArray(MN, T).init(NamedIndex(MN).initContiguous(.{ .m = 2, .n = 2 }), &b_buf);
 
     // B := A * B:
     // row0: 1*5+2*7=19, 1*6+2*8=22
@@ -8982,17 +7965,11 @@ test "trsm mixed layouts: A col, B row" {
     // A (2x2) upper triangular: [[2, 1], [0, 3]], triangle = .k (second axis)
     // Col-major: col0=[2, 0], col1=[1, 3]
     const a_buf = [_]T{ 2, 0, 1, 3 };
-    const A = NamedArrayConst(MK, T){
-        .idx = .{ .shape = .{ .m = 2, .k = 2 }, .strides = .{ .m = 1, .k = 2 } },
-        .buf = &a_buf,
-    };
+    const A = NamedArrayConst(MK, T).init(.{ .shape = .{ .m = 2, .k = 2 }, .strides = .{ .m = 1, .k = 2 } }, &a_buf);
 
     // B (2x1) = [[5], [9]] row-major
     var b_buf = [_]T{ 5, 9 };
-    const B = NamedArray(MN, T){
-        .idx = NamedIndex(MN).initContiguous(.{ .m = 2, .n = 1 }),
-        .buf = &b_buf,
-    };
+    const B = NamedArray(MN, T).init(NamedIndex(MN).initContiguous(.{ .m = 2, .n = 1 }), &b_buf);
 
     // Solve A * X = B:
     // [[2, 1], [0, 3]] * X = [[5], [9]]
@@ -9011,24 +7988,15 @@ test "gemm padded strides" {
 
     // A (2×3) row-major, lda=5
     const a_buf = [_]T{ 1, 2, 3, 99, 99, 4, 5, 6, 99, 99 };
-    const A = NamedArrayConst(MK, T){
-        .idx = .{ .shape = .{ .m = 2, .k = 3 }, .strides = .{ .m = 5, .k = 1 } },
-        .buf = &a_buf,
-    };
+    const A = NamedArrayConst(MK, T).init(.{ .shape = .{ .m = 2, .k = 3 }, .strides = .{ .m = 5, .k = 1 } }, &a_buf);
 
     // B (3×2) row-major, ldb=4
     const b_buf = [_]T{ 7, 8, 99, 99, 9, 10, 99, 99, 11, 12, 99, 99 };
-    const B = NamedArrayConst(KN, T){
-        .idx = .{ .shape = .{ .k = 3, .n = 2 }, .strides = .{ .k = 4, .n = 1 } },
-        .buf = &b_buf,
-    };
+    const B = NamedArrayConst(KN, T).init(.{ .shape = .{ .k = 3, .n = 2 }, .strides = .{ .k = 4, .n = 1 } }, &b_buf);
 
     // C (2×2) row-major, ldc=3
     var c_buf = [_]T{ 0, 0, 99, 0, 0, 99 };
-    const C = NamedArray(MN, T){
-        .idx = .{ .shape = .{ .m = 2, .n = 2 }, .strides = .{ .m = 3, .n = 1 } },
-        .buf = &c_buf,
-    };
+    const C = NamedArray(MN, T).init(.{ .shape = .{ .m = 2, .n = 2 }, .strides = .{ .m = 3, .n = 1 } }, &c_buf);
 
     // C = A*B = [[58, 64], [139, 154]]
     blas.gemm(T, MK, KN, MN, A, B, C, .{ .alpha = 1.0, .beta = 0.0 });
@@ -9050,24 +8018,15 @@ test "symm padded strides" {
     // A (2×2) symmetric, row-major, lda=4
     // A = [[2, 1], [1, 3]]
     const a_buf = [_]T{ 2, 1, 99, 99, 1, 3, 99, 99 };
-    const A = NamedArrayConst(MK, T){
-        .idx = .{ .shape = .{ .m = 2, .k = 2 }, .strides = .{ .m = 4, .k = 1 } },
-        .buf = &a_buf,
-    };
+    const A = NamedArrayConst(MK, T).init(.{ .shape = .{ .m = 2, .k = 2 }, .strides = .{ .m = 4, .k = 1 } }, &a_buf);
 
     // B (2×2) row-major, ldb=3
     const b_buf = [_]T{ 1, 2, 99, 3, 4, 99 };
-    const B = NamedArrayConst(KN, T){
-        .idx = .{ .shape = .{ .k = 2, .n = 2 }, .strides = .{ .k = 3, .n = 1 } },
-        .buf = &b_buf,
-    };
+    const B = NamedArrayConst(KN, T).init(.{ .shape = .{ .k = 2, .n = 2 }, .strides = .{ .k = 3, .n = 1 } }, &b_buf);
 
     // C (2×2) row-major, ldc=3
     var c_buf = [_]T{ 0, 0, 99, 0, 0, 99 };
-    const C = NamedArray(MN, T){
-        .idx = .{ .shape = .{ .m = 2, .n = 2 }, .strides = .{ .m = 3, .n = 1 } },
-        .buf = &c_buf,
-    };
+    const C = NamedArray(MN, T).init(.{ .shape = .{ .m = 2, .n = 2 }, .strides = .{ .m = 3, .n = 1 } }, &c_buf);
 
     // C = A*B = [[5, 8], [10, 14]]
     blas.symm(T, MK, KN, MN, .{ .triangle = .k, .data = A }, B, C, .{ .alpha = 1.0, .beta = 0.0 });
@@ -9087,17 +8046,11 @@ test "syrk padded strides" {
 
     // A (2×3) row-major, lda=5
     const a_buf = [_]T{ 1, 2, 3, 99, 99, 4, 5, 6, 99, 99 };
-    const A = NamedArrayConst(NK, T){
-        .idx = .{ .shape = .{ .n = 2, .k = 3 }, .strides = .{ .n = 5, .k = 1 } },
-        .buf = &a_buf,
-    };
+    const A = NamedArrayConst(NK, T).init(.{ .shape = .{ .n = 2, .k = 3 }, .strides = .{ .n = 5, .k = 1 } }, &a_buf);
 
     // C (2×2) row-major, ldc=3
     var c_buf = [_]T{ 0, 0, 99, 0, 0, 99 };
-    const C = NamedArray(NN, T){
-        .idx = .{ .shape = .{ .n = 2, .n2 = 2 }, .strides = .{ .n = 3, .n2 = 1 } },
-        .buf = &c_buf,
-    };
+    const C = NamedArray(NN, T).init(.{ .shape = .{ .n = 2, .n2 = 2 }, .strides = .{ .n = 3, .n2 = 1 } }, &c_buf);
 
     // C = A*Aᵀ (upper): [[14, 32], [32, 77]]
     blas.syrk(T, NK, NN, A, .{ .triangle = .n2, .data = C }, .{ .alpha = 1.0, .beta = 0.0 });
@@ -9115,24 +8068,15 @@ test "syr2k padded strides" {
 
     // A (2×2) row-major, lda=3
     const a_buf = [_]T{ 1, 2, 99, 3, 4, 99 };
-    const A = NamedArrayConst(MK, T){
-        .idx = .{ .shape = .{ .m = 2, .k = 2 }, .strides = .{ .m = 3, .k = 1 } },
-        .buf = &a_buf,
-    };
+    const A = NamedArrayConst(MK, T).init(.{ .shape = .{ .m = 2, .k = 2 }, .strides = .{ .m = 3, .k = 1 } }, &a_buf);
 
     // B (2×2) row-major, ldb=4
     const b_buf = [_]T{ 5, 6, 99, 99, 7, 8, 99, 99 };
-    const B = NamedArrayConst(NK, T){
-        .idx = .{ .shape = .{ .n = 2, .k = 2 }, .strides = .{ .n = 4, .k = 1 } },
-        .buf = &b_buf,
-    };
+    const B = NamedArrayConst(NK, T).init(.{ .shape = .{ .n = 2, .k = 2 }, .strides = .{ .n = 4, .k = 1 } }, &b_buf);
 
     // C (2×2) row-major, ldc=3
     var c_buf = [_]T{ 0, 0, 99, 0, 0, 99 };
-    const C = NamedArray(MN, T){
-        .idx = .{ .shape = .{ .m = 2, .n = 2 }, .strides = .{ .m = 3, .n = 1 } },
-        .buf = &c_buf,
-    };
+    const C = NamedArray(MN, T).init(.{ .shape = .{ .m = 2, .n = 2 }, .strides = .{ .m = 3, .n = 1 } }, &c_buf);
 
     // A*Bᵀ + B*Aᵀ = [[34, 62], [62, 106]] (upper: .n)
     blas.syr2k(T, MK, NK, MN, A, B, .{ .triangle = .n, .data = C }, .{ .alpha = 1.0, .beta = 0.0 });
@@ -9150,17 +8094,11 @@ test "trmm padded strides" {
     // A (2×2) upper triangular, row-major, lda=3
     // A = [[1, 2], [0, 3]]
     const a_buf = [_]T{ 1, 2, 99, 0, 3, 99 };
-    const A = NamedArrayConst(MK, T){
-        .idx = .{ .shape = .{ .m = 2, .k = 2 }, .strides = .{ .m = 3, .k = 1 } },
-        .buf = &a_buf,
-    };
+    const A = NamedArrayConst(MK, T).init(.{ .shape = .{ .m = 2, .k = 2 }, .strides = .{ .m = 3, .k = 1 } }, &a_buf);
 
     // B (2×2) row-major, ldb=3
     var b_buf = [_]T{ 5, 6, 99, 7, 8, 99 };
-    const B = NamedArray(MN, T){
-        .idx = .{ .shape = .{ .m = 2, .n = 2 }, .strides = .{ .m = 3, .n = 1 } },
-        .buf = &b_buf,
-    };
+    const B = NamedArray(MN, T).init(.{ .shape = .{ .m = 2, .n = 2 }, .strides = .{ .m = 3, .n = 1 } }, &b_buf);
 
     // B := A * B = [[19, 22], [21, 24]]
     blas.trmm(T, MK, MN, .{ .triangle = .k, .data = A }, .non_unit, B, .{ .alpha = 1.0 });
@@ -9181,17 +8119,11 @@ test "trsm padded strides" {
     // A (2×2) upper triangular, row-major, lda=3
     // A = [[2, 1], [0, 3]]
     const a_buf = [_]T{ 2, 1, 99, 0, 3, 99 };
-    const A = NamedArrayConst(MK, T){
-        .idx = .{ .shape = .{ .m = 2, .k = 2 }, .strides = .{ .m = 3, .k = 1 } },
-        .buf = &a_buf,
-    };
+    const A = NamedArrayConst(MK, T).init(.{ .shape = .{ .m = 2, .k = 2 }, .strides = .{ .m = 3, .k = 1 } }, &a_buf);
 
     // B (2×1) row-major, ldb=2
     var b_buf = [_]T{ 5, 99, 9, 99 };
-    const B = NamedArray(MN, T){
-        .idx = .{ .shape = .{ .m = 2, .n = 1 }, .strides = .{ .m = 2, .n = 1 } },
-        .buf = &b_buf,
-    };
+    const B = NamedArray(MN, T).init(.{ .shape = .{ .m = 2, .n = 1 }, .strides = .{ .m = 2, .n = 1 } }, &b_buf);
 
     // Solve A * X = B: x1 = 9/3 = 3, x0 = (5 - 1*3)/2 = 1
     blas.trsm(T, MK, MN, .{ .triangle = .k, .data = A }, .non_unit, B, .{ .alpha = 1.0 });

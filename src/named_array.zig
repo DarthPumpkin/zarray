@@ -27,10 +27,8 @@ pub fn NamedArray(comptime Axis: type, comptime Scalar: type) type {
 
         pub fn initAlloc(allocator: mem.Allocator, shape: Index.Axes) !@This() {
             const idx = Index.initContiguous(shape);
-            return .{
-                .idx = idx,
-                .buf = try allocator.alloc(Scalar, idx.count()),
-            };
+            const buf = try allocator.alloc(Scalar, idx.count());
+            return .init(idx, buf);
         }
 
         pub fn fill(self: *const @This(), val: Scalar) *const @This() {
@@ -56,10 +54,7 @@ pub fn NamedArray(comptime Axis: type, comptime Scalar: type) type {
         }
 
         pub fn asConst(self: *const @This()) NamedArrayConst(Axis, Scalar) {
-            return .{
-                .idx = self.idx,
-                .buf = self.buf,
-            };
+            return .init(self.idx, self.buf);
         }
 
         /// If possible, return a 1D slice of the buffer containing the elements of this array.
@@ -93,10 +88,7 @@ pub fn NamedArray(comptime Axis: type, comptime Scalar: type) type {
 
         /// Return a new NamedArray with axes conformed to NewEnum.
         pub fn conformAxes(self: *const @This(), comptime NewEnum: type) NamedArray(NewEnum, Scalar) {
-            return .{
-                .idx = self.idx.conformAxes(NewEnum),
-                .buf = self.buf,
-            };
+            return .init(self.idx.conformAxes(NewEnum), self.buf);
         }
 
         /// Fix each axis not present in `NewEnum` to a single position and drop it,
@@ -117,10 +109,7 @@ pub fn NamedArray(comptime Axis: type, comptime Scalar: type) type {
         /// Strictly rename axes according to the provided mapping.
         /// If any axis in NewEnum cannot be mapped, this will fail to compile.
         pub fn renameAxes(self: *const @This(), comptime NewEnum: type, comptime rename_pairs: []const AxisRenamePair) NamedArray(NewEnum, Scalar) {
-            return .{
-                .idx = self.idx.rename(NewEnum, rename_pairs),
-                .buf = self.buf,
-            };
+            return .init(self.idx.rename(NewEnum, rename_pairs), self.buf);
         }
 
         /// Merge several axes of this array into a single axis described by `NewEnum`.
@@ -128,10 +117,7 @@ pub fn NamedArray(comptime Axis: type, comptime Scalar: type) type {
         /// are not laid out contiguously according to stride relationships.
         pub fn mergeAxes(self: *const @This(), comptime NewEnum: type) !NamedArray(NewEnum, Scalar) {
             const new_idx = try self.idx.mergeAxes(NewEnum);
-            return .{
-                .idx = new_idx,
-                .buf = self.buf,
-            };
+            return .init(new_idx, self.buf);
         }
 
         /// Pretty-print the array. Invoked with the `{f}` format specifier.
@@ -196,10 +182,7 @@ pub fn NamedArrayConst(comptime Axis: type, comptime Scalar: type) type {
 
         /// Return a new NamedArrayConst with axes conformed to NewEnum.
         pub fn conformAxes(self: *const @This(), comptime NewEnum: type) NamedArrayConst(NewEnum, Scalar) {
-            return .{
-                .idx = self.idx.conformAxes(NewEnum),
-                .buf = self.buf,
-            };
+            return .init(self.idx.conformAxes(NewEnum), self.buf);
         }
 
         /// Fix each axis not present in `NewEnum` to a single position and drop it,
@@ -220,10 +203,7 @@ pub fn NamedArrayConst(comptime Axis: type, comptime Scalar: type) type {
         /// Strictly rename axes according to the provided mapping.
         /// If any axis in NewEnum cannot be mapped, this will fail to compile.
         pub fn renameAxes(self: *const @This(), comptime NewEnum: type, comptime rename_pairs: []const AxisRenamePair) NamedArrayConst(NewEnum, Scalar) {
-            return .{
-                .idx = self.idx.rename(NewEnum, rename_pairs),
-                .buf = self.buf,
-            };
+            return .init(self.idx.rename(NewEnum, rename_pairs), self.buf);
         }
 
         /// Merge several axes of this const array into a single axis described by `NewEnum`.
@@ -231,10 +211,7 @@ pub fn NamedArrayConst(comptime Axis: type, comptime Scalar: type) type {
         /// are not laid out contiguously according to stride relationships.
         pub fn mergeAxes(self: *const @This(), comptime NewEnum: type) !NamedArrayConst(NewEnum, Scalar) {
             const new_idx = try self.idx.mergeAxes(NewEnum);
-            return .{
-                .idx = new_idx,
-                .buf = self.buf,
-            };
+            return .init(new_idx, self.buf);
         }
 
         /// Pretty-print the array. Invoked with the `{f}` format specifier.
@@ -317,7 +294,7 @@ fn toContiguousGeneric(comptime Axis: type, comptime Scalar: type, self: anytype
             i += 1;
         }
     }
-    return .{ .idx = new_idx, .buf = buf };
+    return .init(new_idx, buf);
 }
 
 // Selects the mutable or const NamedArray type based on the buffer's constness.
@@ -337,7 +314,7 @@ fn indexAxesGeneric(self: anytype, comptime NewEnum: type, indices: anytype) Red
         const i = @field(indices, name);
         idx = idx.sliceAxis(@field(Axis, name), i, i + 1);
     }
-    return .{ .idx = idx.conformAxes(NewEnum), .buf = self.buf };
+    return .init(idx.conformAxes(NewEnum), self.buf);
 }
 
 // Works for both NamedArray and NamedArrayConst
@@ -728,10 +705,7 @@ test "get*" {
     const IJ = enum { i, j };
     const idx = NamedIndex(IJ).initContiguous(.{ .i = 2, .j = 3 });
     var buf = [_]i32{ 10, 11, 12, 13, 14, 15 };
-    const arr = NamedArray(IJ, i32){
-        .idx = idx,
-        .buf = &buf,
-    };
+    const arr = NamedArray(IJ, i32).init(idx, &buf);
     const arr_const = arr.asConst();
 
     // Test get (in bounds)
@@ -771,10 +745,7 @@ test "stride" {
     const IJ = enum { i, j };
     const idx = NamedIndex(IJ).initContiguous(.{ .i = 2, .j = 3 });
     var buf = [_]i32{ 1, 2, 3, 4, 5, 6 };
-    var arr = NamedArray(IJ, i32){
-        .idx = idx,
-        .buf = &buf,
-    };
+    var arr = NamedArray(IJ, i32).init(idx, &buf);
     arr.idx = arr.idx.strideAxis(.j, 2);
 
     const actual = [_]i32{
@@ -870,10 +841,7 @@ test "NamedArray renameAxes strict" {
     const XY = enum { x, y };
 
     var buf = [_]i32{ 1, 2, 3, 4, 5, 6 };
-    const arr = NamedArray(IJ, i32){
-        .idx = NamedIndex(IJ).initContiguous(.{ .i = 2, .j = 3 }),
-        .buf = &buf,
-    };
+    const arr = NamedArray(IJ, i32).init(NamedIndex(IJ).initContiguous(.{ .i = 2, .j = 3 }), &buf);
     // Rename i->x, j->y
     const arr_xy = arr.renameAxes(XY, &.{
         .{ .old = "i", .new = "x" },
@@ -923,10 +891,7 @@ test "NamedArrayConst renameAxes strict" {
     const XY = enum { x, y };
 
     const buf = [_]i32{ 1, 2, 3, 4, 5, 6 };
-    const arr = NamedArrayConst(IJ, i32){
-        .idx = NamedIndex(IJ).initContiguous(.{ .i = 2, .j = 3 }),
-        .buf = &buf,
-    };
+    const arr = NamedArrayConst(IJ, i32).init(NamedIndex(IJ).initContiguous(.{ .i = 2, .j = 3 }), &buf);
     // Rename i->x, j->y
     const arr_xy = arr.renameAxes(XY, &.{
         .{ .old = "i", .new = "x" },
@@ -974,10 +939,7 @@ test "renameAxes fails if old axis is mapped twice" {
     const IJ = enum { i, j };
     const XY = enum { x, y };
     var buf = [_]i32{ 1, 2, 3, 4, 5, 6 };
-    const arr = NamedArray(IJ, i32){
-        .idx = NamedIndex(IJ).initContiguous(.{ .i = 2, .j = 3 }),
-        .buf = &buf,
-    };
+    const arr = NamedArray(IJ, i32).init(NamedIndex(IJ).initContiguous(.{ .i = 2, .j = 3 }), &buf);
     if (false) {
         // "i" is mapped to both "x" and "y"
         _ = arr.renameAxes(XY, &.{
@@ -989,10 +951,7 @@ test "renameAxes fails if old axis is mapped twice" {
 
 test "slice" {
     const IJ = enum { i, j };
-    var arr = NamedArrayConst(IJ, i32){
-        .idx = .initContiguous(.{ .i = 2, .j = 3 }),
-        .buf = &[_]i32{ 1, 2, 3, 4, 5, 6 },
-    };
+    var arr = NamedArrayConst(IJ, i32).init(.initContiguous(.{ .i = 2, .j = 3 }), &[_]i32{ 1, 2, 3, 4, 5, 6 });
     arr.idx = arr.idx.sliceAxis(.j, 1, 2);
 
     try std.testing.expectEqual(2, arr.scalarAt(.{ .i = 0, .j = 0 }));
@@ -1004,15 +963,9 @@ test "keepOnly" {
     const IJK = enum { i, j, k };
     const IJ = enum { i, j };
 
-    const arr = NamedArrayConst(IJK, i32){
-        .idx = .initContiguous(.{ .i = 4, .j = 1, .k = 1 }),
-        .buf = &[_]i32{ 1, 2, 3, 4 },
-    };
+    const arr = NamedArrayConst(IJK, i32).init(.initContiguous(.{ .i = 4, .j = 1, .k = 1 }), &[_]i32{ 1, 2, 3, 4 });
 
-    const squeezed = NamedArrayConst(IJ, i32){
-        .idx = arr.idx.keepOnly(IJ),
-        .buf = arr.buf,
-    };
+    const squeezed = NamedArrayConst(IJ, i32).init(arr.idx.keepOnly(IJ), arr.buf);
 
     try std.testing.expectEqual(1, squeezed.scalarAt(.{ .i = 0, .j = 0 }));
     try std.testing.expectEqual(4, squeezed.scalarAt(.{ .i = 3, .j = 0 }));
@@ -1030,20 +983,14 @@ test "NamedArray conformAxes" {
     const IKL = enum { i, k, l };
 
     var buf = [_]i32{ 1, 2, 3, 4 };
-    const arr = NamedArray(IJK, i32){
-        .idx = NamedIndex(IJK).initContiguous(.{ .i = 4, .j = 1, .k = 1 }),
-        .buf = &buf,
-    };
+    const arr = NamedArray(IJK, i32).init(NamedIndex(IJK).initContiguous(.{ .i = 4, .j = 1, .k = 1 }), &buf);
     const arr_proj = arr.conformAxes(IKL);
     try std.testing.expectEqual(arr.buf, arr_proj.buf);
     try std.testing.expectEqual(arr.idx.conformAxes(IKL), arr_proj.idx);
 
     // Should panic if removed axis does not have size 1
     if (false) {
-        const arr_bad = NamedArray(IJK, i32){
-            .idx = NamedIndex(IJK).initContiguous(.{ .i = 4, .j = 2, .k = 1 }),
-            .buf = &buf,
-        };
+        const arr_bad = NamedArray(IJK, i32).init(NamedIndex(IJK).initContiguous(.{ .i = 4, .j = 2, .k = 1 }), &buf);
         _ = arr_bad.conformAxes(IKL);
     }
 }
@@ -1053,20 +1000,14 @@ test "NamedArrayConst conformAxes" {
     const IKL = enum { i, k, l };
 
     const buf = [_]i32{ 1, 2, 3, 4 };
-    const arr = NamedArrayConst(IJK, i32){
-        .idx = NamedIndex(IJK).initContiguous(.{ .i = 4, .j = 1, .k = 1 }),
-        .buf = &buf,
-    };
+    const arr = NamedArrayConst(IJK, i32).init(NamedIndex(IJK).initContiguous(.{ .i = 4, .j = 1, .k = 1 }), &buf);
     const arr_proj = arr.conformAxes(IKL);
     try std.testing.expectEqual(arr.buf, arr_proj.buf);
     try std.testing.expectEqual(arr.idx.conformAxes(IKL), arr_proj.idx);
 
     // Should panic if removed axis does not have size 1
     if (false) {
-        const arr_bad = NamedArrayConst(IJK, i32){
-            .idx = NamedIndex(IJK).initContiguous(.{ .i = 4, .j = 2, .k = 1 }),
-            .buf = &buf,
-        };
+        const arr_bad = NamedArrayConst(IJK, i32).init(NamedIndex(IJK).initContiguous(.{ .i = 4, .j = 2, .k = 1 }), &buf);
         _ = arr_bad.conformAxes(IKL);
     }
 }
@@ -1079,10 +1020,7 @@ test "NamedArray indexAxes" {
     // Contiguous 2x3x4, buf[n] = n so scalarAt(.{i,j,k}) == i*12 + j*4 + k.
     var buf: [24]i32 = undefined;
     for (&buf, 0..) |*v, n| v.* = @intCast(n);
-    const arr = NamedArray(IJK, i32){
-        .idx = NamedIndex(IJK).initContiguous(.{ .i = 2, .j = 3, .k = 4 }),
-        .buf = &buf,
-    };
+    const arr = NamedArray(IJK, i32).init(NamedIndex(IJK).initContiguous(.{ .i = 2, .j = 3, .k = 4 }), &buf);
 
     // Drop i and k, keep j: fix i=1, k=2 -> 1*12 + j*4 + 2.
     const row = arr.indexAxes(J, .{ .i = 1, .k = 2 });
@@ -1115,10 +1053,7 @@ test "NamedArrayConst indexAxes" {
 
     var buf: [24]i32 = undefined;
     for (&buf, 0..) |*v, n| v.* = @intCast(n);
-    const arr = NamedArrayConst(IJK, i32){
-        .idx = NamedIndex(IJK).initContiguous(.{ .i = 2, .j = 3, .k = 4 }),
-        .buf = &buf,
-    };
+    const arr = NamedArrayConst(IJK, i32).init(NamedIndex(IJK).initContiguous(.{ .i = 2, .j = 3, .k = 4 }), &buf);
 
     const row = arr.indexAxes(J, .{ .i = 1, .k = 2 });
     try std.testing.expectEqual(14, row.scalarAt(.{ .j = 0 }));
@@ -1143,14 +1078,11 @@ test "mergeAxes" {
         21, 22, 23, 24,
     };
 
-    const arr_ijk = NamedArrayConst(IJK, i32){
-        .idx = .initContiguous(.{
-            .i = 2,
-            .j = 3,
-            .k = 4,
-        }),
-        .buf = &buf_1_through_24,
-    };
+    const arr_ijk = NamedArrayConst(IJK, i32).init(.initContiguous(.{
+        .i = 2,
+        .j = 3,
+        .k = 4,
+    }), &buf_1_through_24);
     const arr_il = try arr_ijk.mergeAxes(IL);
 
     try std.testing.expectEqual(NamedIndex(IL).Axes{ .i = 2, .l = 12 }, arr_il.idx.shape);
@@ -1158,33 +1090,24 @@ test "mergeAxes" {
     try std.testing.expectEqual(15, arr_il.scalarAt(.{ .i = 1, .l = 2 }));
 
     // Failing case: last dim has stride 3, but shape 4 -> cannot merge without copying
-    const arr_ijk_strided = NamedArrayConst(IJK, i32){
-        .idx = .{
-            .strides = .{ .i = 12, .j = 4, .k = 3 },
-            .shape = .{ .i = 2, .j = 3, .k = 2 },
-        },
-        .buf = &buf_1_through_24,
-    };
+    const arr_ijk_strided = NamedArrayConst(IJK, i32).init(.{
+        .strides = .{ .i = 12, .j = 4, .k = 3 },
+        .shape = .{ .i = 2, .j = 3, .k = 2 },
+    }, &buf_1_through_24);
 
     try std.testing.expectError(named_index.NamedIndexError.StrideMisalignment, arr_ijk_strided.mergeAxes(IL));
 
     // Failing case: axes not consecutive (j i k -> i l)
-    const arr_ijk_noncon = NamedArrayConst(IJK, i32){
-        .idx = .{
-            .strides = .{ .i = 4, .j = 8, .k = 1 },
-            .shape = .{ .i = 2, .j = 3, .k = 4 },
-        },
-        .buf = &buf_1_through_24,
-    };
+    const arr_ijk_noncon = NamedArrayConst(IJK, i32).init(.{
+        .strides = .{ .i = 4, .j = 8, .k = 1 },
+        .shape = .{ .i = 2, .j = 3, .k = 4 },
+    }, &buf_1_through_24);
 
     try std.testing.expectError(named_index.NamedIndexError.StrideMisalignment, arr_ijk_noncon.mergeAxes(IL));
 
     // Edge case: shape (1, 1, 1)
     const buf_single = [_]i32{42};
-    const arr_ones = NamedArrayConst(IJK, i32){
-        .idx = .initContiguous(.{ .i = 1, .j = 1, .k = 1 }),
-        .buf = &buf_single,
-    };
+    const arr_ones = NamedArrayConst(IJK, i32).init(.initContiguous(.{ .i = 1, .j = 1, .k = 1 }), &buf_single);
     const arr_ones_merged = try arr_ones.mergeAxes(IL);
     try std.testing.expectEqual(NamedIndex(IL).Axes{ .i = 1, .l = 1 }, arr_ones_merged.idx.shape);
     try std.testing.expectEqual(42, arr_ones_merged.scalarAt(.{ .i = 0, .l = 0 }));

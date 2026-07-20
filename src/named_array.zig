@@ -110,11 +110,19 @@ pub fn NamedArray(comptime Axis: type, comptime Scalar: type) type {
         }
 
         /// Merge several axes of this array into a single axis described by `NewEnum`.
-        /// This is a zero-copy view transformation; it fails if the axes to be merged
-        /// are not laid out contiguously according to stride relationships.
-        pub fn mergeAxes(self: *const @This(), comptime NewEnum: type) !NamedArray(NewEnum, Scalar) {
-            const new_idx = try self.idx.mergeAxes(NewEnum);
-            return .init(new_idx, self.buf);
+        /// This is a zero-copy view transformation. It asserts that the merged axes
+        /// are laid out contiguously; a non-mergeable layout panics in safe build
+        /// modes and is assumed in performance build modes. Use `mergeAxesChecked`
+        /// when the layout is not known to be mergeable.
+        pub fn mergeAxes(self: *const @This(), comptime NewEnum: type) NamedArray(NewEnum, Scalar) {
+            return mergeAxesGeneric(self, NewEnum);
+        }
+
+        /// Like `mergeAxes`, but returns null instead of asserting when the axes to
+        /// be merged are not laid out contiguously (and so cannot be merged without
+        /// copying).
+        pub fn mergeAxesChecked(self: *const @This(), comptime NewEnum: type) ?NamedArray(NewEnum, Scalar) {
+            return mergeAxesCheckedGeneric(self, NewEnum);
         }
 
         /// Pretty-print the array. Invoked with the `{f}` format specifier.
@@ -204,11 +212,19 @@ pub fn NamedArrayConst(comptime Axis: type, comptime Scalar: type) type {
         }
 
         /// Merge several axes of this const array into a single axis described by `NewEnum`.
-        /// This is a zero-copy view transformation; it fails if the axes to be merged
-        /// are not laid out contiguously according to stride relationships.
-        pub fn mergeAxes(self: *const @This(), comptime NewEnum: type) !NamedArrayConst(NewEnum, Scalar) {
-            const new_idx = try self.idx.mergeAxes(NewEnum);
-            return .init(new_idx, self.buf);
+        /// This is a zero-copy view transformation. It asserts that the merged axes
+        /// are laid out contiguously; a non-mergeable layout panics in safe build
+        /// modes and is assumed in performance build modes. Use `mergeAxesChecked`
+        /// when the layout is not known to be mergeable.
+        pub fn mergeAxes(self: *const @This(), comptime NewEnum: type) NamedArrayConst(NewEnum, Scalar) {
+            return mergeAxesGeneric(self, NewEnum);
+        }
+
+        /// Like `mergeAxes`, but returns null instead of asserting when the axes to
+        /// be merged are not laid out contiguously (and so cannot be merged without
+        /// copying).
+        pub fn mergeAxesChecked(self: *const @This(), comptime NewEnum: type) ?NamedArrayConst(NewEnum, Scalar) {
+            return mergeAxesCheckedGeneric(self, NewEnum);
         }
 
         /// Pretty-print the array. Invoked with the `{f}` format specifier.
@@ -311,6 +327,17 @@ fn indexAxesGeneric(self: anytype, comptime NewEnum: type, indices: anytype) Red
 // Works for both NamedArray and NamedArrayConst
 fn indexAxesCheckedGeneric(self: anytype, comptime NewEnum: type, indices: anytype) ?ReducedArray(@TypeOf(self.buf), NewEnum) {
     const new_idx = self.idx.indexAxesChecked(NewEnum, indices) orelse return null;
+    return .init(new_idx, self.buf);
+}
+
+// Works for both NamedArray and NamedArrayConst
+fn mergeAxesGeneric(self: anytype, comptime NewEnum: type) ReducedArray(@TypeOf(self.buf), NewEnum) {
+    return .init(self.idx.mergeAxes(NewEnum), self.buf);
+}
+
+// Works for both NamedArray and NamedArrayConst
+fn mergeAxesCheckedGeneric(self: anytype, comptime NewEnum: type) ?ReducedArray(@TypeOf(self.buf), NewEnum) {
+    const new_idx = self.idx.mergeAxesChecked(NewEnum) orelse return null;
     return .init(new_idx, self.buf);
 }
 
@@ -1071,11 +1098,15 @@ test "mergeAxes" {
         .j = 3,
         .k = 4,
     }), &buf_1_through_24);
-    const arr_il = try arr_ijk.mergeAxes(IL);
+    const arr_il = arr_ijk.mergeAxes(IL);
 
     try std.testing.expectEqual(NamedIndex(IL).Axes{ .i = 2, .l = 12 }, arr_il.idx.shape);
     try std.testing.expectEqual(2, arr_il.scalarAt(.{ .i = 0, .l = 1 }));
     try std.testing.expectEqual(15, arr_il.scalarAt(.{ .i = 1, .l = 2 }));
+
+    // The checked variant yields the same view when the layout is mergeable.
+    const arr_il_checked = arr_ijk.mergeAxesChecked(IL).?;
+    try std.testing.expectEqual(NamedIndex(IL).Axes{ .i = 2, .l = 12 }, arr_il_checked.idx.shape);
 
     // Failing case: last dim has stride 3, but shape 4 -> cannot merge without copying
     const arr_ijk_strided = NamedArrayConst(IJK, i32).init(.{
@@ -1083,7 +1114,7 @@ test "mergeAxes" {
         .shape = .{ .i = 2, .j = 3, .k = 2 },
     }, &buf_1_through_24);
 
-    try std.testing.expectError(named_index.NamedIndexError.StrideMisalignment, arr_ijk_strided.mergeAxes(IL));
+    try std.testing.expectEqual(@as(?NamedArrayConst(IL, i32), null), arr_ijk_strided.mergeAxesChecked(IL));
 
     // Failing case: axes not consecutive (j i k -> i l)
     const arr_ijk_noncon = NamedArrayConst(IJK, i32).init(.{
@@ -1091,12 +1122,12 @@ test "mergeAxes" {
         .shape = .{ .i = 2, .j = 3, .k = 4 },
     }, &buf_1_through_24);
 
-    try std.testing.expectError(named_index.NamedIndexError.StrideMisalignment, arr_ijk_noncon.mergeAxes(IL));
+    try std.testing.expectEqual(@as(?NamedArrayConst(IL, i32), null), arr_ijk_noncon.mergeAxesChecked(IL));
 
     // Edge case: shape (1, 1, 1)
     const buf_single = [_]i32{42};
     const arr_ones = NamedArrayConst(IJK, i32).init(.initContiguous(.{ .i = 1, .j = 1, .k = 1 }), &buf_single);
-    const arr_ones_merged = try arr_ones.mergeAxes(IL);
+    const arr_ones_merged = arr_ones.mergeAxes(IL);
     try std.testing.expectEqual(NamedIndex(IL).Axes{ .i = 1, .l = 1 }, arr_ones_merged.idx.shape);
     try std.testing.expectEqual(42, arr_ones_merged.scalarAt(.{ .i = 0, .l = 0 }));
 }

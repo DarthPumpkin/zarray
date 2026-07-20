@@ -465,41 +465,48 @@ pub fn NamedIndex(comptime AxisEnum: type) type {
             return .{ .shape = new_shape, .strides = new_strides, .offset = self.offset };
         }
 
-        pub fn mergeAxes(self: *const @This(), comptime TargetEnum: type) error{StrideMisalignment}!NamedIndex(TargetEnum) {
+        /// Compile-time validation of a `mergeAxes` target: exactly one new axis
+        /// must be introduced and at least one source axis omitted (merged). The
+        /// returned mask marks which source axes survive into the target.
+        fn mergeAxesInfo(comptime TargetEnum: type) struct {
+            new_axis_name: [:0]const u8,
+            source_in_target: [field_names.len]bool,
+        } {
             const source_names = field_names;
-            const target_names = comptime meta.fieldNames(TargetEnum);
+            const target_names = meta.fieldNames(TargetEnum);
+            var new_axis_count: usize = 0;
+            var new_axis_name: [:0]const u8 = undefined;
+            var source_in_target: [source_names.len]bool = .{false} ** source_names.len;
+            for (target_names) |tname| {
+                var matched = false;
+                for (source_names, 0..) |sname, si| {
+                    if (mem.eql(u8, sname, tname)) {
+                        source_in_target[si] = true;
+                        matched = true;
+                        break;
+                    }
+                }
+                if (!matched) {
+                    new_axis_count += 1;
+                    new_axis_name = tname;
+                }
+            }
+            if (new_axis_count != 1)
+                @compileError("mergeAxes: TargetEnum must introduce exactly one new axis.");
+            var missing_count: usize = 0;
+            for (source_names, 0..) |_, si| {
+                if (!source_in_target[si]) missing_count += 1;
+            }
+            if (missing_count == 0)
+                @compileError("mergeAxes: must omit at least one source axis.");
+            return .{ .new_axis_name = new_axis_name, .source_in_target = source_in_target };
+        }
 
-            const MergeCompile = struct { new_axis_name: [:0]const u8, source_in_target: [source_names.len]bool };
-            const compile_phase: MergeCompile = comptime blk: {
-                var new_axis_count: usize = 0;
-                var new_axis_name: [:0]const u8 = undefined;
-                var source_in_target: [source_names.len]bool = .{false} ** source_names.len;
-                for (target_names) |tname| {
-                    var matched = false;
-                    for (source_names, 0..) |sname, si| {
-                        if (mem.eql(u8, sname, tname)) {
-                            source_in_target[si] = true;
-                            matched = true;
-                            break;
-                        }
-                    }
-                    if (!matched) {
-                        new_axis_count += 1;
-                        new_axis_name = tname;
-                    }
-                }
-                if (new_axis_count != 1)
-                    @compileError("mergeAxes: TargetEnum must introduce exactly one new axis.");
-                var missing_count: usize = 0;
-                for (source_names, 0..) |_, si| {
-                    if (!source_in_target[si]) missing_count += 1;
-                }
-                if (missing_count == 0)
-                    @compileError("mergeAxes: must omit at least one source axis.");
-                break :blk .{ .new_axis_name = new_axis_name, .source_in_target = source_in_target };
-            };
-            const new_axis_name = compile_phase.new_axis_name;
-            const source_in_target = compile_phase.source_in_target;
+        /// Whether the axes to be merged into `TargetEnum` are laid out
+        /// contiguously (adjacent in buffer order with matching strides), so the
+        /// merge can be expressed as a zero-copy view.
+        pub fn canMergeAxes(self: *const @This(), comptime TargetEnum: type) bool {
+            const source_in_target = comptime mergeAxesInfo(TargetEnum).source_in_target;
 
             const strides_arr = structToArray(isize, self.strides);
             const shapes_arr = structToArray(usize, self.shape);
@@ -507,7 +514,7 @@ pub fn NamedIndex(comptime AxisEnum: type) type {
             // Collect the axes being merged (those absent from the target) in
             // buffer order, so adjacency/contiguity can be checked pairwise.
             const order = self.axisOrder();
-            var ordered_merge: [source_names.len]usize = undefined;
+            var ordered_merge: [field_names.len]usize = undefined;
             var om_count: usize = 0;
             inline for (order) |ax| {
                 const si = @intFromEnum(ax);
@@ -523,8 +530,38 @@ pub fn NamedIndex(comptime AxisEnum: type) type {
                     const a = ordered_merge[mi];
                     const b = ordered_merge[mi + 1];
                     const expected = @abs(strides_arr[b]) * shapes_arr[b];
-                    if (@abs(strides_arr[a]) != expected)
-                        return error.StrideMisalignment;
+                    if (@abs(strides_arr[a]) != expected) return false;
+                }
+            }
+            return true;
+        }
+
+        /// Merge the source axes omitted from `TargetEnum` into its single new
+        /// axis, returning a zero-copy view.
+        ///
+        /// Asserts that the merged axes are contiguously laid out
+        /// (`canMergeAxes`). In safe build modes a misaligned merge panics;
+        /// in performance build modes the precondition is assumed. Use
+        /// `mergeAxesChecked` when the layout is not known to be mergeable.
+        pub fn mergeAxes(self: *const @This(), comptime TargetEnum: type) NamedIndex(TargetEnum) {
+            assert(self.canMergeAxes(TargetEnum));
+
+            const info = comptime mergeAxesInfo(TargetEnum);
+            const new_axis_name = info.new_axis_name;
+            const source_in_target = info.source_in_target;
+            const target_names = comptime meta.fieldNames(TargetEnum);
+
+            const strides_arr = structToArray(isize, self.strides);
+            const shapes_arr = structToArray(usize, self.shape);
+
+            const order = self.axisOrder();
+            var ordered_merge: [field_names.len]usize = undefined;
+            var om_count: usize = 0;
+            inline for (order) |ax| {
+                const si = @intFromEnum(ax);
+                if (!source_in_target[si]) {
+                    ordered_merge[om_count] = si;
+                    om_count += 1;
                 }
             }
 
@@ -547,6 +584,14 @@ pub fn NamedIndex(comptime AxisEnum: type) type {
                 }
             }
             return .{ .shape = new_shape, .strides = new_strides, .offset = self.offset };
+        }
+
+        /// Like `mergeAxes`, but returns null instead of asserting when the axes
+        /// to be merged are not contiguously laid out (and so cannot be merged
+        /// without copying).
+        pub fn mergeAxesChecked(self: *const @This(), comptime TargetEnum: type) ?NamedIndex(TargetEnum) {
+            if (!self.canMergeAxes(TargetEnum)) return null;
+            return self.mergeAxes(TargetEnum);
         }
     };
 }
@@ -1637,21 +1682,20 @@ test "mergeAxes basic contiguous merge and stride misalignment" {
     const source_idx: NamedIndex(SourceAxes) = .initContiguous(.{ .i = 2, .j = 3, .k = 5 });
     const expected_reshaped: NamedIndex(TargetAxes) = .initContiguous(.{ .i = 2, .jk = 15 });
 
-    const actual_reshaped = try source_idx.mergeAxes(TargetAxes);
+    const actual_reshaped = source_idx.mergeAxes(TargetAxes);
 
     try std.testing.expectEqual(expected_reshaped, actual_reshaped);
 
-    // Error if axes cannot be merged due to stride misalignment: for j and k to
-    // be contiguous we need abs(stride_j) == abs(stride_k) * shape_k = 1 * 5 = 5,
-    // but stride_j = 6 here.
+    // Misaligned strides cannot be merged without copying: for j and k to be
+    // contiguous we need abs(stride_j) == abs(stride_k) * shape_k = 1 * 5 = 5,
+    // but stride_j = 6 here, so mergeAxesChecked reports null.
     const error_source: NamedIndex(SourceAxes) = .{
         .shape = .{ .i = 2, .j = 3, .k = 5 },
         .strides = .{ .i = 18, .j = 6, .k = 1 },
     };
 
-    const error_actual = error_source.mergeAxes(TargetAxes);
-
-    try std.testing.expectError(NamedIndexError.StrideMisalignment, error_actual);
+    try std.testing.expect(!error_source.canMergeAxes(TargetAxes));
+    try std.testing.expectEqual(@as(?NamedIndex(TargetAxes), null), error_source.mergeAxesChecked(TargetAxes));
 }
 
 test "splitAxis" {
@@ -1729,7 +1773,7 @@ test "mergeAxes contiguity with reversed adjacent axes" {
     };
     const Target = enum { a, bc };
     // Should merge b and c into bc (contiguous by abs values)
-    const merged = try good.mergeAxes(Target);
+    const merged = good.mergeAxes(Target);
     try std.testing.expectEqual(6, merged.shape.bc); // 3*2
     try std.testing.expectEqual(-1, merged.strides.bc); // fastest varying (c)
     // Shape 'a' preserved
@@ -1745,8 +1789,8 @@ test "mergeAxes error negative stride misalignment" {
         .offset = 0,
     };
     const Target = enum { a, bc };
-    const attempt = bad.mergeAxes(Target);
-    try std.testing.expectError(NamedIndexError.StrideMisalignment, attempt);
+    try std.testing.expect(!bad.canMergeAxes(Target));
+    try std.testing.expectEqual(@as(?NamedIndex(Target), null), bad.mergeAxesChecked(Target));
 }
 
 // test "reindex: merge axes" {

@@ -197,9 +197,8 @@ test "add mat + row broadcast" {
         1, 2, 3,
         4, 5, 6,
     };
-    var a = RowJ.init(.initContiguous(.{ .i = 1, .j = 3 }), &a_buf);
     const b = MatIJ.init(.initContiguous(.{ .i = 2, .j = 3 }), &b_buf);
-    a.idx = a.idx.broadcastAxis(.i, b.idx.shape.i);
+    const a = RowJ.init(.initContiguous(.{ .i = 1, .j = 3 }), &a_buf).broadcastAxis(.i, b.idx.shape.i);
 
     const expected = [_]T{
         2, 12, 103,

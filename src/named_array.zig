@@ -125,6 +125,13 @@ pub fn NamedArray(comptime Axis: type, comptime Scalar: type) type {
             return mergeAxesCheckedGeneric(self, NewEnum);
         }
 
+        /// Broadcast `axis` from size 1 to `new_size` by giving it a zero stride,
+        /// returning a zero-copy view over the same buffer. Asserts that `axis`
+        /// currently has size 1.
+        pub fn broadcastAxis(self: *const @This(), comptime axis: Axis, new_size: usize) @This() {
+            return .init(self.idx.broadcastAxis(axis, new_size), self.buf);
+        }
+
         /// Pretty-print the array. Invoked with the `{f}` format specifier.
         pub fn format(self: @This(), w: *Writer) Writer.Error!void {
             return formatArrayGeneric(self, w);
@@ -225,6 +232,13 @@ pub fn NamedArrayConst(comptime Axis: type, comptime Scalar: type) type {
         /// copying).
         pub fn mergeAxesChecked(self: *const @This(), comptime NewEnum: type) ?NamedArrayConst(NewEnum, Scalar) {
             return mergeAxesCheckedGeneric(self, NewEnum);
+        }
+
+        /// Broadcast `axis` from size 1 to `new_size` by giving it a zero stride,
+        /// returning a zero-copy view over the same buffer. Asserts that `axis`
+        /// currently has size 1.
+        pub fn broadcastAxis(self: *const @This(), comptime axis: Axis, new_size: usize) @This() {
+            return .init(self.idx.broadcastAxis(axis, new_size), self.buf);
         }
 
         /// Pretty-print the array. Invoked with the `{f}` format specifier.

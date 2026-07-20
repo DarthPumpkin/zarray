@@ -106,8 +106,7 @@ fn MLP(comptime Scalar_: type) type {
             var layers = self.iterLayers();
             while (layers.next()) |layer| {
                 const batch_size = input.idx.shape.batch;
-                var biases_2d: MlpOutput = layer.biases_1d.conformAxes(OutputAxis);
-                biases_2d.idx = biases_2d.idx.broadcastAxis(.batch, batch_size);
+                const biases_2d: MlpOutput = layer.biases_1d.conformAxes(OutputAxis).broadcastAxis(.batch, batch_size);
                 const output = try biases_2d.toContiguous(al);
                 tblis.mult(InputAxis, WeightsAxis, OutputAxis, Scalar, input.asConst(), layer.weights_2d.asConst(), output);
 

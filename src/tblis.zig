@@ -136,16 +136,6 @@ pub fn ReduceWithArgResult(comptime AxisOut: type, comptime Scalar: type, compti
     };
 }
 
-/// Map arg-reduction variants to their value-only reduction counterpart.
-fn argReduceToReduce(comptime op: ArgReduce) Reduce {
-    return switch (op) {
-        .MAX => .MAX,
-        .MAX_ABS => .MAX_ABS,
-        .MIN => .MIN,
-        .MIN_ABS => .MIN_ABS,
-    };
-}
-
 /// Assign `B <- alpha A + beta B`
 /// where `A, B` have the same shape and `alpha, beta` are optional scalars.
 /// No implicit broadcasting.
@@ -392,16 +382,14 @@ test "mult i jk -> ijk" {
     try std.testing.expectEqualDeep(expected, c_data);
 }
 
-// Return a reduction result over `a` using `op`.
-// The returned struct contains the reduced scalar value and the index (one per axis)
-// at which the extremum occurred for MAX/MIN-type reductions. For SUM/NORM variants,
-// the index content is undefined and can be ignored.
-pub fn reduceAll(
+// Run tblis' full reduction of `a` using the raw C op, returning both the
+// reduced scalar value and the raw per-axis extremum index reported by tblis.
+fn reduceAllRaw(
     comptime AxisA: type,
     comptime Scalar: type,
-    op: Reduce,
+    c_op: TblisReduceT,
     a: arr.NamedArrayConst(AxisA, Scalar),
-) struct { value: Scalar, index: @TypeOf(a.idx.shape) } {
+) struct { value: Scalar, index: [index_strings(&.{AxisA})[0].len]C.zig_len_type } {
     const a_idx = comptime index_strings(&.{AxisA})[0];
     const rank = a_idx.len;
 
@@ -410,16 +398,6 @@ pub fn reduceAll(
 
     var out_scalar = init_scalar(Scalar, undefined);
     var out_index: [rank]C.zig_len_type = undefined;
-
-    const c_op: TblisReduceT = switch (op) {
-        .SUM => C.ZIG_REDUCE_SUM,
-        .SUM_ABS => C.ZIG_REDUCE_SUM_ABS,
-        .MAX => C.ZIG_REDUCE_MAX,
-        .MAX_ABS => C.ZIG_REDUCE_MAX_ABS,
-        .MIN => C.ZIG_REDUCE_MIN,
-        .MIN_ABS => C.ZIG_REDUCE_MIN_ABS,
-        .NORM_2 => C.ZIG_REDUCE_NORM_2,
-    };
 
     C.tblis_zig_tensor_reduce(
         null,
@@ -431,16 +409,56 @@ pub fn reduceAll(
         &out_index,
     );
 
+    return .{
+        .value = get_scalar_val(Scalar, out_scalar),
+        .index = out_index,
+    };
+}
+
+// Reduce `a` over all of its axes using `op`, returning the reduced scalar value.
+pub fn reduceAll(
+    comptime AxisA: type,
+    comptime Scalar: type,
+    op: Reduce,
+    a: arr.NamedArrayConst(AxisA, Scalar),
+) Scalar {
+    const c_op: TblisReduceT = switch (op) {
+        .SUM => C.ZIG_REDUCE_SUM,
+        .SUM_ABS => C.ZIG_REDUCE_SUM_ABS,
+        .MAX => C.ZIG_REDUCE_MAX,
+        .MAX_ABS => C.ZIG_REDUCE_MAX_ABS,
+        .MIN => C.ZIG_REDUCE_MIN,
+        .MIN_ABS => C.ZIG_REDUCE_MIN_ABS,
+        .NORM_2 => C.ZIG_REDUCE_NORM_2,
+    };
+
+    return reduceAllRaw(AxisA, Scalar, c_op, a).value;
+}
+
+// Reduce `a` over all of its axes using `op`, returning both the reduced scalar
+// value and the per-axis index at which the extremum occurred.
+pub fn reduceAllWithArg(
+    comptime AxisA: type,
+    comptime Scalar: type,
+    comptime op: ArgReduce,
+    a: arr.NamedArrayConst(AxisA, Scalar),
+) struct { value: Scalar, index: @TypeOf(a.idx.shape) } {
+    const c_op: TblisReduceT = switch (op) {
+        .MAX => C.ZIG_REDUCE_MAX,
+        .MAX_ABS => C.ZIG_REDUCE_MAX_ABS,
+        .MIN => C.ZIG_REDUCE_MIN,
+        .MIN_ABS => C.ZIG_REDUCE_MIN_ABS,
+    };
+
+    const reduced = reduceAllRaw(AxisA, Scalar, c_op, a);
+
     var index: @TypeOf(a.idx.shape) = undefined;
-    inline for (comptime meta.fieldNames(AxisA), out_index) |name, val| {
-        @field(index, name) = switch (op) {
-            .MAX, .MAX_ABS, .MIN, .MIN_ABS => @intCast(val),
-            else => 0,
-        };
+    inline for (comptime meta.fieldNames(AxisA), reduced.index) |name, val| {
+        @field(index, name) = @intCast(val);
     }
 
     return .{
-        .value = get_scalar_val(Scalar, out_scalar),
+        .value = reduced.value,
         .index = index,
     };
 }
@@ -464,7 +482,6 @@ pub fn reduceWithArgInto(
     const ReducedAxis = comptime axis_meta.Difference(AxisIn, AxisOut);
     const reduced_names = comptime meta.fieldNames(ReducedAxis);
     const ArgScalar = axis_meta.DifferenceAxesStruct(AxisIn, AxisOut);
-    const value_op = comptime argReduceToReduce(op);
 
     assertOutputShapeMatchesInput(AxisOut, a.idx.shape, out_values.idx.shape, "reduceWithArgInto", "values");
     assertOutputShapeMatchesInput(AxisOut, a.idx.shape, out_args.idx.shape, "reduceWithArgInto", "args");
@@ -475,7 +492,7 @@ pub fn reduceWithArgInto(
     while (out_keys.next()) |out_key| {
         const reduced_view = reducedViewForOutputKey(AxisIn, AxisOut, Scalar, a, reduced_shape, out_key);
 
-        const reduced = reduceAll(AxisIn, Scalar, value_op, reduced_view);
+        const reduced = reduceAllWithArg(AxisIn, Scalar, op, reduced_view);
         out_values.at(out_key).* = reduced.value;
 
         // tblis currently reports a linear offset for extrema location in the
@@ -553,7 +570,7 @@ pub fn reduceInto(
     var out_keys = out.idx.iterKeys();
     while (out_keys.next()) |out_key| {
         const reduced_view = reducedViewForOutputKey(AxisIn, AxisOut, Scalar, a, reduced_shape, out_key);
-        out.at(out_key).* = reduceAll(AxisIn, Scalar, op, reduced_view).value;
+        out.at(out_key).* = reduceAll(AxisIn, Scalar, op, reduced_view);
     }
 }
 
@@ -582,12 +599,12 @@ test "reduceAll i" {
     const a = arr.NamedArrayConst(I, T).init(.initContiguous(.{ .i = data.len }), &data);
 
     const r_sum = reduceAll(I, T, .SUM, a);
-    try std.testing.expectEqual(@as(T, 3.0), r_sum.value);
+    try std.testing.expectEqual(@as(T, 3.0), r_sum);
 
     const r_sum_abs = reduceAll(I, T, .SUM_ABS, a);
-    try std.testing.expectEqual(@as(T, 15.0), r_sum_abs.value);
+    try std.testing.expectEqual(@as(T, 15.0), r_sum_abs);
 
-    const r_max = reduceAll(I, T, .MAX, a);
+    const r_max = reduceAllWithArg(I, T, .MAX, a);
     try std.testing.expectEqual(@as(T, 5.0), r_max.value);
     try std.testing.expectEqual(@as(C.zig_len_type, 4), r_max.index.i);
 }
@@ -601,10 +618,10 @@ test "reduceAll honors non-zero offset view" {
     a.idx = a.idx.sliceAxis(.j, 1, 3);
 
     const r_sum = reduceAll(IJ, T, .SUM, a);
-    try std.testing.expectEqual(@as(T, 16), r_sum.value);
+    try std.testing.expectEqual(@as(T, 16), r_sum);
 
     const r_max = reduceAll(IJ, T, .MAX, a);
-    try std.testing.expectEqual(@as(T, 6), r_max.value);
+    try std.testing.expectEqual(@as(T, 6), r_max);
 }
 
 test "reduceInto supports non-sum op" {

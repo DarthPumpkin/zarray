@@ -18,6 +18,13 @@ pub fn NamedArray(comptime Axis: type, comptime Scalar: type) type {
         idx: Index,
         buf: []Scalar,
 
+        /// Wrap an existing `idx` and `buf` without copying or allocating.
+        /// Asserts that every element addressed by `idx` lies within `buf`.
+        pub fn init(idx: Index, buf: []Scalar) @This() {
+            assertIndexFitsBuffer(idx, buf.len);
+            return .{ .idx = idx, .buf = buf };
+        }
+
         pub fn initAlloc(allocator: mem.Allocator, shape: Index.Axes) !@This() {
             const idx = Index.initContiguous(shape);
             return .{
@@ -150,6 +157,13 @@ pub fn NamedArrayConst(comptime Axis: type, comptime Scalar: type) type {
         idx: Index,
         buf: []const Scalar,
 
+        /// Wrap an existing `idx` and `buf` without copying or allocating.
+        /// Asserts that every element addressed by `idx` lies within `buf`.
+        pub fn init(idx: Index, buf: []const Scalar) @This() {
+            assertIndexFitsBuffer(idx, buf.len);
+            return .{ .idx = idx, .buf = buf };
+        }
+
         /// If possible, return a 1D slice of the buffer containing the elements of this array.
         /// If the array is non-contiguous, return null.
         /// To get a contiguous copy, see `toContiguous`.
@@ -238,6 +252,35 @@ pub fn NamedArrayConst(comptime Axis: type, comptime Scalar: type) type {
             return .{ .data = self };
         }
     };
+}
+
+// Asserts that every element addressed by `idx` lies within a buffer of
+// length `buf_len`. Works for both NamedArray and NamedArrayConst indices.
+fn assertIndexFitsBuffer(idx: anytype, buf_len: usize) void {
+    const fields = @typeInfo(@TypeOf(idx.shape)).@"struct".fields;
+
+    // An empty axis means the array addresses no elements at all, so any
+    // buffer (including an empty one) trivially fits.
+    inline for (fields) |field| {
+        if (@field(idx.shape, field.name) == 0) return;
+    }
+
+    // Strides may be negative (reversed/subsampled views), so track the lowest
+    // and highest reachable linear addresses separately.
+    var min_addr: isize = @intCast(idx.offset);
+    var max_addr: isize = @intCast(idx.offset);
+    inline for (fields) |field| {
+        const last: isize = @intCast(@field(idx.shape, field.name) - 1);
+        const span = @as(isize, @field(idx.strides, field.name)) * last;
+        if (span < 0) {
+            min_addr += span;
+        } else {
+            max_addr += span;
+        }
+    }
+
+    std.debug.assert(min_addr >= 0);
+    std.debug.assert(max_addr < @as(isize, @intCast(buf_len)));
 }
 
 // Works for both NamedArray and NamedArrayConst
@@ -594,6 +637,26 @@ test "fill" {
     _ = arr.fillArange();
     const expected_arange = [_]i32{ 0, 1, 2, 3 };
     try std.testing.expectEqualSlices(i32, &expected_arange, arr.buf);
+}
+
+test "init wraps existing index and buffer" {
+    const IJ = enum { i, j };
+    const Index = NamedIndex(IJ);
+
+    var buf = [_]i32{ 0, 1, 2, 3, 4, 5 };
+    const idx = Index.initContiguous(.{ .i = 2, .j = 3 });
+
+    const arr = NamedArray(IJ, i32).init(idx, &buf);
+    try std.testing.expectEqual(@as(i32, 4), arr.at(.{ .i = 1, .j = 1 }).*);
+
+    // The const variant shares the same validation.
+    const carr = NamedArrayConst(IJ, i32).init(idx, &buf);
+    try std.testing.expectEqual(@as(i32, 5), carr.at(.{ .i = 1, .j = 2 }).*);
+
+    // A reversed view still fits its buffer (offset points at the last element).
+    const rev = idx.strideAxis(.j, -1);
+    const rarr = NamedArray(IJ, i32).init(rev, &buf);
+    try std.testing.expectEqual(@as(i32, 3), rarr.at(.{ .i = 1, .j = 2 }).*);
 }
 
 test "flat, toContiguous" {

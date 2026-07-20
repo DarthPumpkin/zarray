@@ -132,6 +132,15 @@ pub fn NamedArray(comptime Axis: type, comptime Scalar: type) type {
             return .init(self.idx.broadcastAxis(axis, new_size), self.buf);
         }
 
+        /// Broadcast every axis to `target`, returning a zero-copy view over the
+        /// same buffer whose shape equals `target`. Each axis must already match
+        /// the target size or have size 1 (in which case it repeats via a zero
+        /// stride). Returns null if any axis cannot be broadcast.
+        pub fn broadcastTo(self: *const @This(), target: Index.Axes) ?@This() {
+            const idx = self.idx.broadcastTo(target) orelse return null;
+            return .init(idx, self.buf);
+        }
+
         /// Pretty-print the array. Invoked with the `{f}` format specifier.
         pub fn format(self: @This(), w: *Writer) Writer.Error!void {
             return formatArrayGeneric(self, w);
@@ -239,6 +248,15 @@ pub fn NamedArrayConst(comptime Axis: type, comptime Scalar: type) type {
         /// currently has size 1.
         pub fn broadcastAxis(self: *const @This(), comptime axis: Axis, new_size: usize) @This() {
             return .init(self.idx.broadcastAxis(axis, new_size), self.buf);
+        }
+
+        /// Broadcast every axis to `target`, returning a zero-copy view over the
+        /// same buffer whose shape equals `target`. Each axis must already match
+        /// the target size or have size 1 (in which case it repeats via a zero
+        /// stride). Returns null if any axis cannot be broadcast.
+        pub fn broadcastTo(self: *const @This(), target: Index.Axes) ?@This() {
+            const idx = self.idx.broadcastTo(target) orelse return null;
+            return .init(idx, self.buf);
         }
 
         /// Pretty-print the array. Invoked with the `{f}` format specifier.
@@ -986,6 +1004,22 @@ test "slice" {
     try std.testing.expectEqual(2, arr.scalarAt(.{ .i = 0, .j = 0 }));
     try std.testing.expectEqual(5, arr.scalarAt(.{ .i = 1, .j = 0 }));
     try std.testing.expectEqual(null, arr.scalarAtChecked(.{ .i = 1, .j = 1 }));
+}
+
+test "broadcastTo" {
+    const IJ = enum { i, j };
+    // A single row broadcast across the "i" axis.
+    const row = NamedArrayConst(IJ, i32).init(.initContiguous(.{ .i = 1, .j = 3 }), &[_]i32{ 1, 2, 3 });
+    const broad = row.broadcastTo(.{ .i = 2, .j = 3 }).?;
+
+    try std.testing.expectEqual(@as(i32, 1), broad.scalarAt(.{ .i = 0, .j = 0 }));
+    try std.testing.expectEqual(@as(i32, 3), broad.scalarAt(.{ .i = 0, .j = 2 }));
+    // Row 1 sees the same underlying data thanks to the zero stride.
+    try std.testing.expectEqual(@as(i32, 1), broad.scalarAt(.{ .i = 1, .j = 0 }));
+    try std.testing.expectEqual(@as(i32, 3), broad.scalarAt(.{ .i = 1, .j = 2 }));
+
+    // Null when a non-1 axis size mismatches the target.
+    try std.testing.expectEqual(null, row.broadcastTo(.{ .i = 2, .j = 4 }));
 }
 
 test "keepOnly" {

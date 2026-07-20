@@ -385,6 +385,29 @@ pub fn NamedIndex(comptime AxisEnum: type) type {
             return .{ .shape = new_shape, .strides = new_strides, .offset = self.offset };
         }
 
+        /// Broadcast every axis to `target`, returning a zero-copy view whose shape
+        /// equals `target`. For each axis, the current size must either already
+        /// equal the target size (stride is preserved) or be 1 (stride is set to 0
+        /// so the axis repeats). Returns null if any axis size neither matches the
+        /// target nor is 1.
+        pub fn broadcastTo(self: *const @This(), target: Axes) ?@This() {
+            var new_shape = self.shape;
+            var new_strides = self.strides;
+            inline for (field_names) |fname| {
+                const cur = @field(self.shape, fname);
+                const tgt = @field(target, fname);
+                if (cur == tgt) {
+                    // Keep existing shape and stride.
+                } else if (cur == 1) {
+                    @field(new_shape, fname) = tgt;
+                    @field(new_strides, fname) = 0;
+                } else {
+                    return null;
+                }
+            }
+            return .{ .shape = new_shape, .strides = new_strides, .offset = self.offset };
+        }
+
         pub fn splitAxis(self: *const @This(), comptime TargetEnum: type, splitShapes: AxesOptionalStruct(meta.fieldNames(TargetEnum))) NamedIndex(TargetEnum) {
             const SourceEnum = Axis;
             const source_field_names = comptime meta.fieldNames(SourceEnum);
@@ -1589,6 +1612,45 @@ test "broadcastAxis after reversal" {
     try std.testing.expectEqual(expected, broadcasted);
     // v stride stays negative
     try std.testing.expect(broadcasted.strides.v < 0);
+}
+
+test "broadcastTo" {
+    const IJEnum = enum { i, j };
+    const IndexIJ = NamedIndex(IJEnum);
+
+    // Broadcast the size-1 "i" axis while keeping "j" identical.
+    const idx: IndexIJ = .{
+        .shape = .{ .i = 1, .j = 3 },
+        .strides = .{ .i = 3, .j = 1 },
+        .offset = 0,
+    };
+    const broadcasted = idx.broadcastTo(.{ .i = 4, .j = 3 }).?;
+    const expected: IndexIJ = .{
+        .shape = .{ .i = 4, .j = 3 },
+        .strides = .{ .i = 0, .j = 1 },
+        .offset = 0,
+    };
+    try std.testing.expectEqual(expected, broadcasted);
+
+    // Broadcasting an axis that is already the target size is a no-op for it.
+    try std.testing.expectEqual(idx, idx.broadcastTo(.{ .i = 1, .j = 3 }).?);
+
+    // Null when a non-1 axis size differs from the target.
+    try std.testing.expectEqual(@as(?IndexIJ, null), idx.broadcastTo(.{ .i = 4, .j = 5 }));
+
+    // Broadcasting multiple axes at once.
+    const scalar: IndexIJ = .{
+        .shape = .{ .i = 1, .j = 1 },
+        .strides = .{ .i = 1, .j = 1 },
+        .offset = 2,
+    };
+    const both = scalar.broadcastTo(.{ .i = 2, .j = 3 }).?;
+    const both_expected: IndexIJ = .{
+        .shape = .{ .i = 2, .j = 3 },
+        .strides = .{ .i = 0, .j = 0 },
+        .offset = 2,
+    };
+    try std.testing.expectEqual(both_expected, both);
 }
 
 test "Xor" {

@@ -2,3 +2,7 @@
 /zig-out
 /build_config.zig
 /.clangd
+
+# Agent skills. Might start tracking these later once they solidify
+/.agents
+/skills-lock.json

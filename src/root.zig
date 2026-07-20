@@ -7,7 +7,6 @@ pub const NamedArrayConst = arr.NamedArrayConst;
 
 pub const index = @import("named_index.zig");
 pub const axis_meta = @import("axis_meta.zig");
-pub const math = @import("math.zig");
 pub const libs = struct {
     pub const blas = @import("accelerate.zig").blas;
     // pub const lapack = @import("accelerate.zig").lapack;
@@ -18,6 +17,10 @@ pub const libs = struct {
         std.testing.refAllDecls(@This());
     }
 };
+
+// temporary for testing purposes
+pub const math = @import("math.zig");
+pub const mlp_example = @import("mlp_example.zig");
 
 test "root.zig" {
     std.testing.refAllDecls(@This());

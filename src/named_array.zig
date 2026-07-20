@@ -1,13 +1,11 @@
 const std = @import("std");
 const mem = std.mem;
-const meta = std.meta;
 
 const named_index = @import("named_index.zig");
 const NamedIndex = named_index.NamedIndex;
 const AxisRenamePair = named_index.AxisRenamePair;
 
 const axis_meta = @import("axis_meta.zig");
-const Difference = axis_meta.Difference;
 const DifferenceAxesStruct = axis_meta.DifferenceAxesStruct;
 
 const Writer = std.Io.Writer;
@@ -307,22 +305,13 @@ fn ReducedArray(comptime BufType: type, comptime NewAxis: type) type {
 
 // Works for both NamedArray and NamedArrayConst
 fn indexAxesGeneric(self: anytype, comptime NewEnum: type, indices: anytype) ReducedArray(@TypeOf(self.buf), NewEnum) {
-    const Axis = @TypeOf(self.idx).Axis;
-    var idx = self.idx;
-    inline for (comptime meta.fieldNames(Difference(Axis, NewEnum))) |name| {
-        const i = @field(indices, name);
-        idx = idx.sliceAxis(@field(Axis, name), i, i + 1);
-    }
-    return .init(idx.conformAxes(NewEnum), self.buf);
+    return .init(self.idx.indexAxes(NewEnum, indices), self.buf);
 }
 
 // Works for both NamedArray and NamedArrayConst
 fn indexAxesCheckedGeneric(self: anytype, comptime NewEnum: type, indices: anytype) ?ReducedArray(@TypeOf(self.buf), NewEnum) {
-    const Axis = @TypeOf(self.idx).Axis;
-    inline for (comptime meta.fieldNames(Difference(Axis, NewEnum))) |name| {
-        if (@field(indices, name) >= @field(self.idx.shape, name)) return null;
-    }
-    return indexAxesGeneric(self, NewEnum, indices);
+    const new_idx = self.idx.indexAxesChecked(NewEnum, indices) orelse return null;
+    return .init(new_idx, self.buf);
 }
 
 fn getValCheckedGeneric(self: anytype, key: @TypeOf(self.idx).Axes) ?@TypeOf(self.buf[0]) {

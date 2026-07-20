@@ -355,8 +355,8 @@ pub const blas = struct {
             else => @compileError("rot_real is incompatible with given Scalar type."),
         };
         assert(points.idx.shape.j == 2);
-        const x_na = NamedArray(I, Scalar).init(points.idx.sliceAxis(.j, 0, 1).conformAxes(I), points.buf);
-        const y_na = NamedArray(I, Scalar).init(points.idx.sliceAxis(.j, 1, 2).conformAxes(I), points.buf);
+        const x_na = points.indexAxes(I, .{ .j = 0 });
+        const y_na = points.indexAxes(I, .{ .j = 1 });
         const x_blas = Blas1dMut(Scalar).init(I, x_na);
         const y_blas = Blas1dMut(Scalar).init(I, y_na);
         f(
@@ -389,8 +389,8 @@ pub const blas = struct {
             else => @compileError("rot_complex is incompatible with given RealScalar type."),
         };
         assert(points.idx.shape.j == 2);
-        const x_na = NamedArray(I, Complex(RealScalar)).init(points.idx.sliceAxis(.j, 0, 1).conformAxes(I), points.buf);
-        const y_na = NamedArray(I, Complex(RealScalar)).init(points.idx.sliceAxis(.j, 1, 2).conformAxes(I), points.buf);
+        const x_na = points.indexAxes(I, .{ .j = 0 });
+        const y_na = points.indexAxes(I, .{ .j = 1 });
         const x_blas = Blas1dMut(Complex(RealScalar)).init(I, x_na);
         const y_blas = Blas1dMut(Complex(RealScalar)).init(I, y_na);
         _ = f(
@@ -438,8 +438,8 @@ pub const blas = struct {
             else => @compileError("rotm is incompatible with given Scalar type."),
         };
         assert(points.idx.shape.j == 2);
-        const x_na = NamedArray(I, Scalar).init(points.idx.sliceAxis(.j, 0, 1).conformAxes(I), points.buf);
-        const y_na = NamedArray(I, Scalar).init(points.idx.sliceAxis(.j, 1, 2).conformAxes(I), points.buf);
+        const x_na = points.indexAxes(I, .{ .j = 0 });
+        const y_na = points.indexAxes(I, .{ .j = 1 });
         const x_blas = Blas1dMut(Scalar).init(I, x_na);
         const y_blas = Blas1dMut(Scalar).init(I, y_na);
         f(

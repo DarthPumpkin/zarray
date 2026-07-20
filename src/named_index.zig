@@ -256,6 +256,30 @@ pub fn NamedIndex(comptime AxisEnum: type) type {
             };
         }
 
+        /// Fix each axis not present in `NewEnum` to a single position and drop
+        /// it, returning a lower-rank index over the same buffer layout.
+        /// `indices` supplies the position for every dropped axis
+        /// (`Axis \ NewEnum`). This is `conformAxes` generalized: each dropped
+        /// axis is first sliced to its chosen position instead of having to
+        /// already be size 1. Panics if any index is out of bounds.
+        pub fn indexAxes(self: *const @This(), comptime NewEnum: type, indices: DifferenceAxesStruct(Axis, NewEnum)) NamedIndex(NewEnum) {
+            var idx = self.*;
+            inline for (comptime meta.fieldNames(Difference(Axis, NewEnum))) |name| {
+                const i = @field(indices, name);
+                idx = idx.sliceAxis(@field(Axis, name), i, i + 1);
+            }
+            return idx.conformAxes(NewEnum);
+        }
+
+        /// Like `indexAxes`, but returns null instead of panicking if any
+        /// dropped axis index is out of bounds for that axis.
+        pub fn indexAxesChecked(self: *const @This(), comptime NewEnum: type, indices: DifferenceAxesStruct(Axis, NewEnum)) ?NamedIndex(NewEnum) {
+            inline for (comptime meta.fieldNames(Difference(Axis, NewEnum))) |name| {
+                if (@field(indices, name) >= @field(self.shape, name)) return null;
+            }
+            return self.indexAxes(NewEnum, indices);
+        }
+
         pub fn count(self: *const @This()) usize {
             var prod: usize = 1;
             inline for (field_names) |fname| prod *= @field(self.shape, fname);
@@ -1412,6 +1436,41 @@ test "conformAxes" {
         .offset = 0,
     };
     try std.testing.expectEqual(expected2, idx_proj2);
+}
+
+test "indexAxes" {
+    const IJK = enum { i, j, k };
+    const J = enum { j };
+    const KI = enum { k, i };
+    const IndexIJK = NamedIndex(IJK);
+
+    // Contiguous {i:2, j:3, k:4} => strides {i:12, j:4, k:1}.
+    const idx = IndexIJK.initContiguous(.{ .i = 2, .j = 3, .k = 4 });
+
+    // Drop i and k, keep j: fix i=1, k=2 => offset 1*12 + 2*1 = 14.
+    const row = idx.indexAxes(J, .{ .i = 1, .k = 2 });
+    const expected_row: NamedIndex(J) = .{
+        .shape = .{ .j = 3 },
+        .strides = .{ .j = 4 },
+        .offset = 14,
+    };
+    try std.testing.expectEqual(expected_row, row);
+    try std.testing.expectEqual(14, row.linear(.{ .j = 0 }));
+    try std.testing.expectEqual(22, row.linear(.{ .j = 2 }));
+
+    // Kept axes may be reordered relative to the original: keep {k, i}, drop j=1.
+    const plane = idx.indexAxes(KI, .{ .j = 1 });
+    const expected_plane: NamedIndex(KI) = .{
+        .shape = .{ .k = 4, .i = 2 },
+        .strides = .{ .k = 1, .i = 12 },
+        .offset = 4,
+    };
+    try std.testing.expectEqual(expected_plane, plane);
+
+    // Checked variant: in-bounds matches indexAxes, out-of-bounds yields null.
+    try std.testing.expectEqual(row, idx.indexAxesChecked(J, .{ .i = 1, .k = 2 }).?);
+    try std.testing.expectEqual(null, idx.indexAxesChecked(J, .{ .i = 2, .k = 2 })); // i == size
+    try std.testing.expectEqual(null, idx.indexAxesChecked(J, .{ .i = 0, .k = 4 })); // k == size
 }
 
 test "addEmptyAxis" {

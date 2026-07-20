@@ -12,6 +12,7 @@ pub const libs = struct {
     pub const blas = @import("accelerate.zig").blas;
     // pub const lapack = @import("accelerate.zig").lapack;
     pub const tblis = @import("tblis.zig");
+    pub const gsl = @import("gsl.zig");
 
     test "libs" {
         std.testing.refAllDecls(@This());

@@ -32,7 +32,7 @@ pub fn main() !void {
         .batch = 2,
         .in = 3,
     });
-    _ = batch.fillArange();
+    batch.fillArange();
     const output = try mlp.forward(al, batch.asConst());
     std.log.debug("{f}\n", .{output});
 }
@@ -157,6 +157,6 @@ fn LayerIterator(comptime Scalar: type) type {
 }
 
 fn fillZeros(comptime Scalar: type, layer: Layer(Scalar)) void {
-    _ = layer.biases_1d.fill(0);
-    _ = layer.weights_2d.fill(0);
+    layer.biases_1d.fill(0);
+    layer.weights_2d.fill(0);
 }

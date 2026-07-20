@@ -31,22 +31,20 @@ pub fn NamedArray(comptime Axis: type, comptime Scalar: type) type {
             return .init(idx, buf);
         }
 
-        pub fn fill(self: *const @This(), val: Scalar) *const @This() {
+        pub fn fill(self: *const @This(), val: Scalar) void {
             var keys = self.idx.iterKeys();
             while (keys.next()) |key| {
                 self.buf[self.idx.linear(key)] = val;
             }
-            return self;
         }
 
-        pub fn fillArange(self: *const @This()) *const @This() {
+        pub fn fillArange(self: *const @This()) void {
             var keys = self.idx.iterKeys();
             var i: Scalar = 0;
             while (keys.next()) |key| {
                 self.buf[self.idx.linear(key)] = i;
                 i += 1;
             }
-            return self;
         }
 
         pub fn deinit(self: *const @This(), allocator: mem.Allocator) void {
@@ -78,6 +76,7 @@ pub fn NamedArray(comptime Axis: type, comptime Scalar: type) type {
         pub fn at(self: *const @This(), key: Index.Axes) *Scalar {
             return &self.buf[self.idx.linear(key)];
         }
+
         pub fn scalarAtChecked(self: *const @This(), key: Index.Axes) ?Scalar {
             return getValCheckedGeneric(self, key);
         }
@@ -605,13 +604,13 @@ test "fill" {
     const Axis = enum { i };
     const allocator = std.testing.allocator;
     const arr = try NamedArray(Axis, i32).initAlloc(allocator, .{ .i = 4 });
-    _ = arr.fill(0);
+    arr.fill(0);
     defer arr.deinit(allocator);
 
     const expected_zeros = [_]i32{ 0, 0, 0, 0 };
     try std.testing.expectEqualSlices(i32, &expected_zeros, arr.buf);
 
-    _ = arr.fillArange();
+    arr.fillArange();
     const expected_arange = [_]i32{ 0, 1, 2, 3 };
     try std.testing.expectEqualSlices(i32, &expected_arange, arr.buf);
 }
@@ -642,7 +641,7 @@ test "flat, toContiguous" {
     const al = std.testing.allocator;
     var arr = try NamedArray(IJ, i32).initAlloc(al, .{ .i = 5, .j = 9 });
     defer arr.deinit(al);
-    _ = arr.fillArange();
+    arr.fillArange();
 
     // Non-contiguous array cannot be flattened
     arr.idx = arr.idx
@@ -673,7 +672,7 @@ test "NamedArray toContiguous from reversed view retains logical order" {
     const allocator = std.testing.allocator;
     var arr = try NamedArray(IJ, i32).initAlloc(allocator, .{ .i = 3, .j = 4 });
     defer arr.deinit(allocator);
-    _ = arr.fillArange(); // original layout values: row-major
+    arr.fillArange(); // original layout values: row-major
 
     // Reverse i
     arr.idx = arr.idx.strideAxis(.i, -1);
@@ -773,7 +772,7 @@ test "NamedArray negative strideAxis reversal contiguous flat" {
     const allocator = std.testing.allocator;
     var arr = try NamedArray(IJ, i32).initAlloc(allocator, .{ .i = 3, .j = 4 });
     defer arr.deinit(allocator);
-    _ = arr.fillArange();
+    arr.fillArange();
 
     // Reverse the major axis (i)
     arr.idx = arr.idx.strideAxis(.i, -1);
@@ -788,7 +787,7 @@ test "NamedArray negative subsampled stride non-contiguous flat null" {
     const allocator = std.testing.allocator;
     var arr = try NamedArray(IJ, i32).initAlloc(allocator, .{ .i = 6, .j = 5 });
     defer arr.deinit(allocator);
-    _ = arr.fillArange();
+    arr.fillArange();
 
     // Subsample + reverse i axis (step -2)
     arr.idx = arr.idx.strideAxis(.i, -2);
@@ -815,7 +814,7 @@ test "NamedArray stride multi-axis negative and positive" {
     const allocator = std.testing.allocator;
     var arr = try NamedArray(IJ, i32).initAlloc(allocator, .{ .i = 5, .j = 6 });
     defer arr.deinit(allocator);
-    _ = arr.fillArange();
+    arr.fillArange();
 
     // Apply multi-axis stride: reverse i (step -1), subsample j by +2
     arr.idx = arr.idx.stride(.{ .i = -1, .j = 2 });
@@ -1139,7 +1138,7 @@ test "format 1d" {
     const allocator = std.testing.allocator;
     const arr = try NamedArray(Axis, i32).initAlloc(allocator, .{ .i = 3 });
     defer arr.deinit(allocator);
-    _ = arr.fillArange();
+    arr.fillArange();
     try std.testing.expectFmt("NamedArray(i: 3) i32\n[0 1 2]", "{f}", .{arr});
 }
 
@@ -1148,7 +1147,7 @@ test "format 2d aligned" {
     const allocator = std.testing.allocator;
     const arr = try NamedArray(Axis, i32).initAlloc(allocator, .{ .i = 2, .j = 5 });
     defer arr.deinit(allocator);
-    _ = arr.fillArange();
+    arr.fillArange();
     try std.testing.expectFmt(
         "NamedArray(i: 2, j: 5) i32\n[[0 1 2 3 4]\n [5 6 7 8 9]]",
         "{f}",
@@ -1161,7 +1160,7 @@ test "format 3d labeled slices" {
     const allocator = std.testing.allocator;
     const arr = try NamedArray(Axis, i32).initAlloc(allocator, .{ .b = 2, .i = 2, .j = 2 });
     defer arr.deinit(allocator);
-    _ = arr.fillArange();
+    arr.fillArange();
     try std.testing.expectFmt(
         "NamedArray(b: 2, i: 2, j: 2) i32\n" ++
             "[b=0]\n  [[0 1]\n   [2 3]]\n\n" ++
@@ -1176,7 +1175,7 @@ test "format debug" {
     const allocator = std.testing.allocator;
     const arr = try NamedArray(Axis, i32).initAlloc(allocator, .{ .i = 2, .j = 3 });
     defer arr.deinit(allocator);
-    _ = arr.fillArange();
+    arr.fillArange();
     try std.testing.expectFmt(
         "NamedArray(i: 2, j: 3) i32\n" ++
             "  shape:      { i: 2, j: 3 }\n" ++
@@ -1210,7 +1209,7 @@ test "format truncates long 1d column axis" {
     const allocator = std.testing.allocator;
     const arr = try NamedArray(Axis, i32).initAlloc(allocator, .{ .i = 10 });
     defer arr.deinit(allocator);
-    _ = arr.fillArange();
+    arr.fillArange();
     try std.testing.expectFmt("NamedArray(i: 10) i32\n[0 1 2 ... 7 8 9]", "{f}", .{arr});
 }
 
@@ -1219,7 +1218,7 @@ test "format truncates long 2d column axis with alignment" {
     const allocator = std.testing.allocator;
     const arr = try NamedArray(Axis, i32).initAlloc(allocator, .{ .i = 2, .j = 10 });
     defer arr.deinit(allocator);
-    _ = arr.fillArange();
+    arr.fillArange();
     try std.testing.expectFmt(
         "NamedArray(i: 2, j: 10) i32\n[[ 0  1  2 ...  7  8  9]\n [10 11 12 ... 17 18 19]]",
         "{f}",
@@ -1232,7 +1231,7 @@ test "format truncates long 2d row axis" {
     const allocator = std.testing.allocator;
     const arr = try NamedArray(Axis, i32).initAlloc(allocator, .{ .i = 8, .j = 2 });
     defer arr.deinit(allocator);
-    _ = arr.fillArange();
+    arr.fillArange();
     try std.testing.expectFmt(
         "NamedArray(i: 8, j: 2) i32\n" ++
             "[[ 0  1]\n [ 2  3]\n [ 4  5]\n ...\n [10 11]\n [12 13]\n [14 15]]",
@@ -1246,7 +1245,7 @@ test "format truncates long outer slice sequence" {
     const allocator = std.testing.allocator;
     const arr = try NamedArray(Axis, i32).initAlloc(allocator, .{ .b = 8, .i = 1, .j = 1 });
     defer arr.deinit(allocator);
-    _ = arr.fillArange();
+    arr.fillArange();
     try std.testing.expectFmt(
         "NamedArray(b: 8, i: 1, j: 1) i32\n" ++
             "[b=0]\n  [[0]]\n\n[b=1]\n  [[1]]\n\n[b=2]\n  [[2]]\n\n" ++
@@ -1262,7 +1261,7 @@ test "format does not truncate at the boundary length" {
     const allocator = std.testing.allocator;
     const arr = try NamedArray(Axis, i32).initAlloc(allocator, .{ .i = 6 });
     defer arr.deinit(allocator);
-    _ = arr.fillArange();
+    arr.fillArange();
     try std.testing.expectFmt("NamedArray(i: 6) i32\n[0 1 2 3 4 5]", "{f}", .{arr});
 }
 
@@ -1271,7 +1270,7 @@ test "format 4d with two labeled outer axes" {
     const allocator = std.testing.allocator;
     const arr = try NamedArray(Axis, i32).initAlloc(allocator, .{ .a = 2, .b = 2, .r = 2, .c = 2 });
     defer arr.deinit(allocator);
-    _ = arr.fillArange();
+    arr.fillArange();
     try std.testing.expectFmt(
         "NamedArray(a: 2, b: 2, r: 2, c: 2) i32\n" ++
             "[a=0, b=0]\n  [[ 0  1]\n   [ 2  3]]\n\n" ++
@@ -1288,7 +1287,7 @@ test "format 4d truncates flattened outer sequence across axes" {
     const allocator = std.testing.allocator;
     const arr = try NamedArray(Axis, i32).initAlloc(allocator, .{ .a = 2, .b = 8, .r = 1, .c = 1 });
     defer arr.deinit(allocator);
-    _ = arr.fillArange();
+    arr.fillArange();
     try std.testing.expectFmt(
         "NamedArray(a: 2, b: 8, r: 1, c: 1) i32\n" ++
             "[a=0, b=0]\n  [[ 0]]\n\n[a=0, b=1]\n  [[ 1]]\n\n[a=0, b=2]\n  [[ 2]]\n\n" ++

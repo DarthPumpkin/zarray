@@ -53,6 +53,14 @@ pub fn strerror(gsl_errno: c_int) [:0]const u8 {
     return std.mem.span(c.gsl_strerror(gsl_errno));
 }
 
+/// # Fast Fourier Transforms (`gsl_fft_*`)
+///
+/// Complex, real, and half-complex FFTs (radix-2 and mixed-radix, `f32`/`f64`).
+/// Kept in its own file (`gsl_fft.zig`) because it needs the `gsl_fft_*` C
+/// headers that this module does not include; see that file's docs for the
+/// `complex(T)` / `real(T)` / `halfcomplex(T)` surface.
+pub const fft = @import("gsl_fft.zig");
+
 /// # Random numbers (`gsl_rng` + `gsl_randist` + `gsl_cdf`)
 ///
 /// A single namespace for everything stochastic: the generator handle and every

@@ -12,8 +12,8 @@
 //!               `cdf`/`sf`/`ppf`/`isf` methods on the distribution structs).
 //!   - `stats` — `gsl_statistics` (descriptive, robust, and weighted statistics
 //!               over strided views of any element type GSL supports).
-//!               `stats` is the `f64` specialization; use `Stats(T)` for other
-//!               element types.
+//!               `stats(T)` selects the module for element type `T` (e.g.
+//!               `stats(f64)`, `stats(i32)`).
 //!
 //! These bindings are not exhaustive: some GSL symbols are intentionally left
 //! unwrapped. See each namespace's "Omitted from GSL" documentation for the
@@ -27,6 +27,7 @@
 //! handler once at startup with `disableDefaultErrorHandler()`.
 
 const std = @import("std");
+const testing = std.testing;
 
 pub const c = @cImport({
     @cInclude("gsl/gsl_errno.h");
@@ -1234,9 +1235,10 @@ pub const qrng = @compileError(
 );
 
 /// A strided, read-only view over `T`: `len` elements spaced `stride` apart
-/// starting at `ptr`. GSL's statistics routines operate on exactly this shape,
-/// so a column/row/axis of a larger array can be passed without copying. Use
-/// `fromSlice` for the common contiguous (stride-1) case.
+/// starting at `ptr`. GSL routines that take strided input (currently the
+/// statistics module) operate on exactly this shape, so a column/row/axis of a
+/// larger array can be passed without copying. Use `fromSlice` for the common
+/// contiguous (stride-1) case.
 pub fn Strided(comptime T: type) type {
     return struct {
         ptr: [*]const T,
@@ -1286,7 +1288,7 @@ fn statsInfix(comptime T: type) [:0]const u8 {
         .float => switch (T) {
             f32 => return "float_",
             f64 => return "",
-            else => @compileError("gsl.Stats: unsupported float element type '" ++ @typeName(T) ++ "'; only f32 and f64 are supported (GSL's long double module is intentionally omitted)"),
+            else => @compileError("gsl.stats: unsupported float element type '" ++ @typeName(T) ++ "'; only f32 and f64 are supported (GSL's long double module is intentionally omitted)"),
         },
         .int => |info| {
             // (infix, C element type) candidates. The unsigned variants come
@@ -1303,15 +1305,15 @@ fn statsInfix(comptime T: type) [:0]const u8 {
                 if (@sizeOf(T) == @sizeOf(CT) and info.signedness == @typeInfo(CT).int.signedness)
                     return cand[0];
             }
-            @compileError(std.fmt.comptimePrint("gsl.Stats: no GSL statistics module matches element type '{s}' ({d}-bit {s}); GSL provides only char/short/int/long-sized modules", .{ @typeName(T), @bitSizeOf(T), @tagName(info.signedness) }));
+            @compileError(std.fmt.comptimePrint("gsl.stats: no GSL statistics module matches element type '{s}' ({d}-bit {s}); GSL provides only char/short/int/long-sized modules", .{ @typeName(T), @bitSizeOf(T), @tagName(info.signedness) }));
         },
-        else => @compileError("gsl.Stats: unsupported element type '" ++ @typeName(T) ++ "'; expected a Zig integer or f32/f64"),
+        else => @compileError("gsl.stats: unsupported element type '" ++ @typeName(T) ++ "'; expected a Zig integer or f32/f64"),
     }
 }
 
 /// Descriptive statistics over `Strided(T)` views, wrapping GSL's per-element-
-/// type `gsl_stats_*` modules. `Stats(T)` selects the module for `T`; the
-/// ready-made `stats` namespace below is the `f64` specialization.
+/// type `gsl_stats_*` modules. `stats(T)` selects the module for `T` (e.g.
+/// `stats(f64)` for `f64` data, `stats(i32)` for `i32` data).
 ///
 /// Supported `T`: `f32`, `f64`, and any Zig-native integer whose size and
 /// signedness match one of GSL's C modules on the target platform (`i8`/`u8`
@@ -1335,7 +1337,7 @@ fn statsInfix(comptime T: type) [:0]const u8 {
 /// the `_with_fixed_mean` forms (known population mean, divides by `n`).
 ///
 /// Weighted statistics exist only for floating-point element types in GSL, so
-/// `Stats(T).weighted` is a compile error for integer `T`.
+/// `stats(T).weighted` is a compile error for integer `T`.
 ///
 /// ## Omitted from GSL
 ///
@@ -1344,10 +1346,10 @@ fn statsInfix(comptime T: type) [:0]const u8 {
 ///     Use `f64`, or the raw `c.gsl_stats_long_double_*` symbols, if you need
 ///     it.
 ///   - Signed 8-bit data is unavailable on the rare targets where C `char` is
-///     unsigned (e.g. some AArch64 platforms): `Stats(i8)` is a compile error
+///     unsigned (e.g. some AArch64 platforms): `stats(i8)` is a compile error
 ///     there rather than risk misreading values. `u8` is always available
 ///     through the `uchar` module.
-pub fn Stats(comptime T: type) type {
+pub fn stats(comptime T: type) type {
     return struct {
         const F = Strided(T);
         const FMut = StridedMut(T);
@@ -1640,14 +1642,9 @@ pub fn Stats(comptime T: type) type {
                 std.debug.assert(w.len == x.len);
                 return @field(c, p ++ "wkurtosis_m_sd")(@ptrCast(w.ptr), w.stride, @ptrCast(x.ptr), x.stride, x.len, wmean, wsd);
             }
-        } else @compileError("gsl.Stats: weighted statistics are only available for floating-point element types (f32, f64); GSL provides no weighted routines for integer types");
+        } else @compileError("gsl.stats: weighted statistics are only available for floating-point element types (f32, f64); GSL provides no weighted routines for integer types");
     };
 }
-
-/// Descriptive statistics over `Strided(f64)` views: the ready-made `f64`
-/// specialization of `Stats`. See `Stats` for the full contract and for how to
-/// obtain the same API over other element types.
-pub const stats = Stats(f64);
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -1664,7 +1661,7 @@ pub const stats = Stats(f64);
 //   - Invoke every wrapped symbol at least once. A wrapper that no test calls is
 //     effectively unverified; new wrappers should come with a test that reaches
 //     them (the `inline for` sweeps over distribution families, `Generator`
-//     variants, and `Stats(T)` element types exist to make this cheap).
+//     variants, and `stats(T)` element types exist to make this cheap).
 //   - Prefer oracle checks over hand-computed expectations. The strongest test
 //     seeds two identical generators and asserts a wrapper produces the
 //     bit-identical result of the raw `c.gsl_*` call (see the "equals the
@@ -1677,14 +1674,12 @@ pub const stats = Stats(f64);
 //
 // Compile-time contract checks use `if (false)` toggle blocks
 // -----------------------------------------------------------
-// Some guarantees are compile errors by design (e.g. `Stats(i128)`,
-// `Stats(i32).weighted`, referencing the reserved `qrng` namespace). A passing
+// Some guarantees are compile errors by design (e.g. `stats(i128)`,
+// `stats(i32).weighted`, referencing the reserved `qrng` namespace). A passing
 // test can't contain code that fails to compile, so those cases live in
 // `if (false) { ... }` blocks (see "unsupported instantiations are rejected at
 // comptime"). To verify one, flip its block to `if (true)`, confirm you get the
 // intended `@compileError`, then revert to `if (false)`.
-
-const testing = std.testing;
 
 test "rand: default constructors" {
     // The library default is mt19937 (unless env overrode the global).
@@ -1806,8 +1801,8 @@ test "distribution: sampled Gaussian has the expected spread" {
     var buf: [50_000]f64 = undefined;
     const g = rand.Gaussian{ .sigma = 3.0 };
     for (&buf) |*x| x.* = g.sample(r);
-    try testing.expectApproxEqAbs(@as(f64, 0.0), stats.mean(.fromSlice(&buf)), 0.05);
-    try testing.expectApproxEqAbs(@as(f64, 3.0), stats.sd(.fromSlice(&buf)), 0.05);
+    try testing.expectApproxEqAbs(@as(f64, 0.0), stats(f64).mean(.fromSlice(&buf)), 0.05);
+    try testing.expectApproxEqAbs(@as(f64, 3.0), stats(f64).sd(.fromSlice(&buf)), 0.05);
 }
 
 test "distribution: Dirichlet sample lands on the simplex" {
@@ -1857,46 +1852,46 @@ test "distribution: BivariateGaussian returns a fixed-size vector" {
 test "stats: basic descriptive statistics" {
     const data = [_]f64{ 2, 4, 4, 4, 5, 5, 7, 9 };
     const v = Strided(f64).fromSlice(&data);
-    try testing.expectApproxEqAbs(@as(f64, 5.0), stats.mean(v), 1e-12);
+    try testing.expectApproxEqAbs(@as(f64, 5.0), stats(f64).mean(v), 1e-12);
     // Sample variance (n-1) of this classic dataset is 32/7.
-    try testing.expectApproxEqAbs(@as(f64, 32.0 / 7.0), stats.variance(v), 1e-12);
-    try testing.expectEqual(@as(f64, 9.0), stats.max(v));
-    try testing.expectEqual(@as(f64, 2.0), stats.min(v));
-    const mm = stats.minMax(v);
+    try testing.expectApproxEqAbs(@as(f64, 32.0 / 7.0), stats(f64).variance(v), 1e-12);
+    try testing.expectEqual(@as(f64, 9.0), stats(f64).max(v));
+    try testing.expectEqual(@as(f64, 2.0), stats(f64).min(v));
+    const mm = stats(f64).minMax(v);
     try testing.expectEqual(@as(f64, 2.0), mm.min);
     try testing.expectEqual(@as(f64, 9.0), mm.max);
     // Data is already sorted, so we can take the median directly.
-    try testing.expectApproxEqAbs(@as(f64, 4.5), stats.medianFromSorted(v), 1e-12);
+    try testing.expectApproxEqAbs(@as(f64, 4.5), stats(f64).medianFromSorted(v), 1e-12);
 }
 
 test "stats: strided view selects every other element" {
     // Even indices hold the dataset; odd indices are noise to be skipped.
     const interleaved = [_]f64{ 2, -9, 4, -9, 4, -9, 4, -9, 5, -9, 5, -9, 7, -9, 9, -9 };
     const v = Strided(f64).init(&interleaved, 2, 8);
-    try testing.expectApproxEqAbs(@as(f64, 5.0), stats.mean(v), 1e-12);
-    try testing.expectEqual(@as(f64, 9.0), stats.max(v));
+    try testing.expectApproxEqAbs(@as(f64, 5.0), stats(f64).mean(v), 1e-12);
+    try testing.expectEqual(@as(f64, 9.0), stats(f64).max(v));
 }
 
 test "stats: select and median rearrange in place" {
     var data = [_]f64{ 5.0, 3.0, 1.0, 4.0, 2.0 };
     // 0-based 3rd smallest is 3.
-    try testing.expectEqual(@as(f64, 3.0), stats.select(.fromSlice(&data), 2));
+    try testing.expectEqual(@as(f64, 3.0), stats(f64).select(.fromSlice(&data), 2));
 
     var data2 = [_]f64{ 5.0, 3.0, 1.0, 4.0, 2.0 };
-    try testing.expectEqual(@as(f64, 3.0), stats.median(.fromSlice(&data2)));
+    try testing.expectEqual(@as(f64, 3.0), stats(f64).median(.fromSlice(&data2)));
 }
 
 test "stats: weighted mean matches unweighted for equal weights" {
     const x = [_]f64{ 1, 2, 3, 4 };
     const w = [_]f64{ 1, 1, 1, 1 };
     try testing.expectApproxEqAbs(
-        stats.mean(.fromSlice(&x)),
-        stats.weighted.mean(.fromSlice(&w), .fromSlice(&x)),
+        stats(f64).mean(.fromSlice(&x)),
+        stats(f64).weighted.mean(.fromSlice(&w), .fromSlice(&x)),
         1e-12,
     );
     // All weight on the last point pulls the mean to it.
     const w2 = [_]f64{ 0, 0, 0, 1 };
-    try testing.expectApproxEqAbs(@as(f64, 4.0), stats.weighted.mean(.fromSlice(&w2), .fromSlice(&x)), 1e-12);
+    try testing.expectApproxEqAbs(@as(f64, 4.0), stats(f64).weighted.mean(.fromSlice(&w2), .fromSlice(&x)), 1e-12);
 }
 
 test "stats: robust scale estimators with explicit work buffers" {
@@ -1908,33 +1903,33 @@ test "stats: robust scale estimators with explicit work buffers" {
     var work: [40]f64 = undefined; // >= max(madWorkLen, snWorkLen, qnWorkLen) = 3n
     var work_int: [50]c_int = undefined; // >= qnWorkIntLen = 5n
 
-    const m = stats.mad(v, work[0..stats.madWorkLen(n)]);
-    const s = stats.snFromSorted(v, work[0..stats.snWorkLen(n)]);
-    const q = stats.qnFromSorted(v, work[0..stats.qnWorkLen(n)], work_int[0..stats.qnWorkIntLen(n)]);
+    const m = stats(f64).mad(v, work[0..stats(f64).madWorkLen(n)]);
+    const s = stats(f64).snFromSorted(v, work[0..stats(f64).snWorkLen(n)]);
+    const q = stats(f64).qnFromSorted(v, work[0..stats(f64).qnWorkLen(n)], work_int[0..stats(f64).qnWorkIntLen(n)]);
 
     // Robust scales ignore the outlier, staying far below the (inflated) sd.
     try testing.expect(m > 0 and s > 0 and q > 0);
-    try testing.expect(m < stats.sd(v));
-    try testing.expect(s < stats.sd(v));
-    try testing.expect(q < stats.sd(v));
+    try testing.expect(m < stats(f64).sd(v));
+    try testing.expect(s < stats(f64).sd(v));
+    try testing.expect(q < stats(f64).sd(v));
 }
 
 test "stats: correlation of a perfectly linear relationship is 1" {
     const x = [_]f64{ 1, 2, 3, 4, 5 };
     const y = [_]f64{ 3, 5, 7, 9, 11 }; // y = 2x + 1
-    try testing.expectApproxEqAbs(@as(f64, 1.0), stats.correlation(.fromSlice(&x), .fromSlice(&y)), 1e-12);
+    try testing.expectApproxEqAbs(@as(f64, 1.0), stats(f64).correlation(.fromSlice(&x), .fromSlice(&y)), 1e-12);
 }
 
 test "stats: integer element type mirrors the f64 module's results" {
-    const S = Stats(i32);
+    const S = stats(i32);
     const idata = [_]i32{ 2, 4, 4, 4, 5, 5, 7, 9 };
     const iv = Strided(i32).fromSlice(&idata);
 
     // Moments are accumulated in double precision, so they match the f64 module.
     const fdata = [_]f64{ 2, 4, 4, 4, 5, 5, 7, 9 };
     const fv = Strided(f64).fromSlice(&fdata);
-    try testing.expectApproxEqAbs(stats.mean(fv), S.mean(iv), 1e-12);
-    try testing.expectApproxEqAbs(stats.variance(fv), S.variance(iv), 1e-12);
+    try testing.expectApproxEqAbs(stats(f64).mean(fv), S.mean(iv), 1e-12);
+    try testing.expectApproxEqAbs(stats(f64).variance(fv), S.variance(iv), 1e-12);
 
     // Value-selecting routines return the element type itself.
     const hi: i32 = S.max(iv);
@@ -1948,14 +1943,14 @@ test "stats: integer element type mirrors the f64 module's results" {
 }
 
 test "stats: select over an unsigned integer view returns the element type" {
-    const S = Stats(u16);
+    const S = stats(u16);
     var data = [_]u16{ 5, 3, 1, 4, 2 };
     const third: u16 = S.select(StridedMut(u16).fromSlice(&data), 2);
     try testing.expectEqual(@as(u16, 3), third);
 }
 
 test "stats: f32 element type, including weighted statistics" {
-    const S = Stats(f32);
+    const S = stats(f32);
     const x = [_]f32{ 1, 2, 3, 4 };
     const w = [_]f32{ 1, 1, 1, 1 };
     try testing.expectApproxEqAbs(@as(f64, 2.5), S.mean(Strided(f32).fromSlice(&x)), 1e-6);
@@ -1968,7 +1963,7 @@ test "stats: f32 element type, including weighted statistics" {
 }
 
 test "stats: integer robust scale estimators use T-typed work buffers" {
-    const S = Stats(i32);
+    const S = stats(i32);
     const data = [_]i32{ 1, 2, 3, 4, 5, 6, 7, 8, 9, 100 };
     const v = Strided(i32).fromSlice(&data);
     const n = v.len;
@@ -2310,54 +2305,55 @@ test "distribution: cdf/pdf/ppf hit known closed-form values" {
 }
 
 test "stats: every descriptive routine is invoked and cross-checked" {
+    const S = stats(f64);
     const data = [_]f64{ 2, 4, 4, 4, 5, 5, 7, 9 };
     const v = Strided(f64).fromSlice(&data);
     const n = data.len;
-    const m = stats.mean(v);
-    const s = stats.sd(v);
+    const m = S.mean(v);
+    const s = S.sd(v);
 
     // The `_m` variants must agree with the plain ones when given the true mean/sd.
-    try testing.expectApproxEqAbs(stats.variance(v), stats.varianceMean(v, m), 1e-10);
-    try testing.expectApproxEqAbs(stats.sd(v), stats.sdMean(v, m), 1e-10);
-    try testing.expectApproxEqAbs(stats.tss(v), stats.tssMean(v, m), 1e-10);
-    try testing.expectApproxEqAbs(stats.absdev(v), stats.absdevMean(v, m), 1e-10);
-    try testing.expectApproxEqAbs(stats.skew(v), stats.skewMeanSd(v, m, s), 1e-10);
-    try testing.expectApproxEqAbs(stats.kurtosis(v), stats.kurtosisMeanSd(v, m, s), 1e-10);
-    try testing.expectApproxEqAbs(stats.lag1Autocorrelation(v), stats.lag1AutocorrelationMean(v, m), 1e-10);
+    try testing.expectApproxEqAbs(S.variance(v), S.varianceMean(v, m), 1e-10);
+    try testing.expectApproxEqAbs(S.sd(v), S.sdMean(v, m), 1e-10);
+    try testing.expectApproxEqAbs(S.tss(v), S.tssMean(v, m), 1e-10);
+    try testing.expectApproxEqAbs(S.absdev(v), S.absdevMean(v, m), 1e-10);
+    try testing.expectApproxEqAbs(S.skew(v), S.skewMeanSd(v, m, s), 1e-10);
+    try testing.expectApproxEqAbs(S.kurtosis(v), S.kurtosisMeanSd(v, m, s), 1e-10);
+    try testing.expectApproxEqAbs(S.lag1Autocorrelation(v), S.lag1AutocorrelationMean(v, m), 1e-10);
 
     // The fixed-mean forms divide by n instead of n-1.
     try testing.expectApproxEqAbs(
-        stats.variance(v) * @as(f64, @floatFromInt(n - 1)) / @as(f64, @floatFromInt(n)),
-        stats.varianceWithFixedMean(v, m),
+        S.variance(v) * @as(f64, @floatFromInt(n - 1)) / @as(f64, @floatFromInt(n)),
+        S.varianceWithFixedMean(v, m),
         1e-10,
     );
     try testing.expectApproxEqAbs(
-        stats.sdWithFixedMean(v, m) * stats.sdWithFixedMean(v, m),
-        stats.varianceWithFixedMean(v, m),
+        S.sdWithFixedMean(v, m) * S.sdWithFixedMean(v, m),
+        S.varianceWithFixedMean(v, m),
         1e-10,
     );
 
     // Index extrema locate the known min (2 @ idx 0) and max (9 @ idx 7).
-    try testing.expectEqual(@as(usize, 0), stats.minIndex(v));
-    try testing.expectEqual(@as(usize, 7), stats.maxIndex(v));
-    const mmi = stats.minMaxIndex(v);
+    try testing.expectEqual(@as(usize, 0), S.minIndex(v));
+    try testing.expectEqual(@as(usize, 7), S.maxIndex(v));
+    const mmi = S.minMaxIndex(v);
     try testing.expectEqual(@as(usize, 0), mmi.min);
     try testing.expectEqual(@as(usize, 7), mmi.max);
 
     // Quantile at 0.5 equals the median; a 0-trim mean equals the plain mean.
-    try testing.expectApproxEqAbs(stats.medianFromSorted(v), stats.quantileFromSorted(v, 0.5), 1e-12);
-    try testing.expectApproxEqAbs(m, stats.trmeanFromSorted(0.0, v), 1e-10);
-    try testing.expect(std.math.isFinite(stats.gastwirthFromSorted(v)));
+    try testing.expectApproxEqAbs(S.medianFromSorted(v), S.quantileFromSorted(v, 0.5), 1e-12);
+    try testing.expectApproxEqAbs(m, S.trmeanFromSorted(0.0, v), 1e-10);
+    try testing.expect(std.math.isFinite(S.gastwirthFromSorted(v)));
 
     // Scaled vs. unscaled robust scale estimators (also invokes every work-buffer path).
     var work: [24]f64 = undefined; // >= qnWorkLen(8) = 24
     var work_int: [40]c_int = undefined; // >= qnWorkIntLen(8) = 40
-    const mad_scaled = stats.mad(v, work[0..stats.madWorkLen(n)]);
-    const mad_raw = stats.mad0(v, work[0..stats.madWorkLen(n)]);
-    const sn = stats.snFromSorted(v, work[0..stats.snWorkLen(n)]);
-    const sn0 = stats.sn0FromSorted(v, work[0..stats.snWorkLen(n)]);
-    const qn = stats.qnFromSorted(v, work[0..stats.qnWorkLen(n)], work_int[0..stats.qnWorkIntLen(n)]);
-    const qn0 = stats.qn0FromSorted(v, work[0..stats.qnWorkLen(n)], work_int[0..stats.qnWorkIntLen(n)]);
+    const mad_scaled = S.mad(v, work[0..S.madWorkLen(n)]);
+    const mad_raw = S.mad0(v, work[0..S.madWorkLen(n)]);
+    const sn = S.snFromSorted(v, work[0..S.snWorkLen(n)]);
+    const sn0 = S.sn0FromSorted(v, work[0..S.snWorkLen(n)]);
+    const qn = S.qnFromSorted(v, work[0..S.qnWorkLen(n)], work_int[0..S.qnWorkIntLen(n)]);
+    const qn0 = S.qn0FromSorted(v, work[0..S.qnWorkLen(n)], work_int[0..S.qnWorkIntLen(n)]);
     try testing.expect(mad_scaled > mad_raw and mad_raw > 0);
     try testing.expect(sn > 0 and sn0 > 0 and qn > 0 and qn0 > 0);
 
@@ -2365,53 +2361,54 @@ test "stats: every descriptive routine is invoked and cross-checked" {
     const data2 = [_]f64{ 1, 3, 3, 5, 4, 6, 8, 10 };
     const w = Strided(f64).fromSlice(&data2);
     try testing.expectApproxEqAbs(
-        stats.covariance(v, w),
-        stats.covarianceMean(v, w, stats.mean(v), stats.mean(w)),
+        S.covariance(v, w),
+        S.covarianceMean(v, w, S.mean(v), S.mean(w)),
         1e-10,
     );
-    try testing.expect(std.math.isFinite(stats.correlation(v, w)));
-    try testing.expect(std.math.isFinite(stats.pvariance(v, w)));
-    try testing.expect(std.math.isFinite(stats.ttest(v, w)));
+    try testing.expect(std.math.isFinite(S.correlation(v, w)));
+    try testing.expect(std.math.isFinite(S.pvariance(v, w)));
+    try testing.expect(std.math.isFinite(S.ttest(v, w)));
     var swork: [16]f64 = undefined; // >= spearmanWorkLen(8) = 16
-    try testing.expect(std.math.isFinite(stats.spearman(v, w, swork[0..stats.spearmanWorkLen(n)])));
+    try testing.expect(std.math.isFinite(S.spearman(v, w, swork[0..S.spearmanWorkLen(n)])));
 }
 
 test "stats: weighted routines match unweighted under equal weights" {
+    const S = stats(f64);
     const x = [_]f64{ 2, 4, 4, 4, 5, 5, 7, 9 };
     const wt = [_]f64{ 1, 1, 1, 1, 1, 1, 1, 1 };
     const xv = Strided(f64).fromSlice(&x);
     const wv = Strided(f64).fromSlice(&wt);
-    const m = stats.mean(xv);
+    const m = S.mean(xv);
 
     // With unit weights, GSL's weighted estimators reduce to the unweighted ones.
-    const wm = stats.weighted.mean(wv, xv);
-    const wv_var = stats.weighted.variance(wv, xv);
-    const wsd = stats.weighted.sd(wv, xv);
+    const wm = S.weighted.mean(wv, xv);
+    const wv_var = S.weighted.variance(wv, xv);
+    const wsd = S.weighted.sd(wv, xv);
     try testing.expectApproxEqAbs(m, wm, 1e-9);
-    try testing.expectApproxEqAbs(stats.variance(xv), wv_var, 1e-9);
-    try testing.expectApproxEqAbs(stats.sd(xv), wsd, 1e-9);
-    try testing.expectApproxEqAbs(stats.tss(xv), stats.weighted.tss(wv, xv), 1e-9);
-    try testing.expectApproxEqAbs(stats.absdev(xv), stats.weighted.absdev(wv, xv), 1e-9);
-    try testing.expectApproxEqAbs(stats.skew(xv), stats.weighted.skew(wv, xv), 1e-9);
-    try testing.expectApproxEqAbs(stats.kurtosis(xv), stats.weighted.kurtosis(wv, xv), 1e-9);
+    try testing.expectApproxEqAbs(S.variance(xv), wv_var, 1e-9);
+    try testing.expectApproxEqAbs(S.sd(xv), wsd, 1e-9);
+    try testing.expectApproxEqAbs(S.tss(xv), S.weighted.tss(wv, xv), 1e-9);
+    try testing.expectApproxEqAbs(S.absdev(xv), S.weighted.absdev(wv, xv), 1e-9);
+    try testing.expectApproxEqAbs(S.skew(xv), S.weighted.skew(wv, xv), 1e-9);
+    try testing.expectApproxEqAbs(S.kurtosis(xv), S.weighted.kurtosis(wv, xv), 1e-9);
 
     // The `_m` weighted forms agree with their auto-mean counterparts.
-    try testing.expectApproxEqAbs(wv_var, stats.weighted.varianceMean(wv, xv, wm), 1e-9);
-    try testing.expectApproxEqAbs(wsd, stats.weighted.sdMean(wv, xv, wm), 1e-9);
-    try testing.expectApproxEqAbs(stats.weighted.tss(wv, xv), stats.weighted.tssMean(wv, xv, wm), 1e-9);
-    try testing.expectApproxEqAbs(stats.weighted.absdev(wv, xv), stats.weighted.absdevMean(wv, xv, wm), 1e-9);
-    try testing.expectApproxEqAbs(stats.weighted.skew(wv, xv), stats.weighted.skewMeanSd(wv, xv, wm, wsd), 1e-9);
-    try testing.expectApproxEqAbs(stats.weighted.kurtosis(wv, xv), stats.weighted.kurtosisMeanSd(wv, xv, wm, wsd), 1e-9);
+    try testing.expectApproxEqAbs(wv_var, S.weighted.varianceMean(wv, xv, wm), 1e-9);
+    try testing.expectApproxEqAbs(wsd, S.weighted.sdMean(wv, xv, wm), 1e-9);
+    try testing.expectApproxEqAbs(S.weighted.tss(wv, xv), S.weighted.tssMean(wv, xv, wm), 1e-9);
+    try testing.expectApproxEqAbs(S.weighted.absdev(wv, xv), S.weighted.absdevMean(wv, xv, wm), 1e-9);
+    try testing.expectApproxEqAbs(S.weighted.skew(wv, xv), S.weighted.skewMeanSd(wv, xv, wm, wsd), 1e-9);
+    try testing.expectApproxEqAbs(S.weighted.kurtosis(wv, xv), S.weighted.kurtosisMeanSd(wv, xv, wm, wsd), 1e-9);
 
     // The fixed-mean weighted forms divide by the summed weight (= n here).
     try testing.expectApproxEqAbs(
-        stats.varianceWithFixedMean(xv, m),
-        stats.weighted.varianceWithFixedMean(wv, xv, m),
+        S.varianceWithFixedMean(xv, m),
+        S.weighted.varianceWithFixedMean(wv, xv, m),
         1e-9,
     );
     try testing.expectApproxEqAbs(
-        stats.sdWithFixedMean(xv, m),
-        stats.weighted.sdWithFixedMean(wv, xv, m),
+        S.sdWithFixedMean(xv, m),
+        S.weighted.sdWithFixedMean(wv, xv, m),
         1e-9,
     );
 }
@@ -2420,7 +2417,7 @@ test "stats: every supported integer module instantiates and computes" {
     // One representative dataset whose mean is 3 and whose extrema are 1 and 5,
     // instantiated across every integer element type GSL provides a module for.
     inline for (.{ u8, i16, u16, i32, u32, i64, u64, c_short, c_ushort, c_int, c_uint, c_long, c_ulong, c_char }) |T| {
-        const S = Stats(T);
+        const S = stats(T);
         const data = [_]T{ 1, 2, 3, 4, 5 };
         const v = Strided(T).fromSlice(&data);
         try testing.expectApproxEqAbs(@as(f64, 3.0), S.mean(v), 1e-12);
@@ -2430,7 +2427,7 @@ test "stats: every supported integer module instantiates and computes" {
 
     // Signed 8-bit maps onto GSL's `char` module only where C `char` is signed.
     if (@typeInfo(c_char).int.signedness == .signed) {
-        const S = Stats(i8);
+        const S = stats(i8);
         const data = [_]i8{ 1, 2, 3, 4, 5 };
         const v = Strided(i8).fromSlice(&data);
         try testing.expectApproxEqAbs(@as(f64, 3.0), S.mean(v), 1e-12);
@@ -2526,7 +2523,7 @@ test "stats: unsupported instantiations are rejected at comptime" {
     // Weighted statistics exist only for floating-point element types, so
     // reaching `weighted` on an integer specialization is a compile error.
     if (false) {
-        _ = Stats(i32).weighted;
+        _ = stats(i32).weighted;
     }
 
     // The quasi-random namespace is a reserved placeholder: referencing it at

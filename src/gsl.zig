@@ -1,13 +1,23 @@
 //! Idiomatic Zig bindings for the GNU Scientific Library's random number
 //! generation (`gsl_rng`), random distributions (`gsl_randist`), cumulative
-//! distribution functions (`gsl_cdf`), and double-precision statistics
-//! (`gsl_statistics`) modules.
+//! distribution functions (`gsl_cdf`), and statistics (`gsl_statistics`)
+//! modules.
 //!
-//! The public surface is organized into two namespaces:
-//!   - `rand`  — random number generation (`gsl_rng`) and random distributions
-//!               (`gsl_randist` + `gsl_cdf`): the `Rng` handle and every
-//!               distribution family, each its own struct.
-//!   - `stats` — descriptive/robust/weighted statistics over strided views.
+//! The public surface is organized into two namespaces, each mapping onto
+//! specific GSL modules:
+//!   - `rand`  — `gsl_rng` (generator algorithms + the stateful `Rng` handle),
+//!               `gsl_randist` (random distributions, plus the generic
+//!               shuffling/sampling helpers on `Rng`), and `gsl_cdf`
+//!               (cumulative distribution functions, surfaced as scipy-style
+//!               `cdf`/`sf`/`ppf`/`isf` methods on the distribution structs).
+//!   - `stats` — `gsl_statistics` (descriptive, robust, and weighted statistics
+//!               over strided views of any element type GSL supports).
+//!               `stats` is the `f64` specialization; use `Stats(T)` for other
+//!               element types.
+//!
+//! These bindings are not exhaustive: some GSL symbols are intentionally left
+//! unwrapped. See each namespace's "Omitted from GSL" documentation for the
+//! specifics, and reach for the raw C API below when you need something else.
 //!
 //! The raw C API is available via `c` if you need something not wrapped here.
 //!
@@ -23,7 +33,9 @@ pub const c = @cImport({
     @cInclude("gsl/gsl_rng.h");
     @cInclude("gsl/gsl_randist.h");
     @cInclude("gsl/gsl_cdf.h");
-    @cInclude("gsl/gsl_statistics_double.h");
+    // Pulls in every element-type statistics module (double, float, int, uint,
+    // long, ulong, short, ushort, char, uchar, and long double).
+    @cInclude("gsl/gsl_statistics.h");
 });
 
 /// Replace GSL's default (aborting) error handler with the no-op handler, so
@@ -85,6 +97,28 @@ pub fn strerror(gsl_errno: c_int) [:0]const u8 {
 /// var theta: [3]f64 = undefined;
 /// d.sample(gen, &theta);   // writes a point on the 2-simplex
 /// ```
+///
+/// ## Omitted from GSL
+///
+/// These parts of GSL's RNG/distribution API are intentionally *not* wrapped
+/// (the raw symbols remain reachable through `c`):
+///
+///   - Generator zoo: only the five `Generator` algorithms below are exposed,
+///     out of the ~60 GSL ships. Use a raw `c.gsl_rng_*` type pointer with
+///     `c.gsl_rng_alloc` if you need one that isn't listed.
+///   - Generator plumbing: RNG state serialization (`gsl_rng_fwrite`/`fread`),
+///     raw state access (`gsl_rng_state`/`gsl_rng_size`), and the whole
+///     quasi-random generator family (`gsl_qrng_*`: Sobol, Halton, ...).
+///   - Multivariate families: the multivariate Gaussian
+///     (`gsl_ran_multivariate_gaussian*`) and Wishart (`gsl_ran_wishart*`) are
+///     deferred until this project grows matrix/vector (linear-algebra)
+///     bindings for their arguments.
+///   - Redundant sampling algorithms: where GSL offers several samplers for one
+///     distribution we bind only the default and skip the alternates — e.g.
+///     `gsl_ran_gaussian_ziggurat`/`_ratio_method`,
+///     `gsl_ran_ugaussian_ratio_method`, `gsl_ran_gamma_knuth`/`_mt`/`_int`,
+///     `gsl_ran_binomial_knuth`/`_tpe`, and `gsl_ran_dir_2d_trig_method`.
+///   - Bulk helpers: array-filling variants such as `gsl_ran_poisson_array`.
 pub const rand = struct {
     // ===== Generators (gsl_rng) ===============================================
 
@@ -1131,301 +1165,378 @@ pub fn StridedMut(comptime T: type) type {
     };
 }
 
-/// Descriptive statistics over `Strided(f64)` views, wrapping `gsl_stats_*`.
+/// Maps a Zig element type to the GSL statistics module infix used in the C
+/// symbol name `gsl_stats_<infix>...`. The chosen module is the one whose C
+/// element type has an identical size and signedness on the target platform,
+/// so the raw pointer handed to GSL is always reinterpreted correctly. Types
+/// GSL has no matching module for are rejected at comptime.
+fn statsInfix(comptime T: type) [:0]const u8 {
+    switch (@typeInfo(T)) {
+        .float => switch (T) {
+            f32 => return "float_",
+            f64 => return "",
+            else => @compileError("gsl.Stats: unsupported float element type '" ++ @typeName(T) ++ "'; only f32 and f64 are supported (GSL's long double module is intentionally omitted)"),
+        },
+        .int => |info| {
+            // (infix, C element type) candidates. The unsigned variants come
+            // first so that on the rare unsigned-`char` platform `u8`
+            // deterministically resolves to `uchar_` rather than `char_`.
+            const candidates = .{
+                .{ "uchar_", u8 },        .{ "char_", c_char },
+                .{ "ushort_", c_ushort }, .{ "short_", c_short },
+                .{ "uint_", c_uint },     .{ "int_", c_int },
+                .{ "ulong_", c_ulong },   .{ "long_", c_long },
+            };
+            inline for (candidates) |cand| {
+                const CT = cand[1];
+                if (@sizeOf(T) == @sizeOf(CT) and info.signedness == @typeInfo(CT).int.signedness)
+                    return cand[0];
+            }
+            @compileError(std.fmt.comptimePrint("gsl.Stats: no GSL statistics module matches element type '{s}' ({d}-bit {s}); GSL provides only char/short/int/long-sized modules", .{ @typeName(T), @bitSizeOf(T), @tagName(info.signedness) }));
+        },
+        else => @compileError("gsl.Stats: unsupported element type '" ++ @typeName(T) ++ "'; expected a Zig integer or f32/f64"),
+    }
+}
+
+/// Descriptive statistics over `Strided(T)` views, wrapping GSL's per-element-
+/// type `gsl_stats_*` modules. `Stats(T)` selects the module for `T`; the
+/// ready-made `stats` namespace below is the `f64` specialization.
+///
+/// Supported `T`: `f32`, `f64`, and any Zig-native integer whose size and
+/// signedness match one of GSL's C modules on the target platform (`i8`/`u8`
+/// through `i64`/`u64`, subject to platform C-type sizes). Instantiating with
+/// an unsupported type is a compile error.
+///
+/// Return types follow GSL exactly. Moment, dispersion, correlation, and
+/// quantile estimators — along with the *scaled* robust estimators (`mad`,
+/// `snFromSorted`, `qnFromSorted`) — always return `f64`. Value-selecting
+/// routines (`max`, `min`, `select`, `sn0FromSorted`, `qn0FromSorted`, and the
+/// `min`/`max` fields of `minMax`) return the element type `T`.
+///
 /// Everything here is allocation-free; the robust estimators that need scratch
 /// space take an explicit caller-provided `work` buffer whose required length
-/// is given by the matching `*WorkLen` helper.
+/// is given by the matching `*WorkLen` helper. `spearman`, `mad`, and `mad0`
+/// scratch is `[]f64`; `Sn`/`Qn` scratch is `[]T` (with an extra `[]c_int` for
+/// `Qn`).
 ///
 /// The `*Mean`/`*MeanSd` variants correspond to GSL's `_m` forms (pass a
 /// precomputed mean/sd to skip recomputing it); `*WithFixedMean` corresponds to
 /// the `_with_fixed_mean` forms (known population mean, divides by `n`).
-pub const stats = struct {
-    const F = Strided(f64);
-    const FMut = StridedMut(f64);
+///
+/// Weighted statistics exist only for floating-point element types in GSL, so
+/// `Stats(T).weighted` is a compile error for integer `T`.
+///
+/// ## Omitted from GSL
+///
+///   - The `long double` module (`gsl_stats_long_double_*`) is not wrapped:
+///     Zig has no portable fixed-width type matching C `long double`'s ABI.
+///     Use `f64`, or the raw `c.gsl_stats_long_double_*` symbols, if you need
+///     it.
+///   - Signed 8-bit data is unavailable on the rare targets where C `char` is
+///     unsigned (e.g. some AArch64 platforms): `Stats(i8)` is a compile error
+///     there rather than risk misreading values. `u8` is always available
+///     through the `uchar` module.
+pub fn Stats(comptime T: type) type {
+    return struct {
+        const F = Strided(T);
+        const FMut = StridedMut(T);
+        const p = "gsl_stats_" ++ statsInfix(T);
+        const is_float = switch (@typeInfo(T)) {
+            .float => true,
+            else => false,
+        };
 
-    pub const MinMax = struct { min: f64, max: f64 };
-    pub const MinMaxIndex = struct { min: usize, max: usize };
+        pub const MinMax = struct { min: T, max: T };
+        pub const MinMaxIndex = struct { min: usize, max: usize };
 
-    // --- Moments and dispersion (single sample) ---------------------------
+        // --- Moments and dispersion (single sample) ---------------------------
 
-    pub fn mean(x: F) f64 {
-        return c.gsl_stats_mean(x.ptr, x.stride, x.len);
-    }
-
-    /// Sample variance (divides by n-1).
-    pub fn variance(x: F) f64 {
-        return c.gsl_stats_variance(x.ptr, x.stride, x.len);
-    }
-    /// Sample variance about a precomputed mean (divides by n-1).
-    pub fn varianceMean(x: F, m: f64) f64 {
-        return c.gsl_stats_variance_m(x.ptr, x.stride, x.len, m);
-    }
-    /// Variance about a known population mean (divides by n).
-    pub fn varianceWithFixedMean(x: F, m: f64) f64 {
-        return c.gsl_stats_variance_with_fixed_mean(x.ptr, x.stride, x.len, m);
-    }
-
-    /// Sample standard deviation (divides by n-1).
-    pub fn sd(x: F) f64 {
-        return c.gsl_stats_sd(x.ptr, x.stride, x.len);
-    }
-    pub fn sdMean(x: F, m: f64) f64 {
-        return c.gsl_stats_sd_m(x.ptr, x.stride, x.len, m);
-    }
-    pub fn sdWithFixedMean(x: F, m: f64) f64 {
-        return c.gsl_stats_sd_with_fixed_mean(x.ptr, x.stride, x.len, m);
-    }
-
-    /// Total sum of squares about the mean.
-    pub fn tss(x: F) f64 {
-        return c.gsl_stats_tss(x.ptr, x.stride, x.len);
-    }
-    pub fn tssMean(x: F, m: f64) f64 {
-        return c.gsl_stats_tss_m(x.ptr, x.stride, x.len, m);
-    }
-
-    /// Mean absolute deviation about the mean.
-    pub fn absdev(x: F) f64 {
-        return c.gsl_stats_absdev(x.ptr, x.stride, x.len);
-    }
-    pub fn absdevMean(x: F, m: f64) f64 {
-        return c.gsl_stats_absdev_m(x.ptr, x.stride, x.len, m);
-    }
-
-    /// Skewness.
-    pub fn skew(x: F) f64 {
-        return c.gsl_stats_skew(x.ptr, x.stride, x.len);
-    }
-    pub fn skewMeanSd(x: F, m: f64, sd_: f64) f64 {
-        return c.gsl_stats_skew_m_sd(x.ptr, x.stride, x.len, m, sd_);
-    }
-
-    /// Excess kurtosis (0 for a normal distribution).
-    pub fn kurtosis(x: F) f64 {
-        return c.gsl_stats_kurtosis(x.ptr, x.stride, x.len);
-    }
-    pub fn kurtosisMeanSd(x: F, m: f64, sd_: f64) f64 {
-        return c.gsl_stats_kurtosis_m_sd(x.ptr, x.stride, x.len, m, sd_);
-    }
-
-    /// Lag-1 autocorrelation.
-    pub fn lag1Autocorrelation(x: F) f64 {
-        return c.gsl_stats_lag1_autocorrelation(x.ptr, x.stride, x.len);
-    }
-    pub fn lag1AutocorrelationMean(x: F, m: f64) f64 {
-        return c.gsl_stats_lag1_autocorrelation_m(x.ptr, x.stride, x.len, m);
-    }
-
-    // --- Extrema ----------------------------------------------------------
-
-    pub fn max(x: F) f64 {
-        return c.gsl_stats_max(x.ptr, x.stride, x.len);
-    }
-    pub fn min(x: F) f64 {
-        return c.gsl_stats_min(x.ptr, x.stride, x.len);
-    }
-    pub fn minMax(x: F) MinMax {
-        var lo: f64 = undefined;
-        var hi: f64 = undefined;
-        c.gsl_stats_minmax(&lo, &hi, x.ptr, x.stride, x.len);
-        return .{ .min = lo, .max = hi };
-    }
-    pub fn maxIndex(x: F) usize {
-        return c.gsl_stats_max_index(x.ptr, x.stride, x.len);
-    }
-    pub fn minIndex(x: F) usize {
-        return c.gsl_stats_min_index(x.ptr, x.stride, x.len);
-    }
-    pub fn minMaxIndex(x: F) MinMaxIndex {
-        var lo: usize = undefined;
-        var hi: usize = undefined;
-        c.gsl_stats_minmax_index(&lo, &hi, x.ptr, x.stride, x.len);
-        return .{ .min = lo, .max = hi };
-    }
-
-    // --- Two-sample -------------------------------------------------------
-
-    /// Covariance of two equal-length samples.
-    pub fn covariance(a: F, b: F) f64 {
-        std.debug.assert(a.len == b.len);
-        return c.gsl_stats_covariance(a.ptr, a.stride, b.ptr, b.stride, a.len);
-    }
-    pub fn covarianceMean(a: F, b: F, mean_a: f64, mean_b: f64) f64 {
-        std.debug.assert(a.len == b.len);
-        return c.gsl_stats_covariance_m(a.ptr, a.stride, b.ptr, b.stride, a.len, mean_a, mean_b);
-    }
-    /// Pearson correlation of two equal-length samples.
-    pub fn correlation(a: F, b: F) f64 {
-        std.debug.assert(a.len == b.len);
-        return c.gsl_stats_correlation(a.ptr, a.stride, b.ptr, b.stride, a.len);
-    }
-    /// Required `work` length for `spearman` over `n` elements.
-    pub fn spearmanWorkLen(n: usize) usize {
-        return 2 * n;
-    }
-    /// Spearman rank correlation. `work` must be at least `spearmanWorkLen(n)`.
-    pub fn spearman(a: F, b: F, work: []f64) f64 {
-        std.debug.assert(a.len == b.len);
-        std.debug.assert(work.len >= spearmanWorkLen(a.len));
-        return c.gsl_stats_spearman(a.ptr, a.stride, b.ptr, b.stride, a.len, work.ptr);
-    }
-    /// Pooled variance of two samples (lengths may differ).
-    pub fn pvariance(a: F, b: F) f64 {
-        return c.gsl_stats_pvariance(a.ptr, a.stride, a.len, b.ptr, b.stride, b.len);
-    }
-    /// t-statistic for the difference of two sample means.
-    pub fn ttest(a: F, b: F) f64 {
-        return c.gsl_stats_ttest(a.ptr, a.stride, a.len, b.ptr, b.stride, b.len);
-    }
-
-    // --- Order statistics and quantiles -----------------------------------
-
-    /// The `k`-th smallest element (0-based). Rearranges the input in place.
-    pub fn select(x: FMut, k: usize) f64 {
-        return c.gsl_stats_select(x.ptr, x.stride, x.len, k);
-    }
-    /// Median. Does not require sorted input, but rearranges it in place.
-    pub fn median(x: FMut) f64 {
-        return c.gsl_stats_median(x.ptr, x.stride, x.len);
-    }
-    /// Median of an already-ascending-sorted view (input untouched).
-    pub fn medianFromSorted(sorted: F) f64 {
-        return c.gsl_stats_median_from_sorted_data(sorted.ptr, sorted.stride, sorted.len);
-    }
-    /// The `f`-quantile (0 <= f <= 1) of an already-ascending-sorted view.
-    pub fn quantileFromSorted(sorted: F, f: f64) f64 {
-        std.debug.assert(f >= 0.0 and f <= 1.0);
-        return c.gsl_stats_quantile_from_sorted_data(sorted.ptr, sorted.stride, sorted.len, f);
-    }
-    /// Trimmed mean of an already-ascending-sorted view; `trim` in [0, 0.5).
-    pub fn trmeanFromSorted(trim: f64, sorted: F) f64 {
-        return c.gsl_stats_trmean_from_sorted_data(trim, sorted.ptr, sorted.stride, sorted.len);
-    }
-    /// Gastwirth robust location estimate of an already-sorted view.
-    pub fn gastwirthFromSorted(sorted: F) f64 {
-        return c.gsl_stats_gastwirth_from_sorted_data(sorted.ptr, sorted.stride, sorted.len);
-    }
-
-    // --- Robust scale estimators (explicit work buffers) ------------------
-
-    /// Required `work` length for `mad`/`mad0` over `n` elements.
-    pub fn madWorkLen(n: usize) usize {
-        return n;
-    }
-    /// Median absolute deviation (scaled for consistency with the sd of a
-    /// normal distribution). `work` must be at least `madWorkLen(n)`.
-    pub fn mad(x: F, work: []f64) f64 {
-        std.debug.assert(work.len >= madWorkLen(x.len));
-        return c.gsl_stats_mad(x.ptr, x.stride, x.len, work.ptr);
-    }
-    /// Unscaled median absolute deviation. `work` must be `>= madWorkLen(n)`.
-    pub fn mad0(x: F, work: []f64) f64 {
-        std.debug.assert(work.len >= madWorkLen(x.len));
-        return c.gsl_stats_mad0(x.ptr, x.stride, x.len, work.ptr);
-    }
-
-    /// Required `work` length for `snFromSorted`/`sn0FromSorted`.
-    pub fn snWorkLen(n: usize) usize {
-        return n;
-    }
-    /// Rousseeuw-Croux Sn scale estimator over an already-sorted view.
-    pub fn snFromSorted(sorted: F, work: []f64) f64 {
-        std.debug.assert(work.len >= snWorkLen(sorted.len));
-        return c.gsl_stats_Sn_from_sorted_data(sorted.ptr, sorted.stride, sorted.len, work.ptr);
-    }
-    /// Unscaled Sn over an already-sorted view.
-    pub fn sn0FromSorted(sorted: F, work: []f64) f64 {
-        std.debug.assert(work.len >= snWorkLen(sorted.len));
-        return c.gsl_stats_Sn0_from_sorted_data(sorted.ptr, sorted.stride, sorted.len, work.ptr);
-    }
-
-    /// Required `work` (double) length for `qnFromSorted`/`qn0FromSorted`.
-    pub fn qnWorkLen(n: usize) usize {
-        return 3 * n;
-    }
-    /// Required `work_int` (c_int) length for `qnFromSorted`/`qn0FromSorted`.
-    pub fn qnWorkIntLen(n: usize) usize {
-        return 5 * n;
-    }
-    /// Rousseeuw-Croux Qn scale estimator over an already-sorted view. `work`
-    /// must be `>= qnWorkLen(n)` and `work_int` `>= qnWorkIntLen(n)`.
-    pub fn qnFromSorted(sorted: F, work: []f64, work_int: []c_int) f64 {
-        std.debug.assert(work.len >= qnWorkLen(sorted.len));
-        std.debug.assert(work_int.len >= qnWorkIntLen(sorted.len));
-        return c.gsl_stats_Qn_from_sorted_data(sorted.ptr, sorted.stride, sorted.len, work.ptr, work_int.ptr);
-    }
-    /// Unscaled Qn over an already-sorted view.
-    pub fn qn0FromSorted(sorted: F, work: []f64, work_int: []c_int) f64 {
-        std.debug.assert(work.len >= qnWorkLen(sorted.len));
-        std.debug.assert(work_int.len >= qnWorkIntLen(sorted.len));
-        return c.gsl_stats_Qn0_from_sorted_data(sorted.ptr, sorted.stride, sorted.len, work.ptr, work_int.ptr);
-    }
-
-    /// Weighted statistics. Each takes a weights view `w` and a data view `x`
-    /// of equal length; wraps GSL's `gsl_stats_w*` family.
-    pub const weighted = struct {
-        pub fn mean(w: F, x: F) f64 {
-            std.debug.assert(w.len == x.len);
-            return c.gsl_stats_wmean(w.ptr, w.stride, x.ptr, x.stride, x.len);
+        pub fn mean(x: F) f64 {
+            return @field(c, p ++ "mean")(@ptrCast(x.ptr), x.stride, x.len);
         }
-        pub fn variance(w: F, x: F) f64 {
-            std.debug.assert(w.len == x.len);
-            return c.gsl_stats_wvariance(w.ptr, w.stride, x.ptr, x.stride, x.len);
+
+        /// Sample variance (divides by n-1).
+        pub fn variance(x: F) f64 {
+            return @field(c, p ++ "variance")(@ptrCast(x.ptr), x.stride, x.len);
         }
-        pub fn varianceMean(w: F, x: F, wmean: f64) f64 {
-            std.debug.assert(w.len == x.len);
-            return c.gsl_stats_wvariance_m(w.ptr, w.stride, x.ptr, x.stride, x.len, wmean);
+        /// Sample variance about a precomputed mean (divides by n-1).
+        pub fn varianceMean(x: F, m: f64) f64 {
+            return @field(c, p ++ "variance_m")(@ptrCast(x.ptr), x.stride, x.len, m);
         }
-        pub fn varianceWithFixedMean(w: F, x: F, mean_: f64) f64 {
-            std.debug.assert(w.len == x.len);
-            return c.gsl_stats_wvariance_with_fixed_mean(w.ptr, w.stride, x.ptr, x.stride, x.len, mean_);
+        /// Variance about a known population mean (divides by n).
+        pub fn varianceWithFixedMean(x: F, m: f64) f64 {
+            return @field(c, p ++ "variance_with_fixed_mean")(@ptrCast(x.ptr), x.stride, x.len, m);
         }
-        pub fn sd(w: F, x: F) f64 {
-            std.debug.assert(w.len == x.len);
-            return c.gsl_stats_wsd(w.ptr, w.stride, x.ptr, x.stride, x.len);
+
+        /// Sample standard deviation (divides by n-1).
+        pub fn sd(x: F) f64 {
+            return @field(c, p ++ "sd")(@ptrCast(x.ptr), x.stride, x.len);
         }
-        pub fn sdMean(w: F, x: F, wmean: f64) f64 {
-            std.debug.assert(w.len == x.len);
-            return c.gsl_stats_wsd_m(w.ptr, w.stride, x.ptr, x.stride, x.len, wmean);
+        pub fn sdMean(x: F, m: f64) f64 {
+            return @field(c, p ++ "sd_m")(@ptrCast(x.ptr), x.stride, x.len, m);
         }
-        pub fn sdWithFixedMean(w: F, x: F, mean_: f64) f64 {
-            std.debug.assert(w.len == x.len);
-            return c.gsl_stats_wsd_with_fixed_mean(w.ptr, w.stride, x.ptr, x.stride, x.len, mean_);
+        pub fn sdWithFixedMean(x: F, m: f64) f64 {
+            return @field(c, p ++ "sd_with_fixed_mean")(@ptrCast(x.ptr), x.stride, x.len, m);
         }
-        pub fn tss(w: F, x: F) f64 {
-            std.debug.assert(w.len == x.len);
-            return c.gsl_stats_wtss(w.ptr, w.stride, x.ptr, x.stride, x.len);
+
+        /// Total sum of squares about the mean.
+        pub fn tss(x: F) f64 {
+            return @field(c, p ++ "tss")(@ptrCast(x.ptr), x.stride, x.len);
         }
-        pub fn tssMean(w: F, x: F, wmean: f64) f64 {
-            std.debug.assert(w.len == x.len);
-            return c.gsl_stats_wtss_m(w.ptr, w.stride, x.ptr, x.stride, x.len, wmean);
+        pub fn tssMean(x: F, m: f64) f64 {
+            return @field(c, p ++ "tss_m")(@ptrCast(x.ptr), x.stride, x.len, m);
         }
-        pub fn absdev(w: F, x: F) f64 {
-            std.debug.assert(w.len == x.len);
-            return c.gsl_stats_wabsdev(w.ptr, w.stride, x.ptr, x.stride, x.len);
+
+        /// Mean absolute deviation about the mean.
+        pub fn absdev(x: F) f64 {
+            return @field(c, p ++ "absdev")(@ptrCast(x.ptr), x.stride, x.len);
         }
-        pub fn absdevMean(w: F, x: F, wmean: f64) f64 {
-            std.debug.assert(w.len == x.len);
-            return c.gsl_stats_wabsdev_m(w.ptr, w.stride, x.ptr, x.stride, x.len, wmean);
+        pub fn absdevMean(x: F, m: f64) f64 {
+            return @field(c, p ++ "absdev_m")(@ptrCast(x.ptr), x.stride, x.len, m);
         }
-        pub fn skew(w: F, x: F) f64 {
-            std.debug.assert(w.len == x.len);
-            return c.gsl_stats_wskew(w.ptr, w.stride, x.ptr, x.stride, x.len);
+
+        /// Skewness.
+        pub fn skew(x: F) f64 {
+            return @field(c, p ++ "skew")(@ptrCast(x.ptr), x.stride, x.len);
         }
-        pub fn skewMeanSd(w: F, x: F, wmean: f64, wsd: f64) f64 {
-            std.debug.assert(w.len == x.len);
-            return c.gsl_stats_wskew_m_sd(w.ptr, w.stride, x.ptr, x.stride, x.len, wmean, wsd);
+        pub fn skewMeanSd(x: F, m: f64, sd_: f64) f64 {
+            return @field(c, p ++ "skew_m_sd")(@ptrCast(x.ptr), x.stride, x.len, m, sd_);
         }
-        pub fn kurtosis(w: F, x: F) f64 {
-            std.debug.assert(w.len == x.len);
-            return c.gsl_stats_wkurtosis(w.ptr, w.stride, x.ptr, x.stride, x.len);
+
+        /// Excess kurtosis (0 for a normal distribution).
+        pub fn kurtosis(x: F) f64 {
+            return @field(c, p ++ "kurtosis")(@ptrCast(x.ptr), x.stride, x.len);
         }
-        pub fn kurtosisMeanSd(w: F, x: F, wmean: f64, wsd: f64) f64 {
-            std.debug.assert(w.len == x.len);
-            return c.gsl_stats_wkurtosis_m_sd(w.ptr, w.stride, x.ptr, x.stride, x.len, wmean, wsd);
+        pub fn kurtosisMeanSd(x: F, m: f64, sd_: f64) f64 {
+            return @field(c, p ++ "kurtosis_m_sd")(@ptrCast(x.ptr), x.stride, x.len, m, sd_);
         }
+
+        /// Lag-1 autocorrelation.
+        pub fn lag1Autocorrelation(x: F) f64 {
+            return @field(c, p ++ "lag1_autocorrelation")(@ptrCast(x.ptr), x.stride, x.len);
+        }
+        pub fn lag1AutocorrelationMean(x: F, m: f64) f64 {
+            return @field(c, p ++ "lag1_autocorrelation_m")(@ptrCast(x.ptr), x.stride, x.len, m);
+        }
+
+        // --- Extrema ----------------------------------------------------------
+
+        pub fn max(x: F) T {
+            return @bitCast(@field(c, p ++ "max")(@ptrCast(x.ptr), x.stride, x.len));
+        }
+        pub fn min(x: F) T {
+            return @bitCast(@field(c, p ++ "min")(@ptrCast(x.ptr), x.stride, x.len));
+        }
+        pub fn minMax(x: F) MinMax {
+            var lo: T = undefined;
+            var hi: T = undefined;
+            @field(c, p ++ "minmax")(@ptrCast(&lo), @ptrCast(&hi), @ptrCast(x.ptr), x.stride, x.len);
+            return .{ .min = lo, .max = hi };
+        }
+        pub fn maxIndex(x: F) usize {
+            return @field(c, p ++ "max_index")(@ptrCast(x.ptr), x.stride, x.len);
+        }
+        pub fn minIndex(x: F) usize {
+            return @field(c, p ++ "min_index")(@ptrCast(x.ptr), x.stride, x.len);
+        }
+        pub fn minMaxIndex(x: F) MinMaxIndex {
+            var lo: usize = undefined;
+            var hi: usize = undefined;
+            @field(c, p ++ "minmax_index")(&lo, &hi, @ptrCast(x.ptr), x.stride, x.len);
+            return .{ .min = lo, .max = hi };
+        }
+
+        // --- Two-sample -------------------------------------------------------
+
+        /// Covariance of two equal-length samples.
+        pub fn covariance(a: F, b: F) f64 {
+            std.debug.assert(a.len == b.len);
+            return @field(c, p ++ "covariance")(@ptrCast(a.ptr), a.stride, @ptrCast(b.ptr), b.stride, a.len);
+        }
+        pub fn covarianceMean(a: F, b: F, mean_a: f64, mean_b: f64) f64 {
+            std.debug.assert(a.len == b.len);
+            return @field(c, p ++ "covariance_m")(@ptrCast(a.ptr), a.stride, @ptrCast(b.ptr), b.stride, a.len, mean_a, mean_b);
+        }
+        /// Pearson correlation of two equal-length samples.
+        pub fn correlation(a: F, b: F) f64 {
+            std.debug.assert(a.len == b.len);
+            return @field(c, p ++ "correlation")(@ptrCast(a.ptr), a.stride, @ptrCast(b.ptr), b.stride, a.len);
+        }
+        /// Required `work` length for `spearman` over `n` elements.
+        pub fn spearmanWorkLen(n: usize) usize {
+            return 2 * n;
+        }
+        /// Spearman rank correlation. `work` must be at least `spearmanWorkLen(n)`.
+        pub fn spearman(a: F, b: F, work: []f64) f64 {
+            std.debug.assert(a.len == b.len);
+            std.debug.assert(work.len >= spearmanWorkLen(a.len));
+            return @field(c, p ++ "spearman")(@ptrCast(a.ptr), a.stride, @ptrCast(b.ptr), b.stride, a.len, work.ptr);
+        }
+        /// Pooled variance of two samples (lengths may differ).
+        pub fn pvariance(a: F, b: F) f64 {
+            return @field(c, p ++ "pvariance")(@ptrCast(a.ptr), a.stride, a.len, @ptrCast(b.ptr), b.stride, b.len);
+        }
+        /// t-statistic for the difference of two sample means.
+        pub fn ttest(a: F, b: F) f64 {
+            return @field(c, p ++ "ttest")(@ptrCast(a.ptr), a.stride, a.len, @ptrCast(b.ptr), b.stride, b.len);
+        }
+
+        // --- Order statistics and quantiles -----------------------------------
+
+        /// The `k`-th smallest element (0-based). Rearranges the input in place.
+        pub fn select(x: FMut, k: usize) T {
+            return @bitCast(@field(c, p ++ "select")(@ptrCast(x.ptr), x.stride, x.len, k));
+        }
+        /// Median. Does not require sorted input, but rearranges it in place.
+        pub fn median(x: FMut) f64 {
+            return @field(c, p ++ "median")(@ptrCast(x.ptr), x.stride, x.len);
+        }
+        /// Median of an already-ascending-sorted view (input untouched).
+        pub fn medianFromSorted(sorted: F) f64 {
+            return @field(c, p ++ "median_from_sorted_data")(@ptrCast(sorted.ptr), sorted.stride, sorted.len);
+        }
+        /// The `f`-quantile (0 <= f <= 1) of an already-ascending-sorted view.
+        pub fn quantileFromSorted(sorted: F, f: f64) f64 {
+            std.debug.assert(f >= 0.0 and f <= 1.0);
+            return @field(c, p ++ "quantile_from_sorted_data")(@ptrCast(sorted.ptr), sorted.stride, sorted.len, f);
+        }
+        /// Trimmed mean of an already-ascending-sorted view; `trim` in [0, 0.5).
+        pub fn trmeanFromSorted(trim: f64, sorted: F) f64 {
+            return @field(c, p ++ "trmean_from_sorted_data")(trim, @ptrCast(sorted.ptr), sorted.stride, sorted.len);
+        }
+        /// Gastwirth robust location estimate of an already-sorted view.
+        pub fn gastwirthFromSorted(sorted: F) f64 {
+            return @field(c, p ++ "gastwirth_from_sorted_data")(@ptrCast(sorted.ptr), sorted.stride, sorted.len);
+        }
+
+        // --- Robust scale estimators (explicit work buffers) ------------------
+
+        /// Required `work` length for `mad`/`mad0` over `n` elements.
+        pub fn madWorkLen(n: usize) usize {
+            return n;
+        }
+        /// Median absolute deviation (scaled for consistency with the sd of a
+        /// normal distribution). `work` must be at least `madWorkLen(n)`.
+        pub fn mad(x: F, work: []f64) f64 {
+            std.debug.assert(work.len >= madWorkLen(x.len));
+            return @field(c, p ++ "mad")(@ptrCast(x.ptr), x.stride, x.len, work.ptr);
+        }
+        /// Unscaled median absolute deviation. `work` must be `>= madWorkLen(n)`.
+        pub fn mad0(x: F, work: []f64) f64 {
+            std.debug.assert(work.len >= madWorkLen(x.len));
+            return @field(c, p ++ "mad0")(@ptrCast(x.ptr), x.stride, x.len, work.ptr);
+        }
+
+        /// Required `work` length for `snFromSorted`/`sn0FromSorted`.
+        pub fn snWorkLen(n: usize) usize {
+            return n;
+        }
+        /// Rousseeuw-Croux Sn scale estimator over an already-sorted view.
+        pub fn snFromSorted(sorted: F, work: []T) f64 {
+            std.debug.assert(work.len >= snWorkLen(sorted.len));
+            return @field(c, p ++ "Sn_from_sorted_data")(@ptrCast(sorted.ptr), sorted.stride, sorted.len, @ptrCast(work.ptr));
+        }
+        /// Unscaled Sn over an already-sorted view.
+        pub fn sn0FromSorted(sorted: F, work: []T) T {
+            std.debug.assert(work.len >= snWorkLen(sorted.len));
+            return @bitCast(@field(c, p ++ "Sn0_from_sorted_data")(@ptrCast(sorted.ptr), sorted.stride, sorted.len, @ptrCast(work.ptr)));
+        }
+
+        /// Required `work` length (in `T`) for `qnFromSorted`/`qn0FromSorted`.
+        pub fn qnWorkLen(n: usize) usize {
+            return 3 * n;
+        }
+        /// Required `work_int` (c_int) length for `qnFromSorted`/`qn0FromSorted`.
+        pub fn qnWorkIntLen(n: usize) usize {
+            return 5 * n;
+        }
+        /// Rousseeuw-Croux Qn scale estimator over an already-sorted view. `work`
+        /// must be `>= qnWorkLen(n)` and `work_int` `>= qnWorkIntLen(n)`.
+        pub fn qnFromSorted(sorted: F, work: []T, work_int: []c_int) f64 {
+            std.debug.assert(work.len >= qnWorkLen(sorted.len));
+            std.debug.assert(work_int.len >= qnWorkIntLen(sorted.len));
+            return @field(c, p ++ "Qn_from_sorted_data")(@ptrCast(sorted.ptr), sorted.stride, sorted.len, @ptrCast(work.ptr), work_int.ptr);
+        }
+        /// Unscaled Qn over an already-sorted view.
+        pub fn qn0FromSorted(sorted: F, work: []T, work_int: []c_int) T {
+            std.debug.assert(work.len >= qnWorkLen(sorted.len));
+            std.debug.assert(work_int.len >= qnWorkIntLen(sorted.len));
+            return @bitCast(@field(c, p ++ "Qn0_from_sorted_data")(@ptrCast(sorted.ptr), sorted.stride, sorted.len, @ptrCast(work.ptr), work_int.ptr));
+        }
+
+        /// Weighted statistics. Each takes a weights view `w` and a data view `x`
+        /// of equal length; wraps GSL's `gsl_stats_w*` family. GSL only provides
+        /// these for floating-point element types, so this is a compile error
+        /// for integer `T`.
+        pub const weighted = if (is_float) struct {
+            pub fn mean(w: F, x: F) f64 {
+                std.debug.assert(w.len == x.len);
+                return @field(c, p ++ "wmean")(@ptrCast(w.ptr), w.stride, @ptrCast(x.ptr), x.stride, x.len);
+            }
+            pub fn variance(w: F, x: F) f64 {
+                std.debug.assert(w.len == x.len);
+                return @field(c, p ++ "wvariance")(@ptrCast(w.ptr), w.stride, @ptrCast(x.ptr), x.stride, x.len);
+            }
+            pub fn varianceMean(w: F, x: F, wmean: f64) f64 {
+                std.debug.assert(w.len == x.len);
+                return @field(c, p ++ "wvariance_m")(@ptrCast(w.ptr), w.stride, @ptrCast(x.ptr), x.stride, x.len, wmean);
+            }
+            pub fn varianceWithFixedMean(w: F, x: F, mean_: f64) f64 {
+                std.debug.assert(w.len == x.len);
+                return @field(c, p ++ "wvariance_with_fixed_mean")(@ptrCast(w.ptr), w.stride, @ptrCast(x.ptr), x.stride, x.len, mean_);
+            }
+            pub fn sd(w: F, x: F) f64 {
+                std.debug.assert(w.len == x.len);
+                return @field(c, p ++ "wsd")(@ptrCast(w.ptr), w.stride, @ptrCast(x.ptr), x.stride, x.len);
+            }
+            pub fn sdMean(w: F, x: F, wmean: f64) f64 {
+                std.debug.assert(w.len == x.len);
+                return @field(c, p ++ "wsd_m")(@ptrCast(w.ptr), w.stride, @ptrCast(x.ptr), x.stride, x.len, wmean);
+            }
+            pub fn sdWithFixedMean(w: F, x: F, mean_: f64) f64 {
+                std.debug.assert(w.len == x.len);
+                return @field(c, p ++ "wsd_with_fixed_mean")(@ptrCast(w.ptr), w.stride, @ptrCast(x.ptr), x.stride, x.len, mean_);
+            }
+            pub fn tss(w: F, x: F) f64 {
+                std.debug.assert(w.len == x.len);
+                return @field(c, p ++ "wtss")(@ptrCast(w.ptr), w.stride, @ptrCast(x.ptr), x.stride, x.len);
+            }
+            pub fn tssMean(w: F, x: F, wmean: f64) f64 {
+                std.debug.assert(w.len == x.len);
+                return @field(c, p ++ "wtss_m")(@ptrCast(w.ptr), w.stride, @ptrCast(x.ptr), x.stride, x.len, wmean);
+            }
+            pub fn absdev(w: F, x: F) f64 {
+                std.debug.assert(w.len == x.len);
+                return @field(c, p ++ "wabsdev")(@ptrCast(w.ptr), w.stride, @ptrCast(x.ptr), x.stride, x.len);
+            }
+            pub fn absdevMean(w: F, x: F, wmean: f64) f64 {
+                std.debug.assert(w.len == x.len);
+                return @field(c, p ++ "wabsdev_m")(@ptrCast(w.ptr), w.stride, @ptrCast(x.ptr), x.stride, x.len, wmean);
+            }
+            pub fn skew(w: F, x: F) f64 {
+                std.debug.assert(w.len == x.len);
+                return @field(c, p ++ "wskew")(@ptrCast(w.ptr), w.stride, @ptrCast(x.ptr), x.stride, x.len);
+            }
+            pub fn skewMeanSd(w: F, x: F, wmean: f64, wsd: f64) f64 {
+                std.debug.assert(w.len == x.len);
+                return @field(c, p ++ "wskew_m_sd")(@ptrCast(w.ptr), w.stride, @ptrCast(x.ptr), x.stride, x.len, wmean, wsd);
+            }
+            pub fn kurtosis(w: F, x: F) f64 {
+                std.debug.assert(w.len == x.len);
+                return @field(c, p ++ "wkurtosis")(@ptrCast(w.ptr), w.stride, @ptrCast(x.ptr), x.stride, x.len);
+            }
+            pub fn kurtosisMeanSd(w: F, x: F, wmean: f64, wsd: f64) f64 {
+                std.debug.assert(w.len == x.len);
+                return @field(c, p ++ "wkurtosis_m_sd")(@ptrCast(w.ptr), w.stride, @ptrCast(x.ptr), x.stride, x.len, wmean, wsd);
+            }
+        } else @compileError("gsl.Stats: weighted statistics are only available for floating-point element types (f32, f64); GSL provides no weighted routines for integer types");
     };
-};
+}
+
+/// Descriptive statistics over `Strided(f64)` views: the ready-made `f64`
+/// specialization of `Stats`. See `Stats` for the full contract and for how to
+/// obtain the same API over other element types.
+pub const stats = Stats(f64);
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -1670,6 +1781,66 @@ test "stats: correlation of a perfectly linear relationship is 1" {
     const x = [_]f64{ 1, 2, 3, 4, 5 };
     const y = [_]f64{ 3, 5, 7, 9, 11 }; // y = 2x + 1
     try testing.expectApproxEqAbs(@as(f64, 1.0), stats.correlation(.fromSlice(&x), .fromSlice(&y)), 1e-12);
+}
+
+test "stats: integer element type mirrors the f64 module's results" {
+    const S = Stats(i32);
+    const idata = [_]i32{ 2, 4, 4, 4, 5, 5, 7, 9 };
+    const iv = Strided(i32).fromSlice(&idata);
+
+    // Moments are accumulated in double precision, so they match the f64 module.
+    const fdata = [_]f64{ 2, 4, 4, 4, 5, 5, 7, 9 };
+    const fv = Strided(f64).fromSlice(&fdata);
+    try testing.expectApproxEqAbs(stats.mean(fv), S.mean(iv), 1e-12);
+    try testing.expectApproxEqAbs(stats.variance(fv), S.variance(iv), 1e-12);
+
+    // Value-selecting routines return the element type itself.
+    const hi: i32 = S.max(iv);
+    const lo: i32 = S.min(iv);
+    try testing.expectEqual(@as(i32, 9), hi);
+    try testing.expectEqual(@as(i32, 2), lo);
+    const mm = S.minMax(iv);
+    try testing.expect(@TypeOf(mm.min) == i32);
+    try testing.expectEqual(@as(i32, 2), mm.min);
+    try testing.expectEqual(@as(i32, 9), mm.max);
+}
+
+test "stats: select over an unsigned integer view returns the element type" {
+    const S = Stats(u16);
+    var data = [_]u16{ 5, 3, 1, 4, 2 };
+    const third: u16 = S.select(StridedMut(u16).fromSlice(&data), 2);
+    try testing.expectEqual(@as(u16, 3), third);
+}
+
+test "stats: f32 element type, including weighted statistics" {
+    const S = Stats(f32);
+    const x = [_]f32{ 1, 2, 3, 4 };
+    const w = [_]f32{ 1, 1, 1, 1 };
+    try testing.expectApproxEqAbs(@as(f64, 2.5), S.mean(Strided(f32).fromSlice(&x)), 1e-6);
+    // Weighted mean with equal weights collapses to the plain mean.
+    try testing.expectApproxEqAbs(
+        S.mean(.fromSlice(&x)),
+        S.weighted.mean(.fromSlice(&w), .fromSlice(&x)),
+        1e-6,
+    );
+}
+
+test "stats: integer robust scale estimators use T-typed work buffers" {
+    const S = Stats(i32);
+    const data = [_]i32{ 1, 2, 3, 4, 5, 6, 7, 8, 9, 100 };
+    const v = Strided(i32).fromSlice(&data);
+    const n = v.len;
+
+    var work: [30]i32 = undefined; // >= qnWorkLen = 3n
+    var work_int: [50]c_int = undefined; // >= qnWorkIntLen = 5n
+
+    // Unscaled estimators return the element type; the scaled Sn returns f64.
+    const s0: i32 = S.sn0FromSorted(v, work[0..S.snWorkLen(n)]);
+    const q0: i32 = S.qn0FromSorted(v, work[0..S.qnWorkLen(n)], work_int[0..S.qnWorkIntLen(n)]);
+    const s: f64 = S.snFromSorted(v, work[0..S.snWorkLen(n)]);
+
+    try testing.expect(s0 > 0 and q0 > 0);
+    try testing.expect(std.math.isFinite(s) and s > 0);
 }
 
 test "rand: scipy-style cdf/sf are complementary and ppf inverts cdf" {

@@ -61,6 +61,15 @@ pub fn strerror(gsl_errno: c_int) [:0]const u8 {
 /// `complex(T)` / `real(T)` / `halfcomplex(T)` surface.
 pub const fft = @import("gsl_fft.zig");
 
+/// # Special functions (`gsl_sf_*`)
+///
+/// Gamma/beta, Bessel, error/exponential/elliptic integrals, zeta, orthogonal
+/// polynomials, and the rest of GSL's special-function chapter. Kept in its own
+/// file (`gsl_sf.zig`) because it needs the `gsl_sf_*` C headers that this
+/// module does not include; every wrapper returns `Error!f64` and the surface
+/// is grouped into per-header namespaces (`sf.gamma`, `sf.bessel`, ...).
+pub const sf = @import("gsl_sf.zig");
+
 /// # Random numbers (`gsl_rng` + `gsl_randist` + `gsl_cdf`)
 ///
 /// A single namespace for everything stochastic: the generator handle and every

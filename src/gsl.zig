@@ -31,6 +31,7 @@ const std = @import("std");
 pub const c = @cImport({
     @cInclude("gsl/gsl_errno.h");
     @cInclude("gsl/gsl_rng.h");
+    @cInclude("gsl/gsl_qrng.h");
     @cInclude("gsl/gsl_randist.h");
     @cInclude("gsl/gsl_cdf.h");
     // Pulls in every element-type statistics module (double, float, int, uint,
@@ -103,12 +104,12 @@ pub fn strerror(gsl_errno: c_int) [:0]const u8 {
 /// These parts of GSL's RNG/distribution API are intentionally *not* wrapped
 /// (the raw symbols remain reachable through `c`):
 ///
-///   - Generator zoo: only the five `Generator` algorithms below are exposed,
-///     out of the ~60 GSL ships. Use a raw `c.gsl_rng_*` type pointer with
-///     `c.gsl_rng_alloc` if you need one that isn't listed.
-///   - Generator plumbing: RNG state serialization (`gsl_rng_fwrite`/`fread`),
-///     raw state access (`gsl_rng_state`/`gsl_rng_size`), and the whole
-///     quasi-random generator family (`gsl_qrng_*`: Sobol, Halton, ...).
+///   - Generator zoo: `Generator` surfaces GSL's recommended algorithms; the
+///     ~60 total include many legacy/compatibility generators. Reach any of them
+///     by name with `rand.Rng.initByName`, or use a raw `c.gsl_rng_*` type
+///     pointer with `c.gsl_rng_alloc`.
+///   - Quasi-random generators (`gsl_qrng_*`: Sobol, Halton, ...) are a separate
+///     GSL module with a different shape; see the reserved `qrng` namespace.
 ///   - Multivariate families: the multivariate Gaussian
 ///     (`gsl_ran_multivariate_gaussian*`) and Wishart (`gsl_ran_wishart*`) are
 ///     deferred until this project grows matrix/vector (linear-algebra)
@@ -122,28 +123,61 @@ pub fn strerror(gsl_errno: c_int) [:0]const u8 {
 pub const rand = struct {
     // ===== Generators (gsl_rng) ===============================================
 
-    /// A selection of GSL's built-in generator algorithms. GSL ships many more
-    /// (see `gsl_rng.h`); these are the commonly used, well-tested ones. Reach
-    /// for the raw `c.gsl_rng_*` type pointers if you need one not listed.
+    /// A curated selection of GSL's recommended generator algorithms — the
+    /// modern, well-tested families the GSL manual endorses. GSL registers ~60
+    /// generators in total, but most of the rest exist only to reproduce
+    /// bit-exact output from legacy software (old Unix `random()`, historical
+    /// Fortran RNGs, deliberately-flawed generators like `randu`). Reach any of
+    /// those by name with `Rng.initByName`, or use a raw `c.gsl_rng_*` type
+    /// pointer with `c.gsl_rng_alloc`.
     pub const Generator = enum {
         /// Mersenne Twister. GSL's default; a good general-purpose choice.
         mt19937,
         /// Tausworthe generator (maximally equidistributed, very fast).
         taus2,
-        /// RANLUX, second-generation double-precision, highest quality/slowest.
-        ranlxd2,
+        /// Improved Tausworthe (L'Ecuyer 1999), period ~2^113.
+        taus113,
         /// Combined multiple recursive generator (long period).
         cmrg,
+        /// Multiple recursive generator (L'Ecuyer et al.), period ~10^46.
+        mrg,
         /// Lagged-Fibonacci, four-tap; very fast.
         gfsr4,
+        /// Original RANLUX (single precision, 24-bit), default luxury level.
+        ranlux,
+        /// Original RANLUX at the highest luxury level (best decorrelation,
+        /// slowest).
+        ranlux389,
+        /// RANLUX, second-generation single-precision, luxury level 0.
+        ranlxs0,
+        /// RANLUX, second-generation single-precision, luxury level 1.
+        ranlxs1,
+        /// RANLUX, second-generation single-precision, luxury level 2.
+        ranlxs2,
+        /// RANLUX, second-generation double-precision, luxury level 1.
+        ranlxd1,
+        /// RANLUX, second-generation double-precision, luxury level 2
+        /// (highest quality, slowest).
+        ranlxd2,
 
+        // Invariant: each tag's name is identical to GSL's own algorithm name
+        // (the string `Rng.name` reports). Keep new variants aligned with their
+        // `gsl_rng_*` name so a single `@tagName` loop can verify the mapping.
         fn typePtr(self: Generator) [*c]const c.gsl_rng_type {
             return switch (self) {
                 .mt19937 => c.gsl_rng_mt19937,
                 .taus2 => c.gsl_rng_taus2,
-                .ranlxd2 => c.gsl_rng_ranlxd2,
+                .taus113 => c.gsl_rng_taus113,
                 .cmrg => c.gsl_rng_cmrg,
+                .mrg => c.gsl_rng_mrg,
                 .gfsr4 => c.gsl_rng_gfsr4,
+                .ranlux => c.gsl_rng_ranlux,
+                .ranlux389 => c.gsl_rng_ranlux389,
+                .ranlxs0 => c.gsl_rng_ranlxs0,
+                .ranlxs1 => c.gsl_rng_ranlxs1,
+                .ranlxs2 => c.gsl_rng_ranlxs2,
+                .ranlxd1 => c.gsl_rng_ranlxd1,
+                .ranlxd2 => c.gsl_rng_ranlxd2,
             };
         }
     };
@@ -167,6 +201,23 @@ pub const rand = struct {
         pub fn init(gen: Generator) error{OutOfMemory}!Rng {
             const p = c.gsl_rng_alloc(gen.typePtr()) orelse return error.OutOfMemory;
             return .{ .ptr = p };
+        }
+
+        /// Allocate a generator by its GSL algorithm name (e.g. "mt19937",
+        /// "ranlux389", "randu"). This is the escape hatch to the ~60 generators
+        /// GSL registers, including the legacy/compatibility ones not surfaced by
+        /// `Generator`. Returns `error.UnknownGenerator` if no algorithm matches
+        /// the given name, or `error.OutOfMemory` if allocation fails.
+        pub fn initByName(gen_name: [:0]const u8) error{ UnknownGenerator, OutOfMemory }!Rng {
+            var it: [*c]const [*c]const c.gsl_rng_type = c.gsl_rng_types_setup();
+            while (it.* != null) : (it += 1) {
+                const t = it.*;
+                if (std.mem.orderZ(u8, t.*.name, gen_name) == .eq) {
+                    const p = c.gsl_rng_alloc(t) orelse return error.OutOfMemory;
+                    return .{ .ptr = p };
+                }
+            }
+            return error.UnknownGenerator;
         }
 
         /// Allocate GSL's library default generator (`gsl_rng_default`), which is
@@ -206,6 +257,47 @@ pub const rand = struct {
         pub fn clone(self: Rng) error{OutOfMemory}!Rng {
             const p = c.gsl_rng_clone(self.ptr) orelse return error.OutOfMemory;
             return .{ .ptr = p };
+        }
+
+        // --- State serialization ----------------------------------------------
+        //
+        // For checkpoint/restore of a long stream: snapshot the generator's full
+        // internal state to bytes and later resume exactly where it left off.
+        // `seed`/`clone` cover in-process reproducibility; these cover crossing a
+        // process boundary (e.g. writing a checkpoint to disk).
+        //
+        // Caveat: the byte format is *not portable*. It depends on the algorithm
+        // and the platform (word size, endianness, struct layout), so a snapshot
+        // only restores into a generator of the same `Generator` on a compatible
+        // build. Treat it as an opaque, same-binary blob — not an archival format.
+
+        /// Number of bytes `saveState` writes for this generator. Runtime-known
+        /// (it is `sizeof` an algorithm-specific internal struct), so query it to
+        /// size a buffer: `const buf = try alloc(rng.stateSize())`.
+        pub fn stateSize(self: Rng) usize {
+            return c.gsl_rng_size(self.ptr);
+        }
+
+        /// Snapshot the generator's internal state into `buf` and return the
+        /// written sub-slice (`buf[0..stateSize()]`). `buf.len` must be at least
+        /// `stateSize()`. Restore later with `loadState`. The same buffer can be
+        /// reused across repeated checkpoints — no allocation happens here.
+        pub fn saveState(self: Rng, buf: []u8) []u8 {
+            const n = self.stateSize();
+            std.debug.assert(buf.len >= n);
+            const src: [*]const u8 = @ptrCast(c.gsl_rng_state(self.ptr).?);
+            @memcpy(buf[0..n], src[0..n]);
+            return buf[0..n];
+        }
+
+        /// Restore internal state previously captured by `saveState`. `bytes.len`
+        /// must equal this generator's `stateSize()`, and the bytes must have come
+        /// from the same `Generator` on a compatible build (see caveat above).
+        pub fn loadState(self: Rng, bytes: []const u8) void {
+            const n = self.stateSize();
+            std.debug.assert(bytes.len == n);
+            const dst: [*]u8 = @ptrCast(c.gsl_rng_state(self.ptr).?);
+            @memcpy(dst[0..n], bytes[0..n]);
         }
 
         /// Name of the underlying algorithm (e.g. "mt19937").
@@ -1122,6 +1214,25 @@ pub const rand = struct {
     }
 };
 
+/// # Quasi-random sequences (`gsl_qrng`) — reserved, not yet implemented
+///
+/// GSL's quasi-random generators (`gsl_qrng`) produce low-discrepancy sequences
+/// (Sobol, Halton, reverse-Halton, Niederreiter) for quasi-Monte Carlo
+/// integration. They deliberately live *outside* `rand`: they are a separate GSL
+/// module (`gsl_qrng.h`) with a different shape — deterministic, dimension-
+/// parameterized space-filling sequences with no seeding and no distributions
+/// attached, rather than pseudo-random streams. Folding them into `rand` would
+/// blur that boundary, so when they are wrapped they will get their own
+/// namespace here.
+///
+/// Until then this namespace is intentionally a compile error; drop down to the
+/// raw `c.gsl_qrng_*` API (e.g. `c.gsl_qrng_alloc(c.gsl_qrng_sobol, dim)`) if you
+/// need quasi-random sequences today.
+pub const qrng = @compileError(
+    "rand-adjacent quasi-random generators (gsl_qrng) are not yet wrapped; " ++
+        "use the raw c.gsl_qrng_* API for now (see the `qrng` docs).",
+);
+
 /// A strided, read-only view over `T`: `len` elements spaced `stride` apart
 /// starting at `ptr`. GSL's statistics routines operate on exactly this shape,
 /// so a column/row/axis of a larger array can be passed without copying. Use
@@ -1541,6 +1652,37 @@ pub const stats = Stats(f64);
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
+//
+// Testing conventions for these bindings
+// --------------------------------------
+// These tests exercise the *binding layer*, not GSL's math. GSL is already a
+// mature, heavily tested library, so re-deriving its numerics here would add
+// little and be brittle. Instead the suite is built to catch the bugs a binding
+// actually introduces: a mistyped C symbol name, swapped or wrong-typed
+// arguments, a bad `Sample`/return type, or API-shape drift. Concretely:
+//
+//   - Invoke every wrapped symbol at least once. A wrapper that no test calls is
+//     effectively unverified; new wrappers should come with a test that reaches
+//     them (the `inline for` sweeps over distribution families, `Generator`
+//     variants, and `Stats(T)` element types exist to make this cheap).
+//   - Prefer oracle checks over hand-computed expectations. The strongest test
+//     seeds two identical generators and asserts a wrapper produces the
+//     bit-identical result of the raw `c.gsl_*` call (see the "equals the
+//     underlying GSL call" tests). A handful of known closed-form anchors
+//     (e.g. the standard-normal peak) guard against a wrapper that calls the
+//     *wrong* GSL routine but still returns plausible numbers.
+//   - Statistical assertions stay loose. Where a test samples and checks a mean
+//     or spread, use wide tolerances (it verifies "this is wired up", not the
+//     quality of GSL's RNG).
+//
+// Compile-time contract checks use `if (false)` toggle blocks
+// -----------------------------------------------------------
+// Some guarantees are compile errors by design (e.g. `Stats(i128)`,
+// `Stats(i32).weighted`, referencing the reserved `qrng` namespace). A passing
+// test can't contain code that fails to compile, so those cases live in
+// `if (false) { ... }` blocks (see "unsupported instantiations are rejected at
+// comptime"). To verify one, flip its block to `if (true)`, confirm you get the
+// intended `@compileError`, then revert to `if (false)`.
 
 const testing = std.testing;
 
@@ -2297,20 +2439,64 @@ test "stats: every supported integer module instantiates and computes" {
 }
 
 test "rand: every generator algorithm allocates, names itself, and advances" {
-    inline for (.{
-        .{ rand.Generator.mt19937, "mt19937" },
-        .{ rand.Generator.taus2, "taus2" },
-        .{ rand.Generator.ranlxd2, "ranlxd2" },
-        .{ rand.Generator.cmrg, "cmrg" },
-        .{ rand.Generator.gfsr4, "gfsr4" },
-    }) |pair| {
-        var g = try rand.Rng.init(pair[0]);
+    // The enum tag names are chosen to match GSL's own algorithm names, so a
+    // single loop over every variant doubles as a check that `typePtr` maps each
+    // one to the intended `gsl_rng_*` type.
+    inline for (comptime std.enums.values(rand.Generator)) |gen| {
+        var g = try rand.Rng.init(gen);
         defer g.deinit();
-        // The reported name confirms `typePtr` mapped to the intended algorithm.
-        try testing.expectEqualStrings(pair[1], g.name());
+        try testing.expectEqualStrings(@tagName(gen), g.name());
         try testing.expect(g.maxValue() > g.minValue());
         _ = g.next();
     }
+}
+
+test "rand: initByName reaches curated and legacy generators, rejects unknown names" {
+    // A curated algorithm also reachable via the enum.
+    var m = try rand.Rng.initByName("mt19937");
+    defer m.deinit();
+    try testing.expectEqualStrings("mt19937", m.name());
+
+    // A legacy/compatibility generator deliberately *not* in `Generator`
+    // (the infamously flawed IBM RANDU) is still reachable by name.
+    var legacy = try rand.Rng.initByName("randu");
+    defer legacy.deinit();
+    try testing.expectEqualStrings("randu", legacy.name());
+    legacy.seed(1);
+    _ = legacy.next();
+
+    // An unrecognized name is reported, not silently defaulted or aborted.
+    try testing.expectError(error.UnknownGenerator, rand.Rng.initByName("definitely_not_a_generator"));
+}
+
+test "rand: state save/load round-trips a stream across a checkpoint" {
+    var r = try rand.Rng.init(.mt19937);
+    defer r.deinit();
+    r.seed(20240521);
+
+    // Advance past the initial state so the snapshot captures mid-stream state.
+    for (0..37) |_| _ = r.next();
+
+    // Snapshot into a caller buffer; the used slice is exactly `stateSize()`.
+    var buf: [8192]u8 = undefined;
+    try testing.expect(r.stateSize() <= buf.len);
+    const snapshot = r.saveState(&buf);
+    try testing.expectEqual(r.stateSize(), snapshot.len);
+
+    // Record the next draws, then rewind by loading the snapshot back.
+    var expected: [16]u64 = undefined;
+    for (&expected) |*e| e.* = r.next();
+
+    r.loadState(snapshot);
+    for (expected) |e| try testing.expectEqual(e, r.next());
+
+    // A snapshot also restores into a *different* handle of the same algorithm,
+    // which is the cross-process checkpoint/restore use case.
+    var fresh = try rand.Rng.init(.mt19937);
+    defer fresh.deinit();
+    fresh.seed(1); // deliberately different starting point
+    fresh.loadState(snapshot);
+    for (expected) |e| try testing.expectEqual(e, fresh.next());
 }
 
 test "gsl: error helpers report success and install the non-aborting handler" {
@@ -2341,5 +2527,11 @@ test "stats: unsupported instantiations are rejected at comptime" {
     // reaching `weighted` on an integer specialization is a compile error.
     if (false) {
         _ = Stats(i32).weighted;
+    }
+
+    // The quasi-random namespace is a reserved placeholder: referencing it at
+    // all triggers its `@compileError`, directing callers to the raw C API.
+    if (false) {
+        _ = qrng;
     }
 }

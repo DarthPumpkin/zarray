@@ -1994,3 +1994,352 @@ test "rand: shuffle permutes, choose/sample draw subsets" {
     r.sample(u32, &withrep, &src);
     for (withrep) |x| try testing.expect(x >= 10 and x <= 15);
 }
+
+// ---------------------------------------------------------------------------
+// Exhaustive binding-surface coverage
+//
+// These tests exist to catch binding-layer mistakes (a wrong C symbol name or a
+// swapped argument), not to re-verify GSL's numerics. The guiding rule is that
+// every wrapped symbol should be *invoked* at least once, with a handful of
+// stronger oracle/known-value checks where a plausible-looking wrong answer
+// could otherwise slip through.
+// ---------------------------------------------------------------------------
+
+/// Exercise whatever slice of the scalar-distribution interface `d` implements,
+/// detected at comptime via `Sample`/`@hasDecl`. This lets one loop cover every
+/// scalar family regardless of which of sample/pdf/cdf/ppf it carries.
+fn exerciseScalarDist(r: rand.Rng, d: anytype) !void {
+    const D = @TypeOf(d);
+    const S = D.Sample;
+    const x = d.sample(r);
+    comptime std.debug.assert(@TypeOf(x) == S);
+
+    switch (@typeInfo(S)) {
+        .float => try testing.expect(std.math.isFinite(x)),
+        else => {},
+    }
+
+    if (@hasDecl(D, "pdf")) {
+        try testing.expect(d.pdf(x) >= 0.0);
+        if (S == bool) {
+            // A Bernoulli-style density must sum to 1 over its two outcomes.
+            try testing.expectApproxEqAbs(@as(f64, 1.0), d.pdf(true) + d.pdf(false), 1e-12);
+        }
+    }
+
+    if (@hasDecl(D, "cdf")) {
+        const lo = d.cdf(x);
+        const hi = d.sf(x);
+        try testing.expect(lo >= -1e-9 and lo <= 1.0 + 1e-9);
+        try testing.expect(hi >= -1e-9 and hi <= 1.0 + 1e-9);
+        // Lower and upper tails partition the probability mass.
+        try testing.expectApproxEqAbs(@as(f64, 1.0), lo + hi, 1e-6);
+    }
+
+    if (@hasDecl(D, "ppf")) {
+        try testing.expect(std.math.isFinite(d.ppf(0.5)));
+        try testing.expect(std.math.isFinite(d.isf(0.5)));
+        // ppf inverts cdf at an interior probability (catches a Pinv/Qinv swap).
+        const pr: f64 = 0.37;
+        try testing.expectApproxEqAbs(pr, d.cdf(d.ppf(pr)), 1e-6);
+    }
+}
+
+test "distribution: every scalar family exercises its full method set" {
+    var r = try rand.Rng.init(.mt19937);
+    defer r.deinit();
+    r.seed(20240607);
+
+    // Continuous families carrying the full CDF set.
+    try exerciseScalarDist(r, rand.Gaussian{ .sigma = 1.5 });
+    try exerciseScalarDist(r, rand.Exponential{ .mu = 2.0 });
+    try exerciseScalarDist(r, rand.Flat{ .a = -1.0, .b = 2.0 });
+    try exerciseScalarDist(r, rand.Gamma{ .a = 2.0, .b = 1.5 });
+    try exerciseScalarDist(r, rand.Beta{ .a = 2.0, .b = 3.0 });
+    try exerciseScalarDist(r, rand.ChiSquared{ .nu = 4.0 });
+    try exerciseScalarDist(r, rand.UnitGaussian{});
+    try exerciseScalarDist(r, rand.Laplace{ .a = 1.0 });
+    try exerciseScalarDist(r, rand.Cauchy{ .a = 1.0 });
+    try exerciseScalarDist(r, rand.Rayleigh{ .sigma = 1.0 });
+    try exerciseScalarDist(r, rand.Lognormal{ .zeta = 0.0, .sigma = 1.0 });
+    try exerciseScalarDist(r, rand.FDist{ .nu1 = 3.0, .nu2 = 8.0 });
+    try exerciseScalarDist(r, rand.TDist{ .nu = 5.0 });
+    try exerciseScalarDist(r, rand.Logistic{ .a = 1.0 });
+    try exerciseScalarDist(r, rand.Pareto{ .a = 3.0, .b = 1.0 });
+    try exerciseScalarDist(r, rand.Weibull{ .a = 1.0, .b = 1.5 });
+    try exerciseScalarDist(r, rand.Gumbel1{ .a = 1.0, .b = 1.0 });
+    try exerciseScalarDist(r, rand.Gumbel2{ .a = 1.0, .b = 1.0 });
+
+    // Continuous families with cdf/sf but no inverse (ExpPower).
+    try exerciseScalarDist(r, rand.ExpPower{ .a = 1.0, .b = 2.5 });
+
+    // Continuous families with sampling + density only.
+    try exerciseScalarDist(r, rand.GaussianTail{ .a = 1.0, .sigma = 1.0 });
+    try exerciseScalarDist(r, rand.UnitGaussianTail{ .a = 1.0 });
+    try exerciseScalarDist(r, rand.RayleighTail{ .a = 0.5, .sigma = 1.0 });
+    try exerciseScalarDist(r, rand.Landau{});
+    try exerciseScalarDist(r, rand.Erlang{ .a = 1.0, .n = 3.0 });
+
+    // Sampling-only families (no density).
+    try exerciseScalarDist(r, rand.Levy{ .c = 1.0, .alpha = 1.5 });
+    try exerciseScalarDist(r, rand.LevySkew{ .c = 1.0, .alpha = 1.5, .beta = 0.5 });
+
+    // Discrete families.
+    try exerciseScalarDist(r, rand.Poisson{ .mu = 3.0 });
+    try exerciseScalarDist(r, rand.Bernoulli{ .p = 0.3 });
+    try exerciseScalarDist(r, rand.Binomial{ .p = 0.5, .n = 10 });
+    try exerciseScalarDist(r, rand.Geometric{ .p = 0.25 });
+    try exerciseScalarDist(r, rand.NegativeBinomial{ .p = 0.4, .n = 3.5 });
+    try exerciseScalarDist(r, rand.Pascal{ .p = 0.4, .n = 3 });
+    try exerciseScalarDist(r, rand.Hypergeometric{ .n1 = 5, .n2 = 7, .t = 4 });
+    try exerciseScalarDist(r, rand.Logarithmic{ .p = 0.6 });
+}
+
+test "distribution: representative samplers equal the raw GSL call under the same seed" {
+    const seed = 0xC0FFEE;
+
+    // A one-parameter continuous sampler.
+    {
+        var a = try rand.Rng.init(.mt19937);
+        defer a.deinit();
+        var b = try rand.Rng.init(.mt19937);
+        defer b.deinit();
+        a.seed(seed);
+        b.seed(seed);
+        const d = rand.Exponential{ .mu = 2.5 };
+        try testing.expectEqual(c.gsl_ran_exponential(a.ptr, 2.5), d.sample(b));
+    }
+    // A two-parameter continuous sampler.
+    {
+        var a = try rand.Rng.init(.mt19937);
+        defer a.deinit();
+        var b = try rand.Rng.init(.mt19937);
+        defer b.deinit();
+        a.seed(seed);
+        b.seed(seed);
+        const d = rand.Gamma{ .a = 2.0, .b = 1.5 };
+        try testing.expectEqual(c.gsl_ran_gamma(a.ptr, 2.0, 1.5), d.sample(b));
+    }
+    // A discrete sampler (also checks the u32 narrowing).
+    {
+        var a = try rand.Rng.init(.mt19937);
+        defer a.deinit();
+        var b = try rand.Rng.init(.mt19937);
+        defer b.deinit();
+        a.seed(seed);
+        b.seed(seed);
+        const d = rand.Poisson{ .mu = 4.0 };
+        try testing.expectEqual(@as(u32, @intCast(c.gsl_ran_poisson(a.ptr, 4.0))), d.sample(b));
+    }
+}
+
+test "distribution: cdf/pdf/ppf hit known closed-form values" {
+    // Exponential(mu=2): cdf(x) = 1 - e^{-x/mu}, median = mu*ln 2, pdf = (1/mu)e^{-x/mu}.
+    {
+        const d = rand.Exponential{ .mu = 2.0 };
+        try testing.expectApproxEqAbs(@as(f64, 1.0 - @exp(-1.0)), d.cdf(2.0), 1e-12);
+        try testing.expectApproxEqAbs(@as(f64, 2.0 * @log(2.0)), d.ppf(0.5), 1e-12);
+        try testing.expectApproxEqAbs(@as(f64, 0.5 * @exp(-0.5)), d.pdf(1.0), 1e-12);
+    }
+    // Flat(0,4) is uniform: cdf(1)=1/4, pdf=1/4, median=2.
+    {
+        const d = rand.Flat{ .a = 0.0, .b = 4.0 };
+        try testing.expectApproxEqAbs(@as(f64, 0.25), d.cdf(1.0), 1e-12);
+        try testing.expectApproxEqAbs(@as(f64, 0.25), d.pdf(1.0), 1e-12);
+        try testing.expectApproxEqAbs(@as(f64, 2.0), d.ppf(0.5), 1e-12);
+    }
+    // Beta(1,1) is uniform on [0,1].
+    {
+        const d = rand.Beta{ .a = 1.0, .b = 1.0 };
+        try testing.expectApproxEqAbs(@as(f64, 0.3), d.cdf(0.3), 1e-12);
+        try testing.expectApproxEqAbs(@as(f64, 1.0), d.pdf(0.5), 1e-12);
+    }
+    // Poisson(mu=3): pmf(0) = e^{-3}, and cdf(0) = pmf(0).
+    {
+        const d = rand.Poisson{ .mu = 3.0 };
+        try testing.expectApproxEqAbs(@as(f64, @exp(-3.0)), d.pdf(0), 1e-12);
+        try testing.expectApproxEqAbs(@as(f64, @exp(-3.0)), d.cdf(0), 1e-12);
+    }
+    // Binomial(n=10, p=0.5): pmf(5) = C(10,5)/2^10 = 252/1024.
+    {
+        const d = rand.Binomial{ .p = 0.5, .n = 10 };
+        try testing.expectApproxEqAbs(@as(f64, 252.0 / 1024.0), d.pdf(5), 1e-9);
+    }
+}
+
+test "stats: every descriptive routine is invoked and cross-checked" {
+    const data = [_]f64{ 2, 4, 4, 4, 5, 5, 7, 9 };
+    const v = Strided(f64).fromSlice(&data);
+    const n = data.len;
+    const m = stats.mean(v);
+    const s = stats.sd(v);
+
+    // The `_m` variants must agree with the plain ones when given the true mean/sd.
+    try testing.expectApproxEqAbs(stats.variance(v), stats.varianceMean(v, m), 1e-10);
+    try testing.expectApproxEqAbs(stats.sd(v), stats.sdMean(v, m), 1e-10);
+    try testing.expectApproxEqAbs(stats.tss(v), stats.tssMean(v, m), 1e-10);
+    try testing.expectApproxEqAbs(stats.absdev(v), stats.absdevMean(v, m), 1e-10);
+    try testing.expectApproxEqAbs(stats.skew(v), stats.skewMeanSd(v, m, s), 1e-10);
+    try testing.expectApproxEqAbs(stats.kurtosis(v), stats.kurtosisMeanSd(v, m, s), 1e-10);
+    try testing.expectApproxEqAbs(stats.lag1Autocorrelation(v), stats.lag1AutocorrelationMean(v, m), 1e-10);
+
+    // The fixed-mean forms divide by n instead of n-1.
+    try testing.expectApproxEqAbs(
+        stats.variance(v) * @as(f64, @floatFromInt(n - 1)) / @as(f64, @floatFromInt(n)),
+        stats.varianceWithFixedMean(v, m),
+        1e-10,
+    );
+    try testing.expectApproxEqAbs(
+        stats.sdWithFixedMean(v, m) * stats.sdWithFixedMean(v, m),
+        stats.varianceWithFixedMean(v, m),
+        1e-10,
+    );
+
+    // Index extrema locate the known min (2 @ idx 0) and max (9 @ idx 7).
+    try testing.expectEqual(@as(usize, 0), stats.minIndex(v));
+    try testing.expectEqual(@as(usize, 7), stats.maxIndex(v));
+    const mmi = stats.minMaxIndex(v);
+    try testing.expectEqual(@as(usize, 0), mmi.min);
+    try testing.expectEqual(@as(usize, 7), mmi.max);
+
+    // Quantile at 0.5 equals the median; a 0-trim mean equals the plain mean.
+    try testing.expectApproxEqAbs(stats.medianFromSorted(v), stats.quantileFromSorted(v, 0.5), 1e-12);
+    try testing.expectApproxEqAbs(m, stats.trmeanFromSorted(0.0, v), 1e-10);
+    try testing.expect(std.math.isFinite(stats.gastwirthFromSorted(v)));
+
+    // Scaled vs. unscaled robust scale estimators (also invokes every work-buffer path).
+    var work: [24]f64 = undefined; // >= qnWorkLen(8) = 24
+    var work_int: [40]c_int = undefined; // >= qnWorkIntLen(8) = 40
+    const mad_scaled = stats.mad(v, work[0..stats.madWorkLen(n)]);
+    const mad_raw = stats.mad0(v, work[0..stats.madWorkLen(n)]);
+    const sn = stats.snFromSorted(v, work[0..stats.snWorkLen(n)]);
+    const sn0 = stats.sn0FromSorted(v, work[0..stats.snWorkLen(n)]);
+    const qn = stats.qnFromSorted(v, work[0..stats.qnWorkLen(n)], work_int[0..stats.qnWorkIntLen(n)]);
+    const qn0 = stats.qn0FromSorted(v, work[0..stats.qnWorkLen(n)], work_int[0..stats.qnWorkIntLen(n)]);
+    try testing.expect(mad_scaled > mad_raw and mad_raw > 0);
+    try testing.expect(sn > 0 and sn0 > 0 and qn > 0 and qn0 > 0);
+
+    // Two-sample routines.
+    const data2 = [_]f64{ 1, 3, 3, 5, 4, 6, 8, 10 };
+    const w = Strided(f64).fromSlice(&data2);
+    try testing.expectApproxEqAbs(
+        stats.covariance(v, w),
+        stats.covarianceMean(v, w, stats.mean(v), stats.mean(w)),
+        1e-10,
+    );
+    try testing.expect(std.math.isFinite(stats.correlation(v, w)));
+    try testing.expect(std.math.isFinite(stats.pvariance(v, w)));
+    try testing.expect(std.math.isFinite(stats.ttest(v, w)));
+    var swork: [16]f64 = undefined; // >= spearmanWorkLen(8) = 16
+    try testing.expect(std.math.isFinite(stats.spearman(v, w, swork[0..stats.spearmanWorkLen(n)])));
+}
+
+test "stats: weighted routines match unweighted under equal weights" {
+    const x = [_]f64{ 2, 4, 4, 4, 5, 5, 7, 9 };
+    const wt = [_]f64{ 1, 1, 1, 1, 1, 1, 1, 1 };
+    const xv = Strided(f64).fromSlice(&x);
+    const wv = Strided(f64).fromSlice(&wt);
+    const m = stats.mean(xv);
+
+    // With unit weights, GSL's weighted estimators reduce to the unweighted ones.
+    const wm = stats.weighted.mean(wv, xv);
+    const wv_var = stats.weighted.variance(wv, xv);
+    const wsd = stats.weighted.sd(wv, xv);
+    try testing.expectApproxEqAbs(m, wm, 1e-9);
+    try testing.expectApproxEqAbs(stats.variance(xv), wv_var, 1e-9);
+    try testing.expectApproxEqAbs(stats.sd(xv), wsd, 1e-9);
+    try testing.expectApproxEqAbs(stats.tss(xv), stats.weighted.tss(wv, xv), 1e-9);
+    try testing.expectApproxEqAbs(stats.absdev(xv), stats.weighted.absdev(wv, xv), 1e-9);
+    try testing.expectApproxEqAbs(stats.skew(xv), stats.weighted.skew(wv, xv), 1e-9);
+    try testing.expectApproxEqAbs(stats.kurtosis(xv), stats.weighted.kurtosis(wv, xv), 1e-9);
+
+    // The `_m` weighted forms agree with their auto-mean counterparts.
+    try testing.expectApproxEqAbs(wv_var, stats.weighted.varianceMean(wv, xv, wm), 1e-9);
+    try testing.expectApproxEqAbs(wsd, stats.weighted.sdMean(wv, xv, wm), 1e-9);
+    try testing.expectApproxEqAbs(stats.weighted.tss(wv, xv), stats.weighted.tssMean(wv, xv, wm), 1e-9);
+    try testing.expectApproxEqAbs(stats.weighted.absdev(wv, xv), stats.weighted.absdevMean(wv, xv, wm), 1e-9);
+    try testing.expectApproxEqAbs(stats.weighted.skew(wv, xv), stats.weighted.skewMeanSd(wv, xv, wm, wsd), 1e-9);
+    try testing.expectApproxEqAbs(stats.weighted.kurtosis(wv, xv), stats.weighted.kurtosisMeanSd(wv, xv, wm, wsd), 1e-9);
+
+    // The fixed-mean weighted forms divide by the summed weight (= n here).
+    try testing.expectApproxEqAbs(
+        stats.varianceWithFixedMean(xv, m),
+        stats.weighted.varianceWithFixedMean(wv, xv, m),
+        1e-9,
+    );
+    try testing.expectApproxEqAbs(
+        stats.sdWithFixedMean(xv, m),
+        stats.weighted.sdWithFixedMean(wv, xv, m),
+        1e-9,
+    );
+}
+
+test "stats: every supported integer module instantiates and computes" {
+    // One representative dataset whose mean is 3 and whose extrema are 1 and 5,
+    // instantiated across every integer element type GSL provides a module for.
+    inline for (.{ u8, i16, u16, i32, u32, i64, u64, c_short, c_ushort, c_int, c_uint, c_long, c_ulong, c_char }) |T| {
+        const S = Stats(T);
+        const data = [_]T{ 1, 2, 3, 4, 5 };
+        const v = Strided(T).fromSlice(&data);
+        try testing.expectApproxEqAbs(@as(f64, 3.0), S.mean(v), 1e-12);
+        try testing.expectEqual(@as(T, 5), S.max(v));
+        try testing.expectEqual(@as(T, 1), S.min(v));
+    }
+
+    // Signed 8-bit maps onto GSL's `char` module only where C `char` is signed.
+    if (@typeInfo(c_char).int.signedness == .signed) {
+        const S = Stats(i8);
+        const data = [_]i8{ 1, 2, 3, 4, 5 };
+        const v = Strided(i8).fromSlice(&data);
+        try testing.expectApproxEqAbs(@as(f64, 3.0), S.mean(v), 1e-12);
+        try testing.expectEqual(@as(i8, 5), S.max(v));
+    }
+}
+
+test "rand: every generator algorithm allocates, names itself, and advances" {
+    inline for (.{
+        .{ rand.Generator.mt19937, "mt19937" },
+        .{ rand.Generator.taus2, "taus2" },
+        .{ rand.Generator.ranlxd2, "ranlxd2" },
+        .{ rand.Generator.cmrg, "cmrg" },
+        .{ rand.Generator.gfsr4, "gfsr4" },
+    }) |pair| {
+        var g = try rand.Rng.init(pair[0]);
+        defer g.deinit();
+        // The reported name confirms `typePtr` mapped to the intended algorithm.
+        try testing.expectEqualStrings(pair[1], g.name());
+        try testing.expect(g.maxValue() > g.minValue());
+        _ = g.next();
+    }
+}
+
+test "gsl: error helpers report success and install the non-aborting handler" {
+    // Code 0 is GSL_SUCCESS.
+    try testing.expectEqualStrings("success", strerror(0));
+    // A nonzero code yields a non-empty diagnostic string.
+    try testing.expect(strerror(4).len > 0);
+    // Smoke-test the setup call (it only swaps GSL's global error handler).
+    disableDefaultErrorHandler();
+}
+
+test "stats: unsupported instantiations are rejected at comptime" {
+    // Toggle any block to `if (true)` to manually verify it throws a
+    // compileError. These guards live in `statsInfix`/`Stats` and can't be
+    // exercised by a normal (passing) test, so they're checked by hand.
+
+    // No GSL statistics module matches a 128-bit integer element type.
+    if (false) {
+        _ = statsInfix(i128);
+    }
+
+    // f16 has no corresponding GSL floating-point module (only f32/f64 exist).
+    if (false) {
+        _ = statsInfix(f16);
+    }
+
+    // Weighted statistics exist only for floating-point element types, so
+    // reaching `weighted` on an integer specialization is a compile error.
+    if (false) {
+        _ = Stats(i32).weighted;
+    }
+}

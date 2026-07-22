@@ -22,6 +22,7 @@
 //!   - `interp`   — `gsl_interp`/`gsl_spline`: 1-D interpolation and splines.
 //!   - `histogram`— `gsl_histogram`/`gsl_histogram2d`: 1-D/2-D histograms + PDFs.
 //!   - `poly`     — `gsl_poly`: polynomial evaluation and root finding.
+//!   - `deriv`    — `gsl_deriv`: numerical differentiation (finite differences).
 //!   - `sort`     — `gsl_sort`: typed sorting / k-smallest / index sorts.
 //!   - `permutation` — `gsl_permutation` (+ `gsl_permute`): permutations.
 //!   - `combination` — `gsl_combination`: combinations.
@@ -40,6 +41,11 @@
 //!     type, so these are generic over it).
 //!   - `numericModuleStem`/`numericModuleInfix` — map an element type to GSL's
 //!     per-type symbol suffix (shared by `stats` and `sort`).
+//!   - `callback` — the bridge that turns a Zig callable into GSL's
+//!     `gsl_function`-style callback structs. Chapters expose a `Callback` value
+//!     type built with `.initFn(f)` (a plain function) or `.initCtx(&ctx)` (a
+//!     `*struct` with an `eval` method); used by the callback chapters
+//!     (currently `deriv`).
 //!
 //! ## Conventions
 //!
@@ -260,6 +266,22 @@ pub const movstat = @import("gsl_movstat.zig");
 /// file (`gsl_qrng.zig`); reached as `gsl.qrng` (`qrng.Sequence`, `qrng.Type`).
 pub const qrng = @import("gsl_qrng.zig");
 
+/// # Callback bridge (`gsl.callback`)
+///
+/// Shared glue that turns an idiomatic Zig callable (a bare `fn(f64) f64`, a
+/// `*const fn(f64) f64`, or a `*context` with an `eval` method) into the C
+/// function-pointer structs GSL's callback chapters expect. Used by `deriv`
+/// (and, as they land, the other callback chapters). Kept in its own file
+/// (`gsl_callback.zig`); reached as `gsl.callback`.
+pub const callback = @import("gsl_callback.zig");
+
+/// # Numerical differentiation (`gsl_deriv`)
+///
+/// Central/forward/backward finite-difference estimates of `f'(x)` (with an
+/// error bound) for any callable the `callback` bridge accepts. Kept in its own
+/// file (`gsl_deriv.zig`); reached as `gsl.deriv` (`deriv.central`, ...).
+pub const deriv = @import("gsl_deriv.zig");
+
 test {
     // Pull re-exported sub-module files into test discovery. `zig build test`
     // only collects tests from files that are analyzed, so reference each
@@ -279,6 +301,8 @@ test {
     _ = stats_ref;
     _ = rstat;
     _ = movstat;
+    _ = callback;
+    _ = deriv;
 }
 
 /// A strided, read-only view over `T`: `len` elements spaced `stride` apart

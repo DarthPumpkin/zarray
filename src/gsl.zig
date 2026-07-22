@@ -1,35 +1,58 @@
-//! Idiomatic Zig bindings for the GNU Scientific Library's random number
-//! generation (`gsl_rng`), random distributions (`gsl_randist`), cumulative
-//! distribution functions (`gsl_cdf`), and statistics (`gsl_statistics`)
-//! modules.
+//! Idiomatic Zig bindings for the GNU Scientific Library.
 //!
-//! The public surface is organized into namespaces that map onto specific GSL
-//! modules:
-//!   - `rand`  — `gsl_rng` (generator algorithms + the stateful `Rng` handle),
-//!               `gsl_randist` (random distributions, plus the generic
-//!               shuffling/sampling helpers on `Rng`), and `gsl_cdf`
-//!               (cumulative distribution functions, surfaced as scipy-style
-//!               `cdf`/`sf`/`ppf`/`isf` methods on the distribution structs).
-//!   - `stats` — `gsl_statistics` (descriptive, robust, and weighted statistics
-//!               over strided views of any element type GSL supports).
-//!               `stats(T)` selects the module for element type `T` (e.g.
-//!               `stats(f64)`, `stats(i32)`).
-//!   - `rstat` — `gsl_rstat` (running/streaming statistics: an O(1)-memory
-//!               `Accumulator` fed one value at a time, plus a P²-algorithm
-//!               single-`Quantile` estimator).
-//!   - `movstat` — `gsl_movstat` (moving-window statistics: slide a width-`K`
-//!               window over a signal to produce a same-length output series).
+//! This file is the **hub**: it re-exports one namespace per GSL chapter (each
+//! implemented in its own `gsl_*.zig` file) and holds the small pieces of
+//! infrastructure they all share. Reach any chapter as `gsl.<name>`.
+//!
+//! ## Chapters
+//!
+//!   - `rand`     — `gsl_rng`/`gsl_randist`/`gsl_cdf`: generator algorithms and
+//!                  the stateful `Rng` handle, random distributions (with the
+//!                  generic shuffle/choose/sample helpers on `Rng`), and
+//!                  scipy-style `cdf`/`sf`/`ppf`/`isf` methods per distribution.
+//!   - `qrng`     — `gsl_qrng`: quasi-random (low-discrepancy) sequences.
+//!   - `stats`    — `gsl_statistics`: descriptive, robust, and weighted
+//!                  statistics over strided views. `stats(T)` selects the module
+//!                  for element type `T` (e.g. `stats(f64)`, `stats(i32)`).
+//!   - `rstat`    — `gsl_rstat`: running/streaming statistics (O(1)-memory
+//!                  `Accumulator` + a P²-algorithm single-`Quantile`).
+//!   - `movstat`  — `gsl_movstat`: moving-window statistics.
+//!   - `filter`   — `gsl_filter`: digital filters (Gaussian, median, recursive
+//!                  median, impulse).
+//!   - `interp`   — `gsl_interp`/`gsl_spline`: 1-D interpolation and splines.
+//!   - `histogram`— `gsl_histogram`/`gsl_histogram2d`: 1-D/2-D histograms + PDFs.
+//!   - `poly`     — `gsl_poly`: polynomial evaluation and root finding.
+//!   - `sort`     — `gsl_sort`: typed sorting / k-smallest / index sorts.
+//!   - `permutation` — `gsl_permutation` (+ `gsl_permute`): permutations.
+//!   - `combination` — `gsl_combination`: combinations.
+//!   - `multiset` — `gsl_multiset`: multisets.
+//!   - `sf`       — `gsl_sf_*`: special functions.
+//!   - `fft`      — `gsl_fft_*`: fast Fourier transforms.
+//!
+//! ## Shared infrastructure (defined here, used by the chapters)
+//!
+//!   - `Error`/`check` — the common Zig error set and status-code translator.
+//!   - `ensureHandler`/`disableDefaultErrorHandler`/`strerror` — GSL's
+//!     process-global (non-aborting) error handler and message lookup.
+//!   - `Strided`/`StridedMut` — borrowed strided views over caller memory.
+//!   - `constVectorViewOf`/`mutVectorViewOf` — generic borrowed-`gsl_vector`
+//!     view builders (each chapter's `@cImport` yields a distinct `gsl_vector`
+//!     type, so these are generic over it).
+//!   - `numericModuleStem`/`numericModuleInfix` — map an element type to GSL's
+//!     per-type symbol suffix (shared by `stats` and `sort`).
+//!
+//! ## Conventions
 //!
 //! These bindings are not exhaustive: some GSL symbols are intentionally left
-//! unwrapped. See each namespace's "Omitted from GSL" documentation for the
-//! specifics, and reach for the raw C API below when you need something else.
-//!
-//! The raw C API is available via `c` if you need something not wrapped here.
+//! unwrapped. See each chapter file's `## Omissions` section for the specifics.
+//! Every chapter keeps its own raw C API behind its own `c` (this file's `c`
+//! only pulls in `gsl_errno.h` for the shared error codes).
 //!
 //! Error convention: by default GSL's error handler calls `abort()` on error.
-//! For most RNG/stats routines this never triggers (they don't report errors),
-//! but if you call into fallible parts of GSL you can install the non-aborting
-//! handler once at startup with `disableDefaultErrorHandler()`.
+//! Many routines never report errors, but the fallible bindings install a
+//! non-aborting handler lazily (see `ensureHandler`) so a GSL error surfaces as
+//! a Zig `Error`; call `disableDefaultErrorHandler()` yourself to install it
+//! earlier or for the fallible parts of a chapter's raw `c` API.
 
 const std = @import("std");
 const testing = std.testing;

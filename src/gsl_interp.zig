@@ -30,6 +30,17 @@
 //!
 //! For the bare `f64` (non-erroring) forms, or the low-level `gsl_interp` API,
 //! reach the raw `c.gsl_spline_*` / `c.gsl_interp_*` symbols directly.
+//!
+//! ## Omissions
+//!
+//!   - The low-level `gsl_interp` layer (which re-takes the `x`/`y` arrays on
+//!     every call) is not wrapped — only the higher-level `gsl_spline`, which
+//!     stores its own copy of the data. Reach `c.gsl_interp_*` directly if you
+//!     need it.
+//!   - The bare, non-`_e` evaluation forms (`gsl_spline_eval` returning a plain
+//!     `f64`) are not re-exposed; the wrappers use the `_e` forms so a
+//!     domain error surfaces as a Zig `Error`. Use `c.gsl_spline_eval` for the
+//!     non-erroring form.
 
 const std = @import("std");
 const testing = std.testing;

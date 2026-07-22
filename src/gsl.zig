@@ -164,6 +164,33 @@ pub const sf = @import("gsl_sf.zig");
 /// `gsl.interp` (`interp.Spline`, `interp.Accel`, `interp.Type`).
 pub const interp = @import("gsl_interp.zig");
 
+/// # Histograms (`gsl_histogram`/`gsl_histogram2d`)
+///
+/// 1-D and 2-D histograms with uniform or explicit binning, (weighted) fills,
+/// summary statistics, whole-histogram arithmetic, and empirical-distribution
+/// sampling. Kept in its own file (`gsl_histogram.zig`); reached as
+/// `gsl.histogram` (`histogram.Histogram`, `histogram.Pdf`,
+/// `histogram.Histogram2d`, `histogram.Pdf2d`).
+pub const histogram = @import("gsl_histogram.zig");
+
+/// # Polynomials (`gsl_poly`)
+///
+/// Horner evaluation (real/complex), successive derivatives, closed-form real
+/// and complex roots of quadratics and cubics, and general-degree complex root
+/// finding via the companion matrix. Kept in its own file (`gsl_poly.zig`);
+/// reached as `gsl.poly` (`poly.eval`, `poly.solveQuadratic`,
+/// `poly.ComplexSolver`, ...). Complex values are `std.math.Complex(f64)`.
+pub const poly = @import("gsl_poly.zig");
+
+/// # Digital filters (`gsl_filter`)
+///
+/// Gaussian (smoothing/derivative), median, recursive-median, and
+/// impulse-detection filters over `Strided`/`StridedMut` signals — a follow-on
+/// to `gsl.movstat` that shares its borrowed-`gsl_vector` view helpers. Kept in
+/// its own file (`gsl_filter.zig`); reached as `gsl.filter` (`filter.Gaussian`,
+/// `filter.Median`, `filter.RecursiveMedian`, `filter.Impulse`).
+pub const filter = @import("gsl_filter.zig");
+
 test {
     // Pull the re-exported sub-module files into test discovery. `zig build
     // test` only collects tests from files that are analyzed, and gsl.zig
@@ -172,6 +199,10 @@ test {
     _ = fft;
     _ = sf;
     _ = interp;
+    _ = histogram;
+    _ = poly;
+    _ = filter;
+    _ = qrng;
 }
 
 /// # Random numbers (`gsl_rng` + `gsl_randist` + `gsl_cdf`)
@@ -1336,24 +1367,16 @@ pub const rand = struct {
     }
 };
 
-/// # Quasi-random sequences (`gsl_qrng`) — reserved, not yet implemented
+/// # Quasi-random sequences (`gsl_qrng`)
 ///
 /// GSL's quasi-random generators (`gsl_qrng`) produce low-discrepancy sequences
 /// (Sobol, Halton, reverse-Halton, Niederreiter) for quasi-Monte Carlo
 /// integration. They deliberately live *outside* `rand`: they are a separate GSL
 /// module (`gsl_qrng.h`) with a different shape — deterministic, dimension-
 /// parameterized space-filling sequences with no seeding and no distributions
-/// attached, rather than pseudo-random streams. Folding them into `rand` would
-/// blur that boundary, so when they are wrapped they will get their own
-/// namespace here.
-///
-/// Until then this namespace is intentionally a compile error; drop down to the
-/// raw `c.gsl_qrng_*` API (e.g. `c.gsl_qrng_alloc(c.gsl_qrng_sobol, dim)`) if you
-/// need quasi-random sequences today.
-pub const qrng = @compileError(
-    "rand-adjacent quasi-random generators (gsl_qrng) are not yet wrapped; " ++
-        "use the raw c.gsl_qrng_* API for now (see the `qrng` docs).",
-);
+/// attached, rather than pseudo-random streams. Kept in their own file
+/// (`gsl_qrng.zig`); reached as `gsl.qrng` (`qrng.Sequence`, `qrng.Type`).
+pub const qrng = @import("gsl_qrng.zig");
 
 /// A strided, read-only view over `T`: `len` elements spaced `stride` apart
 /// starting at `ptr`. GSL routines that take strided input (currently the
@@ -1776,8 +1799,16 @@ pub fn stats(comptime T: type) type {
 // (`block`/`owner`). A borrowed view sets `block = null, owner = 0` and owns
 // nothing — exactly what `gsl_vector_view_array_with_stride` produces — so we
 // can stack-construct one over caller memory with no allocation and no copy.
+//
+// Each GSL sub-module has its own `@cImport`, hence its own *distinct*
+// `c.gsl_vector` type, so the shared constructors are generic over the target
+// vector type `Vec`: the struct literal coerces to whichever `gsl_vector` the
+// caller passes. `gsl_filter.zig` reuses these (see D12).
 
-fn constVectorView(s: Strided(f64)) c.gsl_vector {
+/// Stack-construct a borrowed (non-owning) read-only `gsl_vector` of the
+/// caller's type `Vec` over the strided data `s`. Internal shared helper for the
+/// `gsl_vector`-based bindings (movstat, filter).
+pub fn constVectorViewOf(comptime Vec: type, s: Strided(f64)) Vec {
     return .{
         .size = s.len,
         .stride = s.stride,
@@ -1788,7 +1819,10 @@ fn constVectorView(s: Strided(f64)) c.gsl_vector {
     };
 }
 
-fn mutVectorView(s: StridedMut(f64)) c.gsl_vector {
+/// Stack-construct a borrowed (non-owning) mutable `gsl_vector` of the caller's
+/// type `Vec` over the strided data `s`. Internal shared helper (see
+/// `constVectorViewOf`).
+pub fn mutVectorViewOf(comptime Vec: type, s: StridedMut(f64)) Vec {
     return .{
         .size = s.len,
         .stride = s.stride,
@@ -1796,6 +1830,14 @@ fn mutVectorView(s: StridedMut(f64)) c.gsl_vector {
         .block = null,
         .owner = 0,
     };
+}
+
+fn constVectorView(s: Strided(f64)) c.gsl_vector {
+    return constVectorViewOf(c.gsl_vector, s);
+}
+
+fn mutVectorView(s: StridedMut(f64)) c.gsl_vector {
+    return mutVectorViewOf(c.gsl_vector, s);
 }
 
 /// # Running (streaming) statistics (`gsl_rstat`)

@@ -75,7 +75,11 @@ pub fn strerror(gsl_errno: c_int) [:0]const u8 {
 // threads each install it before the flag flips. Mirrors `gsl_sf.zig`.
 var handler_installed = std.atomic.Value(bool).init(false);
 
-inline fn ensureHandler() void {
+/// Idempotently install GSL's non-aborting error handler (once, lazily). Shared
+/// by the fallible bindings across the GSL sub-modules so a GSL error surfaces
+/// as a Zig `Error` instead of aborting the process; safe to call on every
+/// fallible entry point (it is a single relaxed atomic load in the common case).
+pub inline fn ensureHandler() void {
     if (!handler_installed.load(.monotonic)) {
         _ = c.gsl_set_error_handler_off();
         handler_installed.store(true, .monotonic);
@@ -151,6 +155,24 @@ pub const fft = @import("gsl_fft.zig");
 /// module does not include; every wrapper returns `Error!f64` and the surface
 /// is grouped into per-header namespaces (`sf.gamma`, `sf.bessel`, ...).
 pub const sf = @import("gsl_sf.zig");
+
+/// # Interpolation & splines (`gsl_interp`/`gsl_spline`)
+///
+/// 1-D interpolation (linear, polynomial, cubic/Akima/Steffen splines) over
+/// caller-owned `x`/`y` data, evaluating the value, first/second derivative, or
+/// definite integral. Kept in its own file (`gsl_interp.zig`); reached as
+/// `gsl.interp` (`interp.Spline`, `interp.Accel`, `interp.Type`).
+pub const interp = @import("gsl_interp.zig");
+
+test {
+    // Pull the re-exported sub-module files into test discovery. `zig build
+    // test` only collects tests from files that are analyzed, and gsl.zig
+    // cannot `refAllDecls(@This())` (its `constants`/`qrng` decls are
+    // @compileError placeholders), so reference each submodule explicitly.
+    _ = fft;
+    _ = sf;
+    _ = interp;
+}
 
 /// # Random numbers (`gsl_rng` + `gsl_randist` + `gsl_cdf`)
 ///

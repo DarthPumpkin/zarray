@@ -4,7 +4,7 @@ const mem = std.mem;
 const named_array = @import("named_array.zig");
 const NamedArray = named_array.NamedArray;
 const NamedArrayConst = named_array.NamedArrayConst;
-const tblis = @import("tblis.zig");
+const tblis = @import("bindings/tblis/tblis.zig");
 
 const InputAxis = enum { batch, in };
 const OutputAxis = enum { batch, out };

@@ -74,7 +74,7 @@
 //! Supported scalars: `f32`/`f64` and `Complex(f32)`/`Complex(f64)` across the
 //! whole surface. Complex decompositions use the Hermitian/unitary analogs
 //! (`heev` for `eigSym`, `ungqr` for `qr`) and route through a header-verified C
-//! shim (`src/lapack_shim.{c,h}`) that checks every complex prototype against
+//! shim (`src/bindings/lapack/lapack_shim.{c,h}`) that checks every complex prototype against
 //! Apple's `<vecLib/lapack.h>`. Value-typed results generalize to `RealOf(T)`
 //! (real eigenvalues/singular values for a complex `A`); for real `T`,
 //! `RealOf(T) == T`, so real callers are unaffected.
@@ -88,13 +88,13 @@ const assert = std.debug.assert;
 const Allocator = std.mem.Allocator;
 const Complex = math.complex.Complex;
 
-const named_array = @import("named_array.zig");
-const axis_meta = @import("axis_meta.zig");
+const named_array = @import("../../named_array.zig");
+const axis_meta = @import("../../axis_meta.zig");
 const NamedArray = named_array.NamedArray;
 const NamedArrayConst = named_array.NamedArrayConst;
-const NamedIndex = @import("named_index.zig").NamedIndex;
+const NamedIndex = @import("../../named_index.zig").NamedIndex;
 const KeyEnum = axis_meta.KeyEnum;
-const mat_view = @import("view.zig");
+const mat_view = @import("../../view.zig");
 
 pub const c = @cImport({
     @cDefine("ACCELERATE_NEW_LAPACK", "1");
@@ -107,7 +107,7 @@ pub const c = @cImport({
 // translate-c cannot model C `double _Complex` / `float _Complex`, so the
 // complex LAPACK entry points come back from the cImport as compile errors. All
 // complex symbols are therefore reached through the header-verified C shim
-// (`src/lapack_shim.{c,h}`): the shim's `zarray_*` forwarders speak only
+// (`src/bindings/lapack/lapack_shim.{c,h}`): the shim's `zarray_*` forwarders speak only
 // primitive pointer types, so this Zig<->C boundary carries no complex
 // ambiguity, and every complex prototype is checked against `<vecLib/lapack.h>`
 // when the shim TU is compiled. A complex array is passed as `[*]f32`/`[*]f64`

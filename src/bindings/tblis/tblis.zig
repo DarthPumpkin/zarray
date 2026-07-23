@@ -12,9 +12,9 @@ const TblisReduceT = C.zig_reduce_t;
 const c32_tblis = C.scomplex_zig;
 const c64_tblis = C.dcomplex_zig;
 
-const arr = @import("named_array.zig");
-const idx_ = @import("named_index.zig");
-const axis_meta = @import("axis_meta.zig");
+const arr = @import("../../named_array.zig");
+const idx_ = @import("../../named_index.zig");
+const axis_meta = @import("../../axis_meta.zig");
 
 pub const Reduce = enum {
     SUM,

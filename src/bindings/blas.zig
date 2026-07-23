@@ -4,20 +4,19 @@ const meta = std.meta;
 const assert = std.debug.assert;
 const Complex = math.complex.Complex;
 
-const named_index = @import("named_index.zig");
-const named_array = @import("named_array.zig");
+const named_index = @import("../named_index.zig");
+const named_array = @import("../named_array.zig");
 const NamedIndex = named_index.NamedIndex;
 const NamedArray = named_array.NamedArray;
 const NamedArrayConst = named_array.NamedArrayConst;
-const mat_view = @import("view.zig");
+const mat_view = @import("../view.zig");
 
 const acc = @cImport({
-    // Include only the BLAS/LAPACK headers from the vecLib subframework rather
-    // than the umbrella `Accelerate/Accelerate.h`. The umbrella header pulls in
+    // Include only CBLAS from the vecLib subframework rather than the umbrella
+    // `Accelerate/Accelerate.h`. The umbrella header pulls in
     // `<vImage/vImage.h>`, and Zig 0.16's Aro-based translate-c cannot resolve
     // that subframework include, which we don't need anyway.
     @cInclude("vecLib/cblas.h");
-    @cInclude("vecLib/clapack.h");
 });
 
 pub const blas = struct {

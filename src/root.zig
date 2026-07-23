@@ -7,16 +7,18 @@ pub const NamedArrayConst = arr.NamedArrayConst;
 
 pub const index = @import("named_index.zig");
 pub const axis_meta = @import("axis_meta.zig");
-pub const libs = struct {
-    pub const blas = @import("accelerate.zig").blas;
-    pub const lapack = @import("lapack.zig");
-    pub const tblis = @import("tblis.zig");
-    pub const gsl = @import("gsl.zig");
+pub const bindings = struct {
+    pub const blas = @import("bindings/blas.zig").blas;
+    pub const lapack = @import("bindings/lapack/lapack.zig");
+    pub const tblis = @import("bindings/tblis/tblis.zig");
+    pub const gsl = @import("bindings/gsl/gsl.zig");
 
-    test "libs" {
+    test "bindings" {
         std.testing.refAllDecls(@This());
     }
 };
+
+pub const libs = bindings;
 
 // temporary for testing purposes
 pub const math = @import("math.zig");

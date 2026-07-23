@@ -390,6 +390,10 @@ pub fn Strided(comptime T: type) type {
         pub fn fromSlice(s: []const T) Self {
             return .{ .ptr = s.ptr, .stride = 1, .len = s.len };
         }
+        pub fn at(self: Self, i: usize) T {
+            std.debug.assert(i < self.len);
+            return self.ptr[i * self.stride];
+        }
     };
 }
 
@@ -408,6 +412,14 @@ pub fn StridedMut(comptime T: type) type {
         }
         pub fn fromSlice(s: []T) Self {
             return .{ .ptr = s.ptr, .stride = 1, .len = s.len };
+        }
+        pub fn at(self: Self, i: usize) T {
+            std.debug.assert(i < self.len);
+            return self.ptr[i * self.stride];
+        }
+        pub fn set(self: Self, i: usize, v: T) void {
+            std.debug.assert(i < self.len);
+            self.ptr[i * self.stride] = v;
         }
         pub fn asConst(self: Self) Strided(T) {
             return .{ .ptr = self.ptr, .stride = self.stride, .len = self.len };
@@ -496,6 +508,108 @@ pub fn mutVectorViewOf(comptime Vec: type, s: StridedMut(f64)) Vec {
         .size = s.len,
         .stride = s.stride,
         .data = s.ptr,
+        .block = null,
+        .owner = 0,
+    };
+}
+
+// ---------------------------------------------------------------------------
+// gsl_matrix views (borrowed, zero-copy)
+// ---------------------------------------------------------------------------
+//
+// The 2-D analogue of the `gsl_vector` helpers above. A `gsl_matrix` is
+// row-major: element `(i, j)` lives at `data[i*tda + j]`, where `tda` ("trailing
+// dimension of A") is the leading dimension and satisfies `tda >= cols`. A
+// borrowed view sets `block = null, owner = 0` and owns nothing, exactly like
+// `gsl_matrix_view_array_with_tda`, so it can be stack-constructed over caller
+// memory with no allocation and no copy.
+//
+// As with the vector helpers, each GSL sub-module has its own `@cImport` and so
+// its own *distinct* `c.gsl_matrix` type; the constructors are generic over the
+// target matrix type `Mat`.
+
+/// A borrowed, read-only row-major matrix view: `rows`x`cols` elements with a
+/// leading dimension `tda` (element `(i, j)` at `ptr[i*tda + j]`). Use
+/// `fromSlice` for the common contiguous (`tda == cols`) case.
+pub fn Matrix(comptime T: type) type {
+    return struct {
+        ptr: [*]const T,
+        rows: usize,
+        cols: usize,
+        tda: usize,
+
+        const Self = @This();
+
+        pub fn init(ptr: [*]const T, rows: usize, cols: usize, tda: usize) Self {
+            return .{ .ptr = ptr, .rows = rows, .cols = cols, .tda = tda };
+        }
+        pub fn fromSlice(s: []const T, rows: usize, cols: usize) Self {
+            std.debug.assert(s.len >= rows * cols);
+            return .{ .ptr = s.ptr, .rows = rows, .cols = cols, .tda = cols };
+        }
+        pub fn get(self: Self, i: usize, j: usize) T {
+            std.debug.assert(i < self.rows and j < self.cols);
+            return self.ptr[i * self.tda + j];
+        }
+    };
+}
+
+/// Mutable counterpart of `Matrix`. GSL hands one of these to the Jacobian
+/// callback (`gsl_multifit_nlinear`'s `df`) for the user to fill in.
+pub fn MatrixMut(comptime T: type) type {
+    return struct {
+        ptr: [*]T,
+        rows: usize,
+        cols: usize,
+        tda: usize,
+
+        const Self = @This();
+
+        pub fn init(ptr: [*]T, rows: usize, cols: usize, tda: usize) Self {
+            return .{ .ptr = ptr, .rows = rows, .cols = cols, .tda = tda };
+        }
+        pub fn fromSlice(s: []T, rows: usize, cols: usize) Self {
+            std.debug.assert(s.len >= rows * cols);
+            return .{ .ptr = s.ptr, .rows = rows, .cols = cols, .tda = cols };
+        }
+        pub fn get(self: Self, i: usize, j: usize) T {
+            std.debug.assert(i < self.rows and j < self.cols);
+            return self.ptr[i * self.tda + j];
+        }
+        pub fn set(self: Self, i: usize, j: usize, v: T) void {
+            std.debug.assert(i < self.rows and j < self.cols);
+            self.ptr[i * self.tda + j] = v;
+        }
+        pub fn asConst(self: Self) Matrix(T) {
+            return .{ .ptr = self.ptr, .rows = self.rows, .cols = self.cols, .tda = self.tda };
+        }
+    };
+}
+
+/// Stack-construct a borrowed (non-owning) read-only `gsl_matrix` of the
+/// caller's type `Mat` over the row-major data `m`. Internal shared helper for
+/// the `gsl_matrix`-based bindings.
+pub fn constMatrixViewOf(comptime Mat: type, m: Matrix(f64)) Mat {
+    return .{
+        .size1 = m.rows,
+        .size2 = m.cols,
+        .tda = m.tda,
+        // Safe: GSL only reads through `const gsl_matrix *` input parameters.
+        .data = @constCast(m.ptr),
+        .block = null,
+        .owner = 0,
+    };
+}
+
+/// Stack-construct a borrowed (non-owning) mutable `gsl_matrix` of the caller's
+/// type `Mat` over the row-major data `m`. Internal shared helper (see
+/// `constMatrixViewOf`).
+pub fn mutMatrixViewOf(comptime Mat: type, m: MatrixMut(f64)) Mat {
+    return .{
+        .size1 = m.rows,
+        .size2 = m.cols,
+        .tda = m.tda,
+        .data = m.ptr,
         .block = null,
         .owner = 0,
     };

@@ -84,6 +84,7 @@
 
 const std = @import("std");
 const testing = std.testing;
+const gsl = @import("gsl.zig");
 
 /// Build an `Fn` (`gsl_function`-shaped) from a plain function pointer. A bare
 /// top-level `fn(f64) f64` coerces to `*const fn(f64) f64`, so it may be passed
@@ -286,6 +287,99 @@ fn odeStatus(ret: anytype) c_int {
     @compileError("ODE callback methods must return void or c_int; got " ++ @typeName(Ret));
 }
 
+// ---------------------------------------------------------------------------
+// gsl_multifit_nlinear — residual (+ optional Jacobian) callback bundle
+// ---------------------------------------------------------------------------
+//
+// The `gsl_multifit_nlinear_fdf` callback struct is shaped
+//   f  (const gsl_vector *x, void *params, gsl_vector *f)   // residual
+//   df (const gsl_vector *x, void *params, gsl_matrix *J)   // Jacobian (optional)
+//   fvv(...)                                                // geodesic accel (unused)
+// Unlike the ODE callbacks (raw `double[]`), these pass `gsl_vector *`/
+// `gsl_matrix *`, so the trampolines are generic over the chapter's `@cImport`
+// `Vec`/`Mat` types.
+//
+// The parameter vector `x` is always contiguous (a plain workspace/allocation),
+// so it is presented as a `[]const f64` slice. The residual output `f`, however,
+// is *not* always contiguous: when GSL approximates the Jacobian by finite
+// differences it evaluates the residual directly into a strided *column view* of
+// the Jacobian (`stride == tda`). It is therefore presented as a
+// `gsl.StridedMut(f64)` (write with `f.set(i, v)`), and the Jacobian as a
+// row-major `gsl.MatrixMut(f64)` (`J.set(i, j, v)`). Both are zero-copy.
+
+/// Build a `Fdf` (`gsl_multifit_nlinear_fdf`-shaped) from a context struct
+/// exposing `pub fn residual(self, x: []const f64, f: gsl.StridedMut(f64))`. The
+/// Jacobian pointer is left `null`, so GSL approximates it by finite
+/// differences. `residual` may return `void` (treated as `GSL_SUCCESS`) or a
+/// `c_int` status.
+pub fn multifitFdf(comptime Fdf: type, comptime Vec: type, n: usize, p: usize, ctx: anytype) Fdf {
+    const Ptr = @TypeOf(ctx);
+    comptime requireMethods(Ptr, &.{"residual"});
+    const Tr = struct {
+        fn f(x: [*c]const Vec, params: ?*anyopaque, out: [*c]Vec) callconv(.c) c_int {
+            const self: Ptr = @ptrCast(@alignCast(params.?));
+            return multifitStatus(self.residual(paramSlice(x), residualView(out)));
+        }
+    };
+    return multifitStruct(Fdf, &Tr.f, null, n, p, ctx);
+}
+
+/// Build a `Fdf` (`gsl_multifit_nlinear_fdf`-shaped) from a context struct
+/// exposing both `pub fn residual(self, x: []const f64, f: gsl.StridedMut(f64))`
+/// and `pub fn jacobian(self, x: []const f64, J: gsl.MatrixMut(f64))`. Both
+/// methods may return `void` (treated as `GSL_SUCCESS`) or a `c_int` status.
+pub fn multifitFdfWithJacobian(comptime Fdf: type, comptime Vec: type, comptime Mat: type, n: usize, p: usize, ctx: anytype) Fdf {
+    const Ptr = @TypeOf(ctx);
+    comptime requireMethods(Ptr, &.{ "residual", "jacobian" });
+    const Tr = struct {
+        fn f(x: [*c]const Vec, params: ?*anyopaque, out: [*c]Vec) callconv(.c) c_int {
+            const self: Ptr = @ptrCast(@alignCast(params.?));
+            return multifitStatus(self.residual(paramSlice(x), residualView(out)));
+        }
+        fn df(x: [*c]const Vec, params: ?*anyopaque, jac: [*c]Mat) callconv(.c) c_int {
+            const self: Ptr = @ptrCast(@alignCast(params.?));
+            const J = gsl.MatrixMut(f64).init(@ptrCast(jac.*.data), jac.*.size1, jac.*.size2, jac.*.tda);
+            return multifitStatus(self.jacobian(paramSlice(x), J));
+        }
+    };
+    return multifitStruct(Fdf, &Tr.f, &Tr.df, n, p, ctx);
+}
+
+/// Assemble the `gsl_multifit_nlinear_fdf` struct literal, zeroing the
+/// evaluation counters GSL maintains.
+fn multifitStruct(comptime Fdf: type, f: anytype, df: anytype, n: usize, p: usize, ctx: anytype) Fdf {
+    return .{
+        .f = f,
+        .df = df,
+        .fvv = null,
+        .n = n,
+        .p = p,
+        .params = @constCast(ctx),
+        .nevalf = 0,
+        .nevaldf = 0,
+        .nevalfvv = 0,
+    };
+}
+
+/// Present a contiguous GSL parameter vector as a `[]const f64` (debug-asserts
+/// stride 1, which always holds for `gsl_multifit_nlinear`'s `x`).
+fn paramSlice(v: anytype) []const f64 {
+    std.debug.assert(v.*.stride == 1);
+    return v.*.data[0..v.*.size];
+}
+
+/// Present a (possibly strided) GSL residual vector as a `gsl.StridedMut(f64)`.
+fn residualView(v: anytype) gsl.StridedMut(f64) {
+    return gsl.StridedMut(f64).init(@ptrCast(v.*.data), v.*.stride, v.*.size);
+}
+
+fn multifitStatus(ret: anytype) c_int {
+    const Ret = @TypeOf(ret);
+    if (Ret == void) return 0;
+    if (Ret == c_int) return ret;
+    @compileError("multifit callback methods must return void or c_int; got " ++ @typeName(Ret));
+}
+
 /// Comptime guard: `Ptr` must be a single-item pointer to a struct declaring
 /// each named (public) method. Produces a targeted error otherwise.
 fn requireMethods(comptime Ptr: type, comptime methods: []const []const u8) void {
@@ -332,6 +426,37 @@ const MockOde = extern struct {
     jacobian: ?*const fn (f64, [*c]const f64, [*c]f64, [*c]f64, ?*anyopaque) callconv(.c) c_int,
     dimension: usize,
     params: ?*anyopaque,
+};
+
+// Mock `gsl_vector`/`gsl_matrix`/`gsl_multifit_nlinear_fdf` matching the C
+// layouts so the multifit bridge can be exercised without linking GSL.
+const MockVec = extern struct {
+    size: usize,
+    stride: usize,
+    data: [*c]f64,
+    block: ?*anyopaque,
+    owner: c_int,
+};
+
+const MockMat = extern struct {
+    size1: usize,
+    size2: usize,
+    tda: usize,
+    data: [*c]f64,
+    block: ?*anyopaque,
+    owner: c_int,
+};
+
+const MockMultifit = extern struct {
+    f: ?*const fn ([*c]const MockVec, ?*anyopaque, [*c]MockVec) callconv(.c) c_int,
+    df: ?*const fn ([*c]const MockVec, ?*anyopaque, [*c]MockMat) callconv(.c) c_int,
+    fvv: ?*anyopaque,
+    n: usize,
+    p: usize,
+    params: ?*anyopaque,
+    nevalf: usize,
+    nevaldf: usize,
+    nevalfvv: usize,
 };
 
 fn square(x: f64) f64 {
@@ -528,4 +653,93 @@ test "callback: odeSystem forwards a nonzero c_int status" {
     const y = [_]f64{0.0};
     var dydt = [_]f64{0.0};
     try testing.expectEqual(@as(c_int, 1234), s.function.?(0.0, &y, &dydt, s.params));
+}
+
+test "callback: multifitFdf wires residual only, leaving df null" {
+    // Model r_i(a) = a*t_i - y_i for two points; residual only.
+    const Fit = struct {
+        t: []const f64,
+        y: []const f64,
+        pub fn residual(self: *const @This(), x: []const f64, r: gsl.StridedMut(f64)) void {
+            for (self.t, self.y, 0..) |ti, yi, i| r.set(i, x[0] * ti + x[1] - yi);
+        }
+    };
+    var t = [_]f64{ 1.0, 2.0 };
+    var y = [_]f64{ 3.0, 5.0 };
+    var fit = Fit{ .t = &t, .y = &y };
+
+    const fdf = multifitFdf(MockMultifit, MockVec, 2, 2, &fit);
+    try testing.expect(fdf.df == null);
+    try testing.expectEqual(@as(usize, 2), fdf.n);
+    try testing.expectEqual(@as(usize, 2), fdf.p);
+
+    var xdata = [_]f64{ 2.0, 1.0 }; // a=2, b=1
+    var xvec = MockVec{ .size = 2, .stride = 1, .data = &xdata, .block = null, .owner = 0 };
+    var rdata = [_]f64{ 0.0, 0.0 };
+    var rvec = MockVec{ .size = 2, .stride = 1, .data = &rdata, .block = null, .owner = 0 };
+
+    try testing.expectEqual(@as(c_int, 0), fdf.f.?(&xvec, fdf.params, &rvec));
+    try testing.expectEqual(@as(f64, 0.0), rdata[0]); // 2*1+1-3
+    try testing.expectEqual(@as(f64, 0.0), rdata[1]); // 2*2+1-5
+}
+
+test "callback: multifitFdfWithJacobian fills a tda-aware Jacobian" {
+    // r_i = a*t_i + b - y_i ; dr_i/da = t_i, dr_i/db = 1.
+    const Fit = struct {
+        t: []const f64,
+        y: []const f64,
+        pub fn residual(self: *const @This(), x: []const f64, r: gsl.StridedMut(f64)) c_int {
+            for (self.t, self.y, 0..) |ti, yi, i| r.set(i, x[0] * ti + x[1] - yi);
+            return 0;
+        }
+        pub fn jacobian(self: *const @This(), x: []const f64, J: gsl.MatrixMut(f64)) void {
+            _ = x;
+            for (self.t, 0..) |ti, i| {
+                J.set(i, 0, ti);
+                J.set(i, 1, 1.0);
+            }
+        }
+    };
+    var t = [_]f64{ 1.0, 2.0, 3.0 };
+    var y = [_]f64{ 0.0, 0.0, 0.0 };
+    var fit = Fit{ .t = &t, .y = &y };
+
+    const fdf = multifitFdfWithJacobian(MockMultifit, MockVec, MockMat, 3, 2, &fit);
+    try testing.expect(fdf.df != null);
+
+    var xdata = [_]f64{ 0.0, 0.0 };
+    var xvec = MockVec{ .size = 2, .stride = 1, .data = &xdata, .block = null, .owner = 0 };
+
+    // Give the Jacobian a padded leading dimension (tda=4 > cols=2) to prove
+    // the row stride is honoured.
+    var jdata = [_]f64{-1.0} ** 12; // 3 rows x tda 4
+    var jmat = MockMat{ .size1 = 3, .size2 = 2, .tda = 4, .data = &jdata, .block = null, .owner = 0 };
+
+    try testing.expectEqual(@as(c_int, 0), fdf.df.?(&xvec, fdf.params, &jmat));
+    // Row i at jdata[i*4 + j].
+    try testing.expectEqual(@as(f64, 1.0), jdata[0]); // (0,0)=t0
+    try testing.expectEqual(@as(f64, 1.0), jdata[1]); // (0,1)=1
+    try testing.expectEqual(@as(f64, 2.0), jdata[4]); // (1,0)=t1
+    try testing.expectEqual(@as(f64, 1.0), jdata[5]); // (1,1)=1
+    try testing.expectEqual(@as(f64, 3.0), jdata[8]); // (2,0)=t2
+    try testing.expectEqual(@as(f64, 1.0), jdata[9]); // (2,1)=1
+    // Padding column untouched.
+    try testing.expectEqual(@as(f64, -1.0), jdata[2]);
+}
+
+test "callback: multifit residual forwards a nonzero c_int status" {
+    const Fail = struct {
+        pub fn residual(_: *const @This(), x: []const f64, r: gsl.StridedMut(f64)) c_int {
+            _ = x;
+            _ = r;
+            return 7;
+        }
+    };
+    var fail = Fail{};
+    const fdf = multifitFdf(MockMultifit, MockVec, 1, 1, &fail);
+    var xdata = [_]f64{0.0};
+    var xvec = MockVec{ .size = 1, .stride = 1, .data = &xdata, .block = null, .owner = 0 };
+    var rdata = [_]f64{0.0};
+    var rvec = MockVec{ .size = 1, .stride = 1, .data = &rdata, .block = null, .owner = 0 };
+    try testing.expectEqual(@as(c_int, 7), fdf.f.?(&xvec, fdf.params, &rvec));
 }

@@ -94,6 +94,7 @@ const NamedArray = named_array.NamedArray;
 const NamedArrayConst = named_array.NamedArrayConst;
 const NamedIndex = @import("named_index.zig").NamedIndex;
 const KeyEnum = axis_meta.KeyEnum;
+const mat_view = @import("view.zig");
 
 pub const c = @cImport({
     @cDefine("ACCELERATE_NEW_LAPACK", "1");
@@ -187,7 +188,8 @@ pub const Triangle = enum {
     }
 };
 
-const Layout = enum { col_major, row_major };
+/// Row/column-major selector, shared with the BLAS binding via `view.zig`.
+const Layout = mat_view.Layout;
 
 // ===== Scalar helpers ========================================================
 
@@ -281,38 +283,6 @@ fn DescriptorConst(comptime T: type) type {
     return DescriptorOf([*]const T);
 }
 
-const DescGeom = struct { layout: Layout, m: c_int, n: c_int, lda: c_int };
-
-/// Compute a matrix's LAPACK geometry (layout, dimensions, leading dimension)
-/// from its index alone — the part of describing that doesn't touch the buffer
-/// and so is independent of the element pointer's `const`-ness.
-fn describeGeom(
-    idx: anytype,
-    comptime rows_name: [:0]const u8,
-    comptime cols_name: [:0]const u8,
-) LapackError!DescGeom {
-    const nr = @field(idx.shape, rows_name);
-    const nc = @field(idx.shape, cols_name);
-    if (nr == 0 or nc == 0) return error.NotContiguous;
-    const sr = @field(idx.strides, rows_name);
-    const sc = @field(idx.strides, cols_name);
-    const nr_i: isize = @intCast(nr);
-    const nc_i: isize = @intCast(nc);
-
-    // Column-major: rows contiguous. (A single column never steps by lda, so
-    // clamp lda up to the row count to satisfy LAPACK's lda >= max(1,m).)
-    if (sr == 1 and (nc == 1 or sc >= nr_i)) {
-        const lda: c_int = if (nc == 1) @intCast(@max(nr, 1)) else @intCast(sc);
-        return .{ .layout = .col_major, .m = @intCast(nr), .n = @intCast(nc), .lda = lda };
-    }
-    // Row-major: cols contiguous. LAPACK, reading this column-major, sees Aᵀ.
-    if (sc == 1 and (nr == 1 or sr >= nc_i)) {
-        const lda: c_int = if (nr == 1) @intCast(@max(nc, 1)) else @intCast(sr);
-        return .{ .layout = .row_major, .m = @intCast(nr), .n = @intCast(nc), .lda = lda };
-    }
-    return error.NotContiguous;
-}
-
 /// Describe a 2-axis `NamedArray` as a mutable LAPACK matrix. `rows_name` is the
 /// Fortran first index; `cols_name` the second. Returns `error.NotContiguous`
 /// for any view that can't be expressed with a single positive leading dimension.
@@ -323,10 +293,10 @@ fn describe(
     comptime rows_name: [:0]const u8,
     comptime cols_name: [:0]const u8,
 ) LapackError!Descriptor(T) {
-    const g = try describeGeom(arr.idx, rows_name, cols_name);
+    const g = try mat_view.analyze2d(arr.idx, rows_name, cols_name, .col_major);
     const Axes = @TypeOf(arr.idx.shape);
     const base: [*]T = @ptrCast(arr.at(std.mem.zeroes(Axes)));
-    return .{ .layout = g.layout, .m = g.m, .n = g.n, .lda = g.lda, .ptr = base };
+    return .{ .layout = g.layout, .m = @intCast(g.rows), .n = @intCast(g.cols), .lda = @intCast(g.lda), .ptr = base };
 }
 
 /// Read-only counterpart of `describe`: describes a `NamedArrayConst`, yielding
@@ -341,10 +311,10 @@ fn describeConst(
     comptime rows_name: [:0]const u8,
     comptime cols_name: [:0]const u8,
 ) LapackError!DescriptorConst(T) {
-    const g = try describeGeom(arr.idx, rows_name, cols_name);
+    const g = try mat_view.analyze2d(arr.idx, rows_name, cols_name, .col_major);
     const Axes = @TypeOf(arr.idx.shape);
     const base: [*]const T = @ptrCast(arr.at(std.mem.zeroes(Axes)));
-    return .{ .layout = g.layout, .m = g.m, .n = g.n, .lda = g.lda, .ptr = base };
+    return .{ .layout = g.layout, .m = @intCast(g.rows), .n = @intCast(g.cols), .lda = @intCast(g.lda), .ptr = base };
 }
 
 // ===== Comptime axis helpers =================================================

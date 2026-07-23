@@ -9,6 +9,7 @@ const named_array = @import("named_array.zig");
 const NamedIndex = named_index.NamedIndex;
 const NamedArray = named_array.NamedArray;
 const NamedArrayConst = named_array.NamedArrayConst;
+const mat_view = @import("view.zig");
 
 const acc = @cImport({
     // Include only the BLAS/LAPACK headers from the vecLib subframework rather
@@ -2511,35 +2512,22 @@ pub const blas = struct {
             ptr: *const Scalar,
 
             fn init(arr: NamedArrayConst(IJ, Scalar)) @This() {
-                assert(arr.idx.strides.i > 0);
-                assert(arr.idx.strides.j > 0);
-                const si: usize = @intCast(arr.idx.strides.i);
-                const sj: usize = @intCast(arr.idx.strides.j);
-
-                // The minor axis must have stride 1 (contiguous).
-                // The major axis stride is the leading dimension (lda),
-                // which may exceed the minor axis shape (submatrix view / padding).
-                if (sj == 1 and si >= arr.idx.shape.j) {
-                    // Row-major: j is contiguous, lda = stride along i
-                    return .{
-                        .layout = @intCast(acc.CblasRowMajor),
-                        .rows = @intCast(arr.idx.shape.i),
-                        .cols = @intCast(arr.idx.shape.j),
-                        .leading = @intCast(si),
-                        .ptr = @ptrCast(arr.buf.ptr),
-                    };
-                } else if (si == 1 and sj >= arr.idx.shape.i) {
-                    // Col-major: i is contiguous, lda = stride along j
-                    return .{
-                        .layout = @intCast(acc.CblasColMajor),
-                        .rows = @intCast(arr.idx.shape.i),
-                        .cols = @intCast(arr.idx.shape.j),
-                        .leading = @intCast(sj),
-                        .ptr = @ptrCast(arr.buf.ptr),
-                    };
-                } else {
+                // Shared geometry kernel (offset-aware; see view.zig). BLAS treats
+                // a non-contiguous view as a programmer error, hence `@panic`.
+                const g = mat_view.analyze2d(arr.idx, "i", "j", .row_major) catch
                     @panic("Blas2d: minor axis must have stride 1, and major axis stride must be >= minor axis shape");
-                }
+                const order: acc.CBLAS_ORDER = switch (g.layout) {
+                    .col_major => @intCast(acc.CblasColMajor),
+                    .row_major => @intCast(acc.CblasRowMajor),
+                };
+                return .{
+                    .layout = order,
+                    .rows = @intCast(g.rows),
+                    .cols = @intCast(g.cols),
+                    .leading = @intCast(g.lda),
+                    // Offset-aware base pointer to element (0,0).
+                    .ptr = arr.at(std.mem.zeroes(@TypeOf(arr.idx.shape))),
+                };
             }
 
             /// Creates a Blas2d from an arbitrary 2D NamedArrayConst by renaming axes to IJ.
@@ -2565,30 +2553,22 @@ pub const blas = struct {
             ptr: *Scalar,
 
             fn init(arr: NamedArray(IJ, Scalar)) @This() {
-                assert(arr.idx.strides.i > 0);
-                assert(arr.idx.strides.j > 0);
-                const si: usize = @intCast(arr.idx.strides.i);
-                const sj: usize = @intCast(arr.idx.strides.j);
-
-                if (sj == 1 and si >= arr.idx.shape.j) {
-                    return .{
-                        .layout = @intCast(acc.CblasRowMajor),
-                        .rows = @intCast(arr.idx.shape.i),
-                        .cols = @intCast(arr.idx.shape.j),
-                        .leading = @intCast(si),
-                        .ptr = @ptrCast(arr.buf.ptr),
-                    };
-                } else if (si == 1 and sj >= arr.idx.shape.i) {
-                    return .{
-                        .layout = @intCast(acc.CblasColMajor),
-                        .rows = @intCast(arr.idx.shape.i),
-                        .cols = @intCast(arr.idx.shape.j),
-                        .leading = @intCast(sj),
-                        .ptr = @ptrCast(arr.buf.ptr),
-                    };
-                } else {
+                // Shared geometry kernel (offset-aware; see view.zig). BLAS treats
+                // a non-contiguous view as a programmer error, hence `@panic`.
+                const g = mat_view.analyze2d(arr.idx, "i", "j", .row_major) catch
                     @panic("Blas2dMut: minor axis must have stride 1, and major axis stride must be >= minor axis shape");
-                }
+                const order: acc.CBLAS_ORDER = switch (g.layout) {
+                    .col_major => @intCast(acc.CblasColMajor),
+                    .row_major => @intCast(acc.CblasRowMajor),
+                };
+                return .{
+                    .layout = order,
+                    .rows = @intCast(g.rows),
+                    .cols = @intCast(g.cols),
+                    .leading = @intCast(g.lda),
+                    // Offset-aware base pointer to element (0,0).
+                    .ptr = arr.at(std.mem.zeroes(@TypeOf(arr.idx.shape))),
+                };
             }
 
             /// Creates a Blas2dMut from an arbitrary 2D NamedArray by renaming axes to IJ.

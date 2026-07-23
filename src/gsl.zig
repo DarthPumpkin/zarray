@@ -29,6 +29,10 @@
 //!                  derivative-based solvers).
 //!   - `min`      — `gsl_min`: one-dimensional function minimization.
 //!   - `cheb`     — `gsl_chebyshev`: Chebyshev-series function approximation.
+//!   - `monte`    — `gsl_monte`: multidimensional Monte-Carlo integration
+//!                  (plain / MISER / VEGAS).
+//!   - `ode`      — `gsl_odeiv2`: ODE initial-value integration via adaptive
+//!                  or fixed-step drivers.
 //!   - `sort`     — `gsl_sort`: typed sorting / k-smallest / index sorts.
 //!   - `permutation` — `gsl_permutation` (+ `gsl_permute`): permutations.
 //!   - `combination` — `gsl_combination`: combinations.
@@ -51,7 +55,8 @@
 //!     `gsl_function`-style callback structs. Chapters expose a `Callback` value
 //!     type built with `.initFn(f)` (a plain function) or `.initCtx(&ctx)` (a
 //!     `*struct` with an `eval` method); used by the callback chapters
-//!     (currently `deriv`, `integration`, `roots`, `min`, and `cheb`).
+//!     (currently `deriv`, `integration`, `roots`, `min`, `cheb`, `monte`, and
+//!     `ode`).
 //!
 //! ## Conventions
 //!
@@ -322,6 +327,21 @@ pub const min = @import("gsl_min.zig");
 /// reached as `gsl.cheb` (`cheb.Chebyshev`).
 pub const cheb = @import("gsl_chebyshev.zig");
 
+/// # Monte-Carlo integration (`gsl_monte`)
+///
+/// Multidimensional integration over a box by random sampling: `Plain`,
+/// `Miser`, and `Vegas` engines, each taking a multidim `Callback` and reusing
+/// a `gsl.rand.Rng`. Kept in its own file (`gsl_monte.zig`); reached as
+/// `gsl.monte` (`monte.Vegas`, `monte.Plain`, `monte.Miser`).
+pub const monte = @import("gsl_monte.zig");
+
+/// # ODE initial-value solvers (`gsl_odeiv2`)
+///
+/// Integrate first-order ODE systems `y'(t)=f(t,y)` with adaptive or fixed-step
+/// drivers over a `System` callback bundle (RHS-only or RHS+Jacobian). Kept in
+/// its own file (`gsl_odeiv2.zig`); reached as `gsl.ode`.
+pub const ode = @import("gsl_odeiv2.zig");
+
 test {
     // Pull re-exported sub-module files into test discovery. `zig build test`
     // only collects tests from files that are analyzed, so reference each
@@ -347,6 +367,8 @@ test {
     _ = roots;
     _ = min;
     _ = cheb;
+    _ = monte;
+    _ = ode;
 }
 
 /// A strided, read-only view over `T`: `len` elements spaced `stride` apart

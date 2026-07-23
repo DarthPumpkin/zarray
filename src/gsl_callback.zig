@@ -1,6 +1,7 @@
 //! The callback bridge: turn an idiomatic Zig callable into the C
 //! function-pointer-plus-`void *params` structs GSL's callback chapters expect
-//! (`gsl_function`, `gsl_function_fdf`, and — later — the monte/ODE variants).
+//! (`gsl_function`, `gsl_function_fdf`, `gsl_monte_function`, and
+//! `gsl_odeiv2_system`).
 //!
 //! This file deliberately has **no `@cImport`**. Every builder is generic over
 //! the *target* C struct type, which the calling chapter supplies from its own
@@ -48,6 +49,24 @@
 //! polishing: `ctx` exposes `eval` and `deriv`, and optionally `evalDeriv(x,
 //! *f64, *f64)` for the combined callback (otherwise it is synthesized from
 //! `eval` + `deriv`; ratified D-cb3).
+//!
+//! `MonteFunction` is the *multidimensional* analog for Monte-Carlo integration
+//! (`gsl_monte_function`, shaped `f(x[], dim, params)`). The plain-function
+//! form takes a `*const fn([]const f64) f64` and the context form a `*struct`
+//! with `pub fn eval(self, x: []const f64) f64`; the trampoline reconstructs the
+//! `dim`-length slice from GSL's raw pointer before calling. The struct's `dim`
+//! field is left 0 at construction and filled in by the consuming chapter
+//! immediately before the call (it equals the integration dimension), so the
+//! caller never repeats the dimension when building the callback.
+//!
+//! `odeSystem` and `odeSystemWithJacobian` build the ODE callback struct
+//! (`gsl_odeiv2_system`). Both require a context pointer and explicit
+//! `dimension`; `odeSystem` needs `pub fn rhs(self, t, y, dydt)`, while
+//! `odeSystemWithJacobian` additionally needs
+//! `pub fn jacobian(self, t, y, dfdy, dfdt)`. The array arguments are passed in
+//! raw C-pointer form (`[*c]const f64` / `[*c]f64`) matching GSL's callback
+//! signature; routines read/write the first `dimension` entries. Either method
+//! may return `void` (treated as success) or a `c_int` GSL status code.
 //!
 //! ## Conventions
 //!
@@ -168,6 +187,105 @@ pub fn functionFdf(comptime Fdf: type, ctx: anytype) Fdf {
     return .{ .f = &Tr.f, .df = &Tr.df, .fdf = &Tr.fdf, .params = @constCast(ctx) };
 }
 
+/// A ready-to-pass `gsl_monte_function`-shaped callback value for the
+/// multidimensional Monte-Carlo routines. Instantiate once per chapter over its
+/// own `c.gsl_monte_function` type; construct with `initFn` (a plain
+/// `*const fn([]const f64) f64`) or `initCtx` (a `*struct` with
+/// `pub fn eval(self, x: []const f64) f64`). The `dim` field is set to 0 at
+/// construction; the consuming routine fills it in (from the integration
+/// bounds) before handing `&value.mf` to GSL.
+pub fn MonteFunction(comptime MF: type) type {
+    return struct {
+        mf: MF,
+        const Self = @This();
+
+        /// From a plain `*const fn([]const f64) f64` (a bare function coerces in).
+        pub fn initFn(f: *const fn ([]const f64) f64) Self {
+            return .{ .mf = monteFunction(MF, f) };
+        }
+
+        /// From a pointer to a context struct with
+        /// `pub fn eval(self, x: []const f64) f64`.
+        pub fn initCtx(ctx: anytype) Self {
+            return .{ .mf = monteContext(MF, ctx) };
+        }
+    };
+}
+
+/// Build an `MF` (`gsl_monte_function`-shaped) from a plain function pointer
+/// taking the point as a slice. `dim` is left 0 for the consumer to fill in.
+pub fn monteFunction(comptime MF: type, f: *const fn ([]const f64) f64) MF {
+    const Tr = struct {
+        fn call(x: [*c]f64, dim: usize, params: ?*anyopaque) callconv(.c) f64 {
+            const fp: *const fn ([]const f64) f64 = @ptrCast(@alignCast(params.?));
+            return fp(x[0..dim]);
+        }
+    };
+    return .{ .f = &Tr.call, .dim = 0, .params = @constCast(f) };
+}
+
+/// Build an `MF` (`gsl_monte_function`-shaped) from a pointer to a context
+/// struct exposing `pub fn eval(self, x: []const f64) f64`. `dim` is left 0 for
+/// the consumer to fill in.
+pub fn monteContext(comptime MF: type, ctx: anytype) MF {
+    const Ptr = @TypeOf(ctx);
+    comptime requireMethods(Ptr, &.{"eval"});
+    const Tr = struct {
+        fn call(x: [*c]f64, dim: usize, params: ?*anyopaque) callconv(.c) f64 {
+            const self: Ptr = @ptrCast(@alignCast(params.?));
+            return self.eval(x[0..dim]);
+        }
+    };
+    return .{ .f = &Tr.call, .dim = 0, .params = @constCast(ctx) };
+}
+
+/// Build a `Sys` (`gsl_odeiv2_system`-shaped) from a pointer to a context
+/// struct exposing `pub fn rhs(self, t, y, dydt)`, where `y`/`dydt` are raw
+/// C pointers (`[*c]const f64` / `[*c]f64`) matching GSL's callback signature.
+/// `rhs` may return `void` (treated as `GSL_SUCCESS`) or a `c_int` status code.
+pub fn odeSystem(comptime Sys: type, dimension: usize, ctx: anytype) Sys {
+    const Ptr = @TypeOf(ctx);
+    comptime requireMethods(Ptr, &.{"rhs"});
+    const Tr = struct {
+        fn f(t: f64, y: [*c]const f64, dydt: [*c]f64, params: ?*anyopaque) callconv(.c) c_int {
+            const self: Ptr = @ptrCast(@alignCast(params.?));
+            const ret = self.rhs(t, y, dydt);
+            return odeStatus(ret);
+        }
+    };
+    return .{ .function = &Tr.f, .jacobian = null, .dimension = dimension, .params = @constCast(ctx) };
+}
+
+/// Build a `Sys` (`gsl_odeiv2_system`-shaped) from a pointer to a context
+/// struct exposing both `pub fn rhs(self, t, y, dydt)` and
+/// `pub fn jacobian(self, t, y, dfdy, dfdt)`, where all array arguments are raw
+/// C pointers matching GSL's callback signature. Both methods may return `void`
+/// (treated as `GSL_SUCCESS`) or a `c_int` status code.
+pub fn odeSystemWithJacobian(comptime Sys: type, dimension: usize, ctx: anytype) Sys {
+    const Ptr = @TypeOf(ctx);
+    comptime requireMethods(Ptr, &.{ "rhs", "jacobian" });
+    const Tr = struct {
+        fn f(t: f64, y: [*c]const f64, dydt: [*c]f64, params: ?*anyopaque) callconv(.c) c_int {
+            const self: Ptr = @ptrCast(@alignCast(params.?));
+            const ret = self.rhs(t, y, dydt);
+            return odeStatus(ret);
+        }
+        fn jac(t: f64, y: [*c]const f64, dfdy: [*c]f64, dfdt: [*c]f64, params: ?*anyopaque) callconv(.c) c_int {
+            const self: Ptr = @ptrCast(@alignCast(params.?));
+            const ret = self.jacobian(t, y, dfdy, dfdt);
+            return odeStatus(ret);
+        }
+    };
+    return .{ .function = &Tr.f, .jacobian = &Tr.jac, .dimension = dimension, .params = @constCast(ctx) };
+}
+
+fn odeStatus(ret: anytype) c_int {
+    const Ret = @TypeOf(ret);
+    if (Ret == void) return 0;
+    if (Ret == c_int) return ret;
+    @compileError("ODE callback methods must return void or c_int; got " ++ @typeName(Ret));
+}
+
 /// Comptime guard: `Ptr` must be a single-item pointer to a struct declaring
 /// each named (public) method. Produces a targeted error otherwise.
 fn requireMethods(comptime Ptr: type, comptime methods: []const []const u8) void {
@@ -200,6 +318,19 @@ const MockFdf = extern struct {
     f: ?*const fn (f64, ?*anyopaque) callconv(.c) f64,
     df: ?*const fn (f64, ?*anyopaque) callconv(.c) f64,
     fdf: ?*const fn (f64, ?*anyopaque, [*c]f64, [*c]f64) callconv(.c) void,
+    params: ?*anyopaque,
+};
+
+const MockMonte = extern struct {
+    f: ?*const fn ([*c]f64, usize, ?*anyopaque) callconv(.c) f64,
+    dim: usize,
+    params: ?*anyopaque,
+};
+
+const MockOde = extern struct {
+    function: ?*const fn (f64, [*c]const f64, [*c]f64, ?*anyopaque) callconv(.c) c_int,
+    jacobian: ?*const fn (f64, [*c]const f64, [*c]f64, [*c]f64, ?*anyopaque) callconv(.c) c_int,
+    dimension: usize,
     params: ?*anyopaque,
 };
 
@@ -295,4 +426,106 @@ test "callback: functionFdf prefers a context-supplied evalDeriv" {
     try testing.expectEqual(@as(usize, 1), n); // fused path taken
     try testing.expectEqual(@as(f64, 30.0), fv);
     try testing.expectEqual(@as(f64, 100.0), dv);
+}
+
+test "callback: MonteFunction reconstructs the point slice for a plain fn" {
+    const dot = struct {
+        fn f(x: []const f64) f64 {
+            var s: f64 = 0;
+            for (x) |xi| s += xi * xi;
+            return s;
+        }
+    }.f;
+    const CB = MonteFunction(MockMonte);
+    var cb: CB = .initFn(dot);
+    cb.mf.dim = 3; // the consuming chapter fills this in before the call
+    var pt = [_]f64{ 1.0, 2.0, 3.0 };
+    try testing.expectEqual(@as(f64, 14.0), cb.mf.f.?(&pt, cb.mf.dim, cb.mf.params));
+}
+
+test "callback: MonteFunction context captures state and reads the slice" {
+    const Weighted = struct {
+        w: []const f64,
+        pub fn eval(self: *const @This(), x: []const f64) f64 {
+            var s: f64 = 0;
+            for (x, self.w) |xi, wi| s += wi * xi;
+            return s;
+        }
+    };
+    var wv = [_]f64{ 10.0, 100.0 };
+    var ctx = Weighted{ .w = &wv };
+    const CB = MonteFunction(MockMonte);
+    var cb: CB = .initCtx(&ctx);
+    cb.mf.dim = 2;
+    var pt = [_]f64{ 3.0, 4.0 };
+    try testing.expectEqual(@as(f64, 430.0), cb.mf.f.?(&pt, cb.mf.dim, cb.mf.params));
+}
+
+test "callback: odeSystem builds rhs-only gsl_odeiv2_system" {
+    const Decay = struct {
+        k: f64,
+        pub fn rhs(self: *const @This(), t: f64, y: [*c]const f64, dydt: [*c]f64) void {
+            _ = t;
+            dydt[0] = -self.k * y[0];
+        }
+    };
+
+    var d = Decay{ .k = 2.0 };
+    const s = odeSystem(MockOde, 1, &d);
+    try testing.expect(s.jacobian == null);
+    try testing.expectEqual(@as(usize, 1), s.dimension);
+
+    const y = [_]f64{3.0};
+    var dydt = [_]f64{0.0};
+    try testing.expectEqual(@as(c_int, 0), s.function.?(0.0, &y, &dydt, s.params));
+    try testing.expectEqual(@as(f64, -6.0), dydt[0]);
+}
+
+test "callback: odeSystemWithJacobian wires both callbacks" {
+    const Linear = struct {
+        a: f64,
+        pub fn rhs(self: *const @This(), t: f64, y: [*c]const f64, dydt: [*c]f64) c_int {
+            _ = t;
+            dydt[0] = self.a * y[0];
+            return 0;
+        }
+        pub fn jacobian(self: *const @This(), t: f64, y: [*c]const f64, dfdy: [*c]f64, dfdt: [*c]f64) void {
+            _ = t;
+            _ = y;
+            dfdy[0] = self.a;
+            dfdt[0] = 0.0;
+        }
+    };
+
+    var lin = Linear{ .a = -4.0 };
+    const s = odeSystemWithJacobian(MockOde, 1, &lin);
+    try testing.expect(s.jacobian != null);
+
+    const y = [_]f64{1.5};
+    var dydt = [_]f64{0.0};
+    var dfdy = [_]f64{0.0};
+    var dfdt = [_]f64{1.0};
+
+    try testing.expectEqual(@as(c_int, 0), s.function.?(2.0, &y, &dydt, s.params));
+    try testing.expectEqual(@as(c_int, 0), s.jacobian.?(2.0, &y, &dfdy, &dfdt, s.params));
+    try testing.expectEqual(@as(f64, -6.0), dydt[0]);
+    try testing.expectEqual(@as(f64, -4.0), dfdy[0]);
+    try testing.expectEqual(@as(f64, 0.0), dfdt[0]);
+}
+
+test "callback: odeSystem forwards a nonzero c_int status" {
+    const Fail = struct {
+        pub fn rhs(_: *const @This(), t: f64, y: [*c]const f64, dydt: [*c]f64) c_int {
+            _ = t;
+            _ = y;
+            _ = dydt;
+            return 1234;
+        }
+    };
+
+    var f = Fail{};
+    const s = odeSystem(MockOde, 1, &f);
+    const y = [_]f64{0.0};
+    var dydt = [_]f64{0.0};
+    try testing.expectEqual(@as(c_int, 1234), s.function.?(0.0, &y, &dydt, s.params));
 }

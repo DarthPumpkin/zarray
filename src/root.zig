@@ -9,6 +9,7 @@ pub const index = @import("named_index.zig");
 pub const axis_meta = @import("axis_meta.zig");
 pub const bindings = struct {
     pub const blas = @import("bindings/blas.zig");
+    pub const blas_ext = @import("bindings/blas_ext.zig");
     pub const lapack = @import("bindings/lapack/lapack.zig");
     pub const tblis = @import("bindings/tblis/tblis.zig");
     pub const gsl = @import("bindings/gsl/gsl.zig");

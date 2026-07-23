@@ -1,3 +1,38 @@
+//! Idiomatic Zig bindings for BLAS (CBLAS on macOS Accelerate), expressed over
+//! axis-aware `NamedArray` views.
+//!
+//! This module exposes Level 1/2/3 BLAS operations as typed Zig functions that
+//! preserve axis names and absorb layout/stride details where the underlying
+//! routine permits it.
+//!
+//! Highlights:
+//! - Level 1 vector ops (`dot`, `dotu`, `dotc`, `axpy`, `scal`, `swap`, ...)
+//! - Level 2 matrix-vector ops (`gemv`, `symv`, `hemv`, `trmv`, `gbmv`, ...)
+//! - Level 3 matrix-matrix ops (`gemm`, `symm`, `hemm`, `syrk`, `trsm`, ...)
+//! - Packed / triangular / band helpers (`BlasPacked*`, `BlasTriangular*`, `BlasBand`)
+//! - Givens utilities (`rotg_real`, `rot_real`, `rotmg`, `rotm`,
+//!   `ModifiedGivensRotation`)
+//!
+//! Conventions:
+//! - Structural mismatches (wrong axis count/name relationships) are compile-time
+//!   errors.
+//! - Extent/stride/layout preconditions are runtime assertions.
+//! - No hidden allocation: all data is caller-owned.
+//!
+//! Supported scalars are routine-dependent and follow CBLAS capabilities:
+//! `f32`, `f64`, `Complex(f32)`, `Complex(f64)` where applicable.
+//!
+//! Omissions / portability notes (vs Accelerate `cblas.h`):
+//! - Intentionally omitted `cblas_crotg` / `cblas_zrotg` (complex-parameter
+//!   Givens generators).
+//! - Intentionally omitted `cblas_csrot` / `cblas_zdrot` from core.
+//! - Intentionally omitted `cblas_errprn` / `cblas_xerbla` (diagnostic hooks,
+//!   not core numeric kernels).
+//! - General complex-sine rotations (`crot`/`zrot` with complex `s`) are not
+//!   part of Accelerate's CBLAS surface and are not provided by this module.
+//! - The omitted Accelerate/ATLAS extensions are exposed under
+//!   `bindings.blas_ext.accelerate`.
+
 const std = @import("std");
 const math = std.math;
 const meta = std.meta;
@@ -305,7 +340,6 @@ pub fn scal(
 }
 
 /// `srotg` and `drotg` in BLAS.
-/// See `rotg_complex` for the complex versions.
 pub fn rotg_real(
     comptime Scalar: type,
     a: *Scalar,
@@ -321,25 +355,11 @@ pub fn rotg_real(
     return rotation;
 }
 
-/// `crotg` and `zrotg` in BLAS.
-/// See `rotg_real` for the real versions.
-/// In contrast with BLAS, returns the rotation as a struct instead of using output arguments.
-pub fn rotg_complex(
-    comptime RealScalar: type,
-    a: *Complex(RealScalar),
-    b: *Complex(RealScalar),
-) GivensRotationComplex(RealScalar) {
-    const f = switch (RealScalar) {
-        f32 => acc.cblas_crotg,
-        f64 => acc.cblas_zrotg,
-        else => @compileError("rotg_complex is incompatible with given RealScalar type."),
-    };
-    var rotation: GivensRotationComplex(RealScalar) = undefined;
-    f(a, b, &rotation.c, &rotation.s);
-    return rotation;
-}
-
-/// `srot` and `drot` in BLAS. See `rot_complex` for the complex versions.
+/// `srot` and `drot` in BLAS.
+///
+/// A complex-vector counterpart (`csrot`/`zdrot`) exists only as a non-mandated
+/// CBLAS extension and is therefore exposed under
+/// `bindings.blas_ext.accelerate.rot_complex`.
 /// The points to be rotated are given as an `ij` NamedArray,
 /// where `i` is the index of the point and `j` the index of the dimension.
 /// The `j` axis must have length 2.
@@ -366,40 +386,6 @@ pub fn rot_real(
         y_blas.inc,
         rot.c,
         rot.s,
-    );
-}
-
-/// **TODO: THIS IS CURRENTLY BROKEN.**
-/// Accelerate's `crot_` and `zrot_` don't seem to behave in the same way as the BLAS counterparts.
-/// I haven't been able to figure this out yet.
-///
-/// `crot` and `zrot` in BLAS/LAPACK. See `rot_real` for the real versions.
-/// The points to be rotated are given as an `ij` NamedArray,
-/// where `i` is the index of the point and `j` the index of the dimension.
-/// The `j` axis must have length 2.
-pub fn rot_complex(
-    comptime RealScalar: type,
-    rot: GivensRotationComplex(RealScalar),
-    points: NamedArray(IJ, Complex(RealScalar)),
-) void {
-    const f = switch (RealScalar) {
-        f32 => acc.crot_,
-        f64 => acc.zrot_,
-        else => @compileError("rot_complex is incompatible with given RealScalar type."),
-    };
-    assert(points.idx.shape.j == 2);
-    const x_na = points.indexAxes(AxisI, .{ .j = 0 });
-    const y_na = points.indexAxes(AxisI, .{ .j = 1 });
-    const x_blas = Blas1dMut(Complex(RealScalar)).init(AxisI, x_na);
-    const y_blas = Blas1dMut(Complex(RealScalar)).init(AxisI, y_na);
-    _ = f(
-        x_blas.len,
-        @ptrCast(x_blas.ptr),
-        x_blas.inc,
-        @ptrCast(y_blas.ptr),
-        y_blas.inc,
-        @ptrCast(@constCast(&rot.c)),
-        @ptrCast(@constCast(&rot.s)),
     );
 }
 
@@ -2175,13 +2161,6 @@ pub fn GivensRotationReal(comptime Scalar: type) type {
     };
 }
 
-pub fn GivensRotationComplex(comptime RealScalar: type) type {
-    return struct {
-        c: RealScalar,
-        s: Complex(RealScalar),
-    };
-}
-
 pub fn ModifiedGivensRotation(comptime Scalar: type) type {
     return struct {
         const Self = @This();
@@ -3087,27 +3066,6 @@ test "rotg_real" {
     try std.testing.expectApproxEqAbs(5.0, a, math.floatEpsAt(T, 5.0));
     // b is overwritten with some value that Apple's documentation claims to be zero.
     // That is incorrect.
-}
-
-test "rotg_complex" {
-    const T = f64;
-
-    var a: Complex(T) = .{ .re = 3.0, .im = 4.0 };
-    var b: Complex(T) = .{ .re = 1.0, .im = -2.0 };
-    const rotation = rotg_complex(T, &a, &b);
-
-    var a_cblas: Complex(T) = .{ .re = 3.0, .im = 4.0 };
-    var b_cblas: Complex(T) = .{ .re = 1.0, .im = -2.0 };
-    var c_cblas: T = undefined;
-    var s_cblas: Complex(T) = undefined;
-    acc.cblas_zrotg(@ptrCast(&a_cblas), @ptrCast(&b_cblas), &c_cblas, @ptrCast(&s_cblas));
-
-    // The expected values are taken from the output of cblas_crotg in Accelerate.
-    try std.testing.expectApproxEqAbs(c_cblas, rotation.c, math.floatEpsAt(T, c_cblas));
-    try std.testing.expectApproxEqAbs(s_cblas.re, rotation.s.re, math.floatEpsAt(T, s_cblas.re));
-    try std.testing.expectApproxEqAbs(s_cblas.im, rotation.s.im, math.floatEpsAt(T, s_cblas.im));
-    try std.testing.expectApproxEqAbs(a_cblas.re, a.re, math.floatEpsAt(T, a_cblas.re));
-    try std.testing.expectApproxEqAbs(a_cblas.im, a.im, math.floatEpsAt(T, a_cblas.im));
 }
 
 test "rot_real" {
@@ -6659,62 +6617,6 @@ test "hpr2 nontrivial alpha and strides" {
     try std.testing.expectApproxEqAbs(@as(f32, 9), ap[2].re, eps);
     try std.testing.expectApproxEqAbs(@as(f32, 0), ap[2].im, eps);
 }
-
-// TODO: Figure this out. See rot_complex above.
-// test "rot_complex" {
-//     const T = f64;
-
-//     var x_buf: [4]Complex(T) = .{
-//         .{ .re = -1.0, .im = 0.0 },
-//         .{ .re = math.sqrt(2.0), .im = math.sqrt(2.0) },
-//         .{ .re = 0.0, .im = 0.0 },
-//         .{ .re = 29834.346, .im = -0.000000007583 },
-//     };
-//     var y_buf: [4]Complex(T) = .{
-//         .{ .re = 29853.7, .im = 0.0000000000001 },
-//         .{ .re = 0.0, .im = 0.0 },
-//         .{ .re = -348.1, .im = 0.294857 },
-//         .{ .re = -0.0000002, .im = 29857.7 },
-//     };
-//     var points_buf = [_]Complex(T){
-//         x_buf[0], y_buf[0],
-//         x_buf[1], y_buf[1],
-//         x_buf[2], y_buf[2],
-//         x_buf[3], y_buf[3],
-//     };
-//     const points = NamedArray(IJ, Complex(T)){
-//         .idx = .initContiguous(.{ .i = 4, .j = 2 }),
-//         .buf = &points_buf,
-//     };
-//     var c: T = math.cos(math.pi / 3.0);
-//     var s: Complex(T) = .{ .re = 2.824, .im = -0.00000000001 };
-//     const rot = GivensRotationComplex(T){
-//         .c = c,
-//         .s = s,
-//     };
-
-//     const n: c_int = 4;
-//     _ = acc.zrot_(@ptrCast(@alignCast(@constCast(&n))), @ptrCast(&x_buf), 1, @ptrCast(&y_buf), 1, @ptrCast(&c), @ptrCast(&s));
-
-//     rot_complex(T, rot, points);
-
-//     for (0..4) |i| {
-//         for (0..2) |j| {
-//             const expected = if (j == 0) x_buf[i] else y_buf[i];
-//             const actual = points.at(.{ .i = i, .j = j }).*;
-//             try std.testing.expectApproxEqAbs(
-//                 expected.re,
-//                 actual.re,
-//                 math.floatEpsAt(T, expected.re),
-//             );
-//             try std.testing.expectApproxEqAbs(
-//                 expected.im,
-//                 actual.im,
-//                 math.floatEpsAt(T, expected.im),
-//             );
-//         }
-//     }
-// }
 
 // ─────────────────────────────────────────────────────────────
 //  Level 3 BLAS tests

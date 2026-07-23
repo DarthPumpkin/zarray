@@ -342,6 +342,14 @@ pub const monte = @import("gsl_monte.zig");
 /// its own file (`gsl_odeiv2.zig`); reached as `gsl.ode`.
 pub const ode = @import("gsl_odeiv2.zig");
 
+/// # Nonlinear least squares (`gsl_multifit_nlinear`)
+///
+/// Trust-region nonlinear least-squares / curve fitting over a residual
+/// callback bundle (residual-only with finite-difference Jacobians, or residual
+/// + analytic Jacobian). Kept in its own file (`gsl_multifit_nlinear.zig`);
+/// reached as `gsl.nlinear` (`nlinear.Workspace`, `nlinear.Problem`, ...).
+pub const nlinear = @import("gsl_multifit_nlinear.zig");
+
 test {
     // Pull re-exported sub-module files into test discovery. `zig build test`
     // only collects tests from files that are analyzed, so reference each
@@ -369,6 +377,7 @@ test {
     _ = cheb;
     _ = monte;
     _ = ode;
+    _ = nlinear;
 }
 
 /// A strided, read-only view over `T`: `len` elements spaced `stride` apart

@@ -2742,8 +2742,6 @@ pub const blas = struct {
     }
 };
 
-pub const lapack = struct { @compileError("To do: Implement LAPACK interface") };
-
 test "dot" {
     const I = enum { i };
     const T = f32;

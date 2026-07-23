@@ -76,6 +76,10 @@ pub fn build(b: *std.Build) !void {
     }
 
     root_mod.addCSourceFile(.{ .file = .{ .cwd_relative = "src/tblis_zig.c" }, .language = .c });
+    // Header-verified forwarders to Accelerate's complex LAPACK entry points
+    // (see src/lapack_shim.{c,h}). Compiling this TU makes clang check every
+    // complex prototype against <vecLib/lapack.h> at build time.
+    root_mod.addCSourceFile(.{ .file = .{ .cwd_relative = "src/lapack_shim.c" }, .language = .c });
 
     const libzarray = b.addLibrary(.{
         .name = "zarray",

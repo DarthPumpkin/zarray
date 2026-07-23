@@ -350,6 +350,22 @@ pub const ode = @import("gsl_odeiv2.zig");
 /// reached as `gsl.nlinear` (`nlinear.Workspace`, `nlinear.Problem`, ...).
 pub const nlinear = @import("gsl_multifit_nlinear.zig");
 
+/// # Multidimensional minimization (`gsl_multimin`)
+///
+/// Locate a local minimum of a scalar objective `f: R^n -> R` over a `Minimizer`
+/// (derivative-free Nelder-Mead simplex) or `GradientMinimizer` (conjugate
+/// gradient / BFGS / steepest descent), each over a callback bundle. Kept in its
+/// own file (`gsl_multimin.zig`); reached as `gsl.multimin`.
+pub const multimin = @import("gsl_multimin.zig");
+
+/// # Multidimensional root finding (`gsl_multiroots`)
+///
+/// Solve a nonlinear system `F(x) = 0` for `x ∈ R^n` over a `Solver`
+/// (derivative-free) or `DerivSolver` (analytic-Jacobian) — Powell hybrid,
+/// Newton, and Broyden algorithms — via a callback bundle. Kept in its own file
+/// (`gsl_multiroots.zig`); reached as `gsl.multiroots`.
+pub const multiroots = @import("gsl_multiroots.zig");
+
 test {
     // Pull re-exported sub-module files into test discovery. `zig build test`
     // only collects tests from files that are analyzed, so reference each
@@ -378,6 +394,8 @@ test {
     _ = monte;
     _ = ode;
     _ = nlinear;
+    _ = multimin;
+    _ = multiroots;
 }
 
 /// A strided, read-only view over `T`: `len` elements spaced `stride` apart

@@ -318,7 +318,7 @@ pub fn multifitFdf(comptime Fdf: type, comptime Vec: type, n: usize, p: usize, c
     const Tr = struct {
         fn f(x: [*c]const Vec, params: ?*anyopaque, out: [*c]Vec) callconv(.c) c_int {
             const self: Ptr = @ptrCast(@alignCast(params.?));
-            return multifitStatus(self.residual(paramSlice(x), residualView(out)));
+            return intStatus(self.residual(vecSliceConst(x), stridedMutView(out)));
         }
     };
     return multifitStruct(Fdf, &Tr.f, null, n, p, ctx);
@@ -334,12 +334,11 @@ pub fn multifitFdfWithJacobian(comptime Fdf: type, comptime Vec: type, comptime 
     const Tr = struct {
         fn f(x: [*c]const Vec, params: ?*anyopaque, out: [*c]Vec) callconv(.c) c_int {
             const self: Ptr = @ptrCast(@alignCast(params.?));
-            return multifitStatus(self.residual(paramSlice(x), residualView(out)));
+            return intStatus(self.residual(vecSliceConst(x), stridedMutView(out)));
         }
         fn df(x: [*c]const Vec, params: ?*anyopaque, jac: [*c]Mat) callconv(.c) c_int {
             const self: Ptr = @ptrCast(@alignCast(params.?));
-            const J = gsl.MatrixMut(f64).init(@ptrCast(jac.*.data), jac.*.size1, jac.*.size2, jac.*.tda);
-            return multifitStatus(self.jacobian(paramSlice(x), J));
+            return intStatus(self.jacobian(vecSliceConst(x), matrixMutView(jac)));
         }
     };
     return multifitStruct(Fdf, &Tr.f, &Tr.df, n, p, ctx);
@@ -361,23 +360,150 @@ fn multifitStruct(comptime Fdf: type, f: anytype, df: anytype, n: usize, p: usiz
     };
 }
 
-/// Present a contiguous GSL parameter vector as a `[]const f64` (debug-asserts
-/// stride 1, which always holds for `gsl_multifit_nlinear`'s `x`).
-fn paramSlice(v: anytype) []const f64 {
+// --- Shared vector/matrix bridging for the gsl_vector/gsl_matrix callbacks ---
+// (used by multifit_nlinear, multiroots, and multimin below)
+
+/// Present a contiguous GSL vector as a `[]const f64` (debug-asserts stride 1,
+/// which holds for the point/parameter vectors these solvers pass in).
+fn vecSliceConst(v: anytype) []const f64 {
     std.debug.assert(v.*.stride == 1);
     return v.*.data[0..v.*.size];
 }
 
-/// Present a (possibly strided) GSL residual vector as a `gsl.StridedMut(f64)`.
-fn residualView(v: anytype) gsl.StridedMut(f64) {
+/// Present a contiguous GSL vector as a mutable `[]f64` (debug-asserts stride 1).
+/// Used for outputs GSL always allocates contiguously (e.g. multimin gradients).
+fn vecSliceMut(v: anytype) []f64 {
+    std.debug.assert(v.*.stride == 1);
+    return v.*.data[0..v.*.size];
+}
+
+/// Present a (possibly strided) GSL vector as a `gsl.StridedMut(f64)`. Used for
+/// residual outputs, which are *not* always contiguous (finite-difference
+/// Jacobians write them into strided matrix columns).
+fn stridedMutView(v: anytype) gsl.StridedMut(f64) {
     return gsl.StridedMut(f64).init(@ptrCast(v.*.data), v.*.stride, v.*.size);
 }
 
-fn multifitStatus(ret: anytype) c_int {
+/// Present a GSL matrix as a row-major `gsl.MatrixMut(f64)` (honors `tda`).
+fn matrixMutView(m: anytype) gsl.MatrixMut(f64) {
+    return gsl.MatrixMut(f64).init(@ptrCast(m.*.data), m.*.size1, m.*.size2, m.*.tda);
+}
+
+/// Map a callback method's `void`/`c_int` return to a C status code.
+fn intStatus(ret: anytype) c_int {
     const Ret = @TypeOf(ret);
     if (Ret == void) return 0;
     if (Ret == c_int) return ret;
-    @compileError("multifit callback methods must return void or c_int; got " ++ @typeName(Ret));
+    @compileError("callback methods must return void or c_int; got " ++ @typeName(Ret));
+}
+
+// ---------------------------------------------------------------------------
+// gsl_multiroots — system F(x) = 0 (+ optional Jacobian) callback bundle
+// ---------------------------------------------------------------------------
+//
+// Same vector/matrix callback shapes as multifit_nlinear:
+//   f  (const gsl_vector *x, void *params, gsl_vector *f)   // the system
+//   df (const gsl_vector *x, void *params, gsl_matrix *J)   // Jacobian (optional)
+//   fdf(x, params, gsl_vector *f, gsl_matrix *J)            // both at once
+// The context declares `pub fn equations(self, x: []const f64,
+// f: gsl.StridedMut(f64))`, and (for the Jacobian form) `pub fn jacobian(self,
+// x: []const f64, J: gsl.MatrixMut(f64))`. Each may return void or a c_int.
+
+/// Build an `Fn` (`gsl_multiroot_function`-shaped) from a context declaring
+/// `pub fn equations(self, x, f)`. Derivative-free solvers use this form.
+pub fn multirootF(comptime Fn: type, comptime Vec: type, n: usize, ctx: anytype) Fn {
+    const Ptr = @TypeOf(ctx);
+    comptime requireMethods(Ptr, &.{"equations"});
+    const Tr = struct {
+        fn f(x: [*c]const Vec, params: ?*anyopaque, out: [*c]Vec) callconv(.c) c_int {
+            const self: Ptr = @ptrCast(@alignCast(params.?));
+            return intStatus(self.equations(vecSliceConst(x), stridedMutView(out)));
+        }
+    };
+    return .{ .f = &Tr.f, .n = n, .params = @constCast(ctx) };
+}
+
+/// Build an `Fdf` (`gsl_multiroot_function_fdf`-shaped) from a context declaring
+/// `pub fn equations(self, x, f)` and `pub fn jacobian(self, x, J)`.
+pub fn multirootFdf(comptime Fdf: type, comptime Vec: type, comptime Mat: type, n: usize, ctx: anytype) Fdf {
+    const Ptr = @TypeOf(ctx);
+    comptime requireMethods(Ptr, &.{ "equations", "jacobian" });
+    const Tr = struct {
+        fn f(x: [*c]const Vec, params: ?*anyopaque, out: [*c]Vec) callconv(.c) c_int {
+            const self: Ptr = @ptrCast(@alignCast(params.?));
+            return intStatus(self.equations(vecSliceConst(x), stridedMutView(out)));
+        }
+        fn df(x: [*c]const Vec, params: ?*anyopaque, jac: [*c]Mat) callconv(.c) c_int {
+            const self: Ptr = @ptrCast(@alignCast(params.?));
+            return intStatus(self.jacobian(vecSliceConst(x), matrixMutView(jac)));
+        }
+        fn fdf(x: [*c]const Vec, params: ?*anyopaque, out: [*c]Vec, jac: [*c]Mat) callconv(.c) c_int {
+            const self: Ptr = @ptrCast(@alignCast(params.?));
+            const sf = intStatus(self.equations(vecSliceConst(x), stridedMutView(out)));
+            if (sf != 0) return sf;
+            return intStatus(self.jacobian(vecSliceConst(x), matrixMutView(jac)));
+        }
+    };
+    return .{ .f = &Tr.f, .df = &Tr.df, .fdf = &Tr.fdf, .n = n, .params = @constCast(ctx) };
+}
+
+// ---------------------------------------------------------------------------
+// gsl_multimin — scalar objective (+ optional gradient) callback bundle
+// ---------------------------------------------------------------------------
+//
+// The objective returns a scalar and the gradient is a vector (no matrix):
+//   f  (const gsl_vector *x, void *params) -> double
+//   df (const gsl_vector *x, void *params, gsl_vector *g)   -> void
+//   fdf(x, params, double *f, gsl_vector *g)                -> void
+// The context declares `pub fn eval(self, x: []const f64) f64` and (for the
+// gradient form) `pub fn gradient(self, x: []const f64, g: []f64)`, optionally
+// `pub fn evalGradient(self, x, f: *f64, g: []f64)` to fuse the two (mirrors the
+// 1-D functionFdf `evalDeriv` convention). Gradient vectors are contiguous.
+
+/// Build an `Fn` (`gsl_multimin_function`-shaped) from a context declaring
+/// `pub fn eval(self, x: []const f64) f64`. Derivative-free minimizers use this.
+pub fn multiminF(comptime Fn: type, comptime Vec: type, n: usize, ctx: anytype) Fn {
+    const Ptr = @TypeOf(ctx);
+    comptime requireMethods(Ptr, &.{"eval"});
+    const Tr = struct {
+        fn f(x: [*c]const Vec, params: ?*anyopaque) callconv(.c) f64 {
+            const self: Ptr = @ptrCast(@alignCast(params.?));
+            return self.eval(vecSliceConst(x));
+        }
+    };
+    return .{ .f = &Tr.f, .n = n, .params = @constCast(ctx) };
+}
+
+/// Build an `Fdf` (`gsl_multimin_function_fdf`-shaped) from a context declaring
+/// `pub fn eval(self, x) f64` and `pub fn gradient(self, x, g)`. If the context
+/// also declares `pub fn evalGradient(self, x, f: *f64, g: []f64)`, that fused
+/// method is used for the combined `fdf` callback; otherwise it is synthesized.
+pub fn multiminFdf(comptime Fdf: type, comptime Vec: type, n: usize, ctx: anytype) Fdf {
+    const Ptr = @TypeOf(ctx);
+    comptime requireMethods(Ptr, &.{ "eval", "gradient" });
+    const Child = @typeInfo(Ptr).pointer.child;
+    const Tr = struct {
+        fn f(x: [*c]const Vec, params: ?*anyopaque) callconv(.c) f64 {
+            const self: Ptr = @ptrCast(@alignCast(params.?));
+            return self.eval(vecSliceConst(x));
+        }
+        fn df(x: [*c]const Vec, params: ?*anyopaque, g: [*c]Vec) callconv(.c) void {
+            const self: Ptr = @ptrCast(@alignCast(params.?));
+            self.gradient(vecSliceConst(x), vecSliceMut(g));
+        }
+        fn fdf(x: [*c]const Vec, params: ?*anyopaque, out_f: [*c]f64, g: [*c]Vec) callconv(.c) void {
+            const self: Ptr = @ptrCast(@alignCast(params.?));
+            if (@hasDecl(Child, "evalGradient")) {
+                var fv: f64 = undefined;
+                self.evalGradient(vecSliceConst(x), &fv, vecSliceMut(g));
+                out_f.* = fv;
+            } else {
+                out_f.* = self.eval(vecSliceConst(x));
+                self.gradient(vecSliceConst(x), vecSliceMut(g));
+            }
+        }
+    };
+    return .{ .f = &Tr.f, .df = &Tr.df, .fdf = &Tr.fdf, .n = n, .params = @constCast(ctx) };
 }
 
 /// Comptime guard: `Ptr` must be a single-item pointer to a struct declaring

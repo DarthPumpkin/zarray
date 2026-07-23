@@ -56,10 +56,6 @@
 //!     pointer with `c.gsl_rng_alloc`.
 //!   - Quasi-random generators (`gsl_qrng_*`: Sobol, Halton, ...) are a separate
 //!     GSL module with a different shape; see `gsl.qrng`.
-//!   - Multivariate families: the multivariate Gaussian
-//!     (`gsl_ran_multivariate_gaussian*`) and Wishart (`gsl_ran_wishart*`) are
-//!     deferred until this project grows matrix/vector (linear-algebra)
-//!     bindings for their arguments.
 //!   - Redundant sampling algorithms: where GSL offers several samplers for one
 //!     distribution we bind only the default and skip the alternates — e.g.
 //!     `gsl_ran_gaussian_ziggurat`/`_ratio_method`,
@@ -79,6 +75,7 @@ pub const c = @cImport({
     @cInclude("gsl/gsl_rng.h");
     @cInclude("gsl/gsl_randist.h");
     @cInclude("gsl/gsl_cdf.h");
+    @cInclude("gsl/gsl_linalg.h");
 });
 
 /// Toggle GSL's process-global error handler (shared with the rest of the GSL bindings).
@@ -1178,6 +1175,210 @@ pub fn dirNd(r: Rng, out: []f64) void {
     c.gsl_ran_dir_nd(r.ptr, out.len, out.ptr);
 }
 
+// --- Multivariate (matrix-valued) families --------------------------------
+//
+// These are the only distribution families whose arguments are vectors and
+// matrices rather than scalars, so they use the borrowed `gsl_vector`/
+// `gsl_matrix` views from `gsl.zig` (`Matrix`/`MatrixMut`, length-`k` slices).
+// Unlike the scalar families they can fail (a non-positive-definite factor, a
+// dimension mismatch), so their methods return `Error!`.
+
+/// Errors from the matrix-valued families and the `choleskyLower` helper.
+pub const Error = error{
+    /// `GSL_EDOM` — the matrix is not positive-definite (e.g. bad Cholesky
+    /// input, or `df` too small for Wishart).
+    NotPositiveDefinite,
+    /// `GSL_EINVAL` — inconsistent dimensions.
+    DimensionMismatch,
+    /// `GSL_EFAILED`/`GSL_FAILURE` — generic internal failure.
+    Failed,
+    /// Any other nonzero GSL status code.
+    Unspecified,
+};
+
+fn check(status: c_int) Error!void {
+    return switch (status) {
+        c.GSL_SUCCESS => {},
+        c.GSL_EDOM => Error.NotPositiveDefinite,
+        c.GSL_EINVAL => Error.DimensionMismatch,
+        c.GSL_EFAILED, c.GSL_FAILURE => Error.Failed,
+        else => Error.Unspecified,
+    };
+}
+
+fn constVec(s: []const f64) c.gsl_vector {
+    return gsl.constVectorViewOf(c.gsl_vector, gsl.Strided(f64).fromSlice(s));
+}
+fn mutVec(s: []f64) c.gsl_vector {
+    return gsl.mutVectorViewOf(c.gsl_vector, gsl.StridedMut(f64).fromSlice(s));
+}
+fn constMat(m: gsl.Matrix(f64)) c.gsl_matrix {
+    return gsl.constMatrixViewOf(c.gsl_matrix, m);
+}
+fn mutMat(m: gsl.MatrixMut(f64)) c.gsl_matrix {
+    return gsl.mutMatrixViewOf(c.gsl_matrix, m);
+}
+
+/// In-place lower Cholesky factorization of a symmetric positive-definite
+/// matrix `a` (`k`x`k`), via `gsl_linalg_cholesky_decomp1`. On success the lower
+/// triangle (including the diagonal) holds `L` with `a == L Lᵀ` — exactly what
+/// the multivariate families below expect as their `l` factor. Returns
+/// `error.NotPositiveDefinite` if `a` is not positive-definite.
+///
+/// (`gsl_linalg_cholesky_decomp1` also mirrors `Lᵀ` into the upper triangle; the
+/// families read only the lower triangle, so that is harmless.)
+pub fn choleskyLower(a: gsl.MatrixMut(f64)) Error!void {
+    std.debug.assert(a.rows == a.cols);
+    gsl.ensureHandler();
+    var a_m = mutMat(a);
+    try check(c.gsl_linalg_cholesky_decomp1(&a_m));
+}
+
+/// Multivariate Gaussian `N(mu, Sigma)` in `k` dimensions. The covariance is
+/// supplied as its lower Cholesky factor `l` (`Sigma = L Lᵀ`); obtain it from a
+/// covariance matrix with `choleskyLower`. Only the lower triangle of `l` is
+/// read.
+///
+/// ```
+/// // Sigma = [[2, 0.5], [0.5, 1]]; factor it in place, then sample.
+/// var cov = [_]f64{ 2.0, 0.5, 0.5, 1.0 };
+/// var covm = gsl.MatrixMut(f64).fromSlice(&cov, 2, 2);
+/// try rand.choleskyLower(covm);
+///
+/// const mvn = rand.MultivariateGaussian{ .mu = &.{ 1.0, -2.0 }, .l = covm.asConst() };
+/// var draw: [2]f64 = undefined;
+/// try mvn.sample(gen, &draw);
+/// ```
+pub const MultivariateGaussian = struct {
+    /// Mean vector (length `k`).
+    mu: []const f64,
+    /// Lower Cholesky factor `L` of the covariance, `k`x`k` (lower triangle read).
+    l: gsl.Matrix(f64),
+
+    /// Dimension `k`.
+    pub fn dim(self: MultivariateGaussian) usize {
+        return self.mu.len;
+    }
+
+    /// Draw one sample into `out` (length `k`).
+    pub fn sample(self: MultivariateGaussian, r: Rng, out: []f64) Error!void {
+        const k = self.mu.len;
+        std.debug.assert(self.l.rows == k and self.l.cols == k and out.len == k);
+        gsl.ensureHandler();
+        var mu_v = constVec(self.mu);
+        var l_m = constMat(self.l);
+        var out_v = mutVec(out);
+        try check(c.gsl_ran_multivariate_gaussian(r.ptr, &mu_v, &l_m, &out_v));
+    }
+
+    /// Probability density at `x` (length `k`). `work` is caller-provided scratch
+    /// of length `k`.
+    pub fn pdf(self: MultivariateGaussian, x: []const f64, work: []f64) Error!f64 {
+        const k = self.mu.len;
+        std.debug.assert(x.len == k and work.len == k and self.l.rows == k and self.l.cols == k);
+        gsl.ensureHandler();
+        var x_v = constVec(x);
+        var mu_v = constVec(self.mu);
+        var l_m = constMat(self.l);
+        var work_v = mutVec(work);
+        var result: f64 = 0;
+        try check(c.gsl_ran_multivariate_gaussian_pdf(&x_v, &mu_v, &l_m, &result, &work_v));
+        return result;
+    }
+
+    /// Log probability density at `x` (length `k`). `work` is caller-provided
+    /// scratch of length `k`.
+    pub fn logPdf(self: MultivariateGaussian, x: []const f64, work: []f64) Error!f64 {
+        const k = self.mu.len;
+        std.debug.assert(x.len == k and work.len == k and self.l.rows == k and self.l.cols == k);
+        gsl.ensureHandler();
+        var x_v = constVec(x);
+        var mu_v = constVec(self.mu);
+        var l_m = constMat(self.l);
+        var work_v = mutVec(work);
+        var result: f64 = 0;
+        try check(c.gsl_ran_multivariate_gaussian_log_pdf(&x_v, &mu_v, &l_m, &result, &work_v));
+        return result;
+    }
+
+    /// Sample mean of the rows of an `n`x`k` data matrix `x`, written into
+    /// `mu_hat` (length `k`). Each row is one observation.
+    pub fn mean(x: gsl.Matrix(f64), mu_hat: []f64) Error!void {
+        std.debug.assert(mu_hat.len == x.cols);
+        gsl.ensureHandler();
+        var x_m = constMat(x);
+        var mu_v = mutVec(mu_hat);
+        try check(c.gsl_ran_multivariate_gaussian_mean(&x_m, &mu_v));
+    }
+
+    /// Sample covariance of the rows of an `n`x`k` data matrix `x`, written into
+    /// `sigma_hat` (`k`x`k`).
+    pub fn vcov(x: gsl.Matrix(f64), sigma_hat: gsl.MatrixMut(f64)) Error!void {
+        std.debug.assert(sigma_hat.rows == x.cols and sigma_hat.cols == x.cols);
+        gsl.ensureHandler();
+        var x_m = constMat(x);
+        var s_m = mutMat(sigma_hat);
+        try check(c.gsl_ran_multivariate_gaussian_vcov(&x_m, &s_m));
+    }
+};
+
+/// Wishart distribution `W(df, V)` over symmetric positive-definite `k`x`k`
+/// matrices, with `df` degrees of freedom and scale matrix `V` supplied as its
+/// lower Cholesky factor `l` (`V = L Lᵀ`; see `choleskyLower`). `df` must exceed
+/// `k - 1`.
+pub const Wishart = struct {
+    /// Degrees of freedom (`df > k - 1`).
+    df: f64,
+    /// Lower Cholesky factor `L` of the scale matrix, `k`x`k`.
+    l: gsl.Matrix(f64),
+
+    /// Dimension `k`.
+    pub fn dim(self: Wishart) usize {
+        return self.l.rows;
+    }
+
+    /// Draw one `k`x`k` sample into `out`. `work` is caller-provided `k`x`k`
+    /// scratch.
+    pub fn sample(self: Wishart, r: Rng, out: gsl.MatrixMut(f64), work: gsl.MatrixMut(f64)) Error!void {
+        const k = self.l.rows;
+        std.debug.assert(out.rows == k and out.cols == k and work.rows == k and work.cols == k);
+        gsl.ensureHandler();
+        var l_m = constMat(self.l);
+        var out_m = mutMat(out);
+        var work_m = mutMat(work);
+        try check(c.gsl_ran_wishart(r.ptr, self.df, &l_m, &out_m, &work_m));
+    }
+
+    /// Probability density at the `k`x`k` matrix `x`, whose lower Cholesky factor
+    /// `l_x` the caller supplies. `work` is `k`x`k` scratch.
+    pub fn pdf(self: Wishart, x: gsl.Matrix(f64), l_x: gsl.Matrix(f64), work: gsl.MatrixMut(f64)) Error!f64 {
+        const k = self.l.rows;
+        std.debug.assert(x.rows == k and x.cols == k and l_x.rows == k and l_x.cols == k);
+        gsl.ensureHandler();
+        var x_m = constMat(x);
+        var lx_m = constMat(l_x);
+        var l_m = constMat(self.l);
+        var work_m = mutMat(work);
+        var result: f64 = 0;
+        try check(c.gsl_ran_wishart_pdf(&x_m, &lx_m, self.df, &l_m, &result, &work_m));
+        return result;
+    }
+
+    /// Log probability density at `x` (see `pdf`).
+    pub fn logPdf(self: Wishart, x: gsl.Matrix(f64), l_x: gsl.Matrix(f64), work: gsl.MatrixMut(f64)) Error!f64 {
+        const k = self.l.rows;
+        std.debug.assert(x.rows == k and x.cols == k and l_x.rows == k and l_x.cols == k);
+        gsl.ensureHandler();
+        var x_m = constMat(x);
+        var lx_m = constMat(l_x);
+        var l_m = constMat(self.l);
+        var work_m = mutMat(work);
+        var result: f64 = 0;
+        try check(c.gsl_ran_wishart_log_pdf(&x_m, &lx_m, self.df, &l_m, &result, &work_m));
+        return result;
+    }
+};
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -1762,4 +1963,136 @@ test "rand: state save/load round-trips a stream across a checkpoint" {
     fresh.seed(1); // deliberately different starting point
     fresh.loadState(snapshot);
     for (expected) |e| try testing.expectEqual(e, fresh.next());
+}
+
+// --- Multivariate (matrix-valued) families --------------------------------
+
+test "rand: choleskyLower factors an SPD matrix (a == L Lᵀ)" {
+    // Sigma = [[2, 0.5], [0.5, 1]].
+    var a = [_]f64{ 2.0, 0.5, 0.5, 1.0 };
+    const am = gsl.MatrixMut(f64).fromSlice(&a, 2, 2);
+    try rand.choleskyLower(am);
+
+    // Read the lower triangle (upper now holds Lᵀ; ignore it).
+    const l00 = am.get(0, 0);
+    const l10 = am.get(1, 0);
+    const l11 = am.get(1, 1);
+
+    // L Lᵀ reconstructs the original Sigma.
+    try testing.expectApproxEqAbs(@as(f64, 2.0), l00 * l00, 1e-12);
+    try testing.expectApproxEqAbs(@as(f64, 0.5), l10 * l00, 1e-12);
+    try testing.expectApproxEqAbs(@as(f64, 1.0), l10 * l10 + l11 * l11, 1e-12);
+}
+
+test "rand: choleskyLower rejects a non-positive-definite matrix" {
+    // Symmetric but indefinite (eigenvalues 3 and -1).
+    var a = [_]f64{ 1.0, 2.0, 2.0, 1.0 };
+    const am = gsl.MatrixMut(f64).fromSlice(&a, 2, 2);
+    try testing.expectError(rand.Error.NotPositiveDefinite, rand.choleskyLower(am));
+}
+
+test "rand: multivariate Gaussian sample mean/vcov recover mu and Sigma" {
+    var r = try rand.Rng.init(.mt19937);
+    defer r.deinit();
+    r.seed(2024);
+
+    const mu = [_]f64{ 1.0, -2.0 };
+    // True covariance Sigma; factor a copy in place to get L.
+    var l_buf = [_]f64{ 2.0, 0.5, 0.5, 1.0 };
+    const l_m = gsl.MatrixMut(f64).fromSlice(&l_buf, 2, 2);
+    try rand.choleskyLower(l_m);
+
+    const mvn = rand.MultivariateGaussian{ .mu = &mu, .l = l_m.asConst() };
+    try testing.expectEqual(@as(usize, 2), mvn.dim());
+
+    // Draw n observations into a row-major n×2 data matrix.
+    const n = 40_000;
+    var data: [n * 2]f64 = undefined;
+    var i: usize = 0;
+    while (i < n) : (i += 1) {
+        try mvn.sample(r, data[i * 2 .. i * 2 + 2]);
+    }
+    const x = gsl.Matrix(f64).fromSlice(&data, n, 2);
+
+    // Sample mean ≈ mu.
+    var mu_hat: [2]f64 = undefined;
+    try rand.MultivariateGaussian.mean(x, &mu_hat);
+    try testing.expectApproxEqAbs(@as(f64, 1.0), mu_hat[0], 0.05);
+    try testing.expectApproxEqAbs(@as(f64, -2.0), mu_hat[1], 0.05);
+
+    // Sample covariance ≈ Sigma = [[2, 0.5], [0.5, 1]].
+    var sig_buf: [4]f64 = undefined;
+    const sig = gsl.MatrixMut(f64).fromSlice(&sig_buf, 2, 2);
+    try rand.MultivariateGaussian.vcov(x, sig);
+    try testing.expectApproxEqAbs(@as(f64, 2.0), sig.get(0, 0), 0.1);
+    try testing.expectApproxEqAbs(@as(f64, 0.5), sig.get(0, 1), 0.1);
+    try testing.expectApproxEqAbs(@as(f64, 0.5), sig.get(1, 0), 0.1);
+    try testing.expectApproxEqAbs(@as(f64, 1.0), sig.get(1, 1), 0.1);
+}
+
+test "rand: multivariate Gaussian pdf peaks at the mean and matches logPdf" {
+    const mu = [_]f64{ 0.0, 0.0 };
+    var l_buf = [_]f64{ 1.0, 0.0, 0.0, 1.0 }; // Sigma = I → standard bivariate normal
+    const l_m = gsl.MatrixMut(f64).fromSlice(&l_buf, 2, 2);
+    try rand.choleskyLower(l_m);
+
+    const mvn = rand.MultivariateGaussian{ .mu = &mu, .l = l_m.asConst() };
+    var work: [2]f64 = undefined;
+
+    // At the mean, the standard bivariate normal density is 1/(2π).
+    const at_mean = try mvn.pdf(&.{ 0.0, 0.0 }, &work);
+    try testing.expectApproxEqAbs(1.0 / (2.0 * std.math.pi), at_mean, 1e-12);
+
+    // Density decreases away from the mean.
+    const off = try mvn.pdf(&.{ 1.0, 1.0 }, &work);
+    try testing.expect(off < at_mean);
+
+    // logPdf is the log of pdf.
+    const lp = try mvn.logPdf(&.{ 1.0, 1.0 }, &work);
+    try testing.expectApproxEqAbs(@log(off), lp, 1e-10);
+}
+
+test "rand: Wishart draws symmetric matrices with the right mean and valid density" {
+    var r = try rand.Rng.init(.mt19937);
+    defer r.deinit();
+    r.seed(77);
+
+    // Scale matrix V = I (2×2); factor to L.
+    var l_buf = [_]f64{ 1.0, 0.0, 0.0, 1.0 };
+    const l_m = gsl.MatrixMut(f64).fromSlice(&l_buf, 2, 2);
+    try rand.choleskyLower(l_m);
+
+    const df: f64 = 5.0;
+    const w = rand.Wishart{ .df = df, .l = l_m.asConst() };
+    try testing.expectEqual(@as(usize, 2), w.dim());
+
+    var out_buf: [4]f64 = undefined;
+    const out = gsl.MatrixMut(f64).fromSlice(&out_buf, 2, 2);
+    var work_buf: [4]f64 = undefined;
+    const work = gsl.MatrixMut(f64).fromSlice(&work_buf, 2, 2);
+
+    // E[W] = df * V = df * I; average the (0,0) entry over many draws.
+    const n = 20_000;
+    var acc: f64 = 0;
+    var symmetric_ok = true;
+    var j: usize = 0;
+    while (j < n) : (j += 1) {
+        try w.sample(r, out, work);
+        acc += out.get(0, 0);
+        if (@abs(out.get(0, 1) - out.get(1, 0)) > 1e-9) symmetric_ok = false;
+    }
+    try testing.expect(symmetric_ok);
+    try testing.expectApproxEqAbs(df, acc / n, 0.15); // E[W_00] = df * V_00 = 5
+
+    // Density at a sample point is positive, and logPdf matches.
+    try w.sample(r, out, work);
+    var lx_buf: [4]f64 = undefined;
+    @memcpy(&lx_buf, &out_buf);
+    const lx = gsl.MatrixMut(f64).fromSlice(&lx_buf, 2, 2);
+    try rand.choleskyLower(lx); // L_X = Cholesky of the sample X
+
+    const density = try w.pdf(out.asConst(), lx.asConst(), work);
+    try testing.expect(density > 0.0);
+    const logd = try w.logPdf(out.asConst(), lx.asConst(), work);
+    try testing.expectApproxEqAbs(@log(density), logd, 1e-9);
 }

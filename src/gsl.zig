@@ -23,6 +23,12 @@
 //!   - `histogram`— `gsl_histogram`/`gsl_histogram2d`: 1-D/2-D histograms + PDFs.
 //!   - `poly`     — `gsl_poly`: polynomial evaluation and root finding.
 //!   - `deriv`    — `gsl_deriv`: numerical differentiation (finite differences).
+//!   - `integration` — `gsl_integration`: adaptive/non-adaptive Gauss-Kronrod
+//!                  quadrature over finite and infinite intervals.
+//!   - `roots`    — `gsl_roots`: one-dimensional root finding (bracketing and
+//!                  derivative-based solvers).
+//!   - `min`      — `gsl_min`: one-dimensional function minimization.
+//!   - `cheb`     — `gsl_chebyshev`: Chebyshev-series function approximation.
 //!   - `sort`     — `gsl_sort`: typed sorting / k-smallest / index sorts.
 //!   - `permutation` — `gsl_permutation` (+ `gsl_permute`): permutations.
 //!   - `combination` — `gsl_combination`: combinations.
@@ -45,7 +51,7 @@
 //!     `gsl_function`-style callback structs. Chapters expose a `Callback` value
 //!     type built with `.initFn(f)` (a plain function) or `.initCtx(&ctx)` (a
 //!     `*struct` with an `eval` method); used by the callback chapters
-//!     (currently `deriv`).
+//!     (currently `deriv`, `integration`, `roots`, `min`, and `cheb`).
 //!
 //! ## Conventions
 //!
@@ -282,6 +288,40 @@ pub const callback = @import("gsl_callback.zig");
 /// file (`gsl_deriv.zig`); reached as `gsl.deriv` (`deriv.central`, ...).
 pub const deriv = @import("gsl_deriv.zig");
 
+/// # Numerical integration (`gsl_integration`)
+///
+/// Adaptive and non-adaptive Gauss-Kronrod quadrature (with an error bound) for
+/// any integrand the `callback` bridge accepts: `qng` (no workspace), and the
+/// adaptive `qag`/`qags`/`qagi`/`qagiu`/`qagil` family over finite and infinite
+/// intervals. Kept in its own file (`gsl_integration.zig`); reached as
+/// `gsl.integration` (`integration.qng`, `integration.Workspace`, ...).
+pub const integration = @import("gsl_integration.zig");
+
+/// # One-dimensional root finding (`gsl_roots`)
+///
+/// Iterative solvers for `f(x) = 0`: bracketing (`bisection`/`brent`/
+/// `falsepos`) via `Solver`, and derivative-based (`newton`/`secant`/
+/// `steffenson`) via `PolishSolver`, with `testInterval`/`testDelta`/
+/// `testResidual` convergence helpers. Kept in its own file (`gsl_roots.zig`);
+/// reached as `gsl.roots` (`roots.Solver`, `roots.PolishSolver`, ...).
+pub const roots = @import("gsl_roots.zig");
+
+/// # One-dimensional minimization (`gsl_min`)
+///
+/// Iterative bracketing minimizers for a scalar function
+/// (`goldensection`/`brent`/`quad_golden`) via `Minimizer`, with a
+/// `testInterval` convergence helper. A close twin of `roots`. Kept in its own
+/// file (`gsl_min.zig`); reached as `gsl.min` (`min.Minimizer`, ...).
+pub const min = @import("gsl_min.zig");
+
+/// # Chebyshev approximation (`gsl_chebyshev`)
+///
+/// Fit a smooth function over `[a, b]` to a truncated Chebyshev series
+/// (`Chebyshev.fit`), then evaluate it cheaply (`eval`/`evalN`/`evalErr`) and
+/// derive `deriv`/`integ` series. Kept in its own file (`gsl_chebyshev.zig`);
+/// reached as `gsl.cheb` (`cheb.Chebyshev`).
+pub const cheb = @import("gsl_chebyshev.zig");
+
 test {
     // Pull re-exported sub-module files into test discovery. `zig build test`
     // only collects tests from files that are analyzed, so reference each
@@ -303,6 +343,10 @@ test {
     _ = movstat;
     _ = callback;
     _ = deriv;
+    _ = integration;
+    _ = roots;
+    _ = min;
+    _ = cheb;
 }
 
 /// A strided, read-only view over `T`: `len` elements spaced `stride` apart

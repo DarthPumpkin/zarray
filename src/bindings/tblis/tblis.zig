@@ -337,6 +337,7 @@ test "mult ij jk" {
     const a_data = [_]T{ 1, 2, 3, 4 }; // row-major (i,j): strides i=k (n), j=1
     const b_data = [_]T{ 1, 10, 100, 1000, 10_000, 100_000 }; // col-major (j,k): strides j=1, k=n
     var c_data: [m * k]T = undefined;
+    @memset(&c_data, 0.0);
 
     const a = arr.NamedArrayConst(IJ, T).init(.initContiguous(.{ .i = m, .j = n }), &a_data);
     const b = arr.NamedArrayConst(JK, T).init(.{ .shape = .{ .j = n, .k = k }, .strides = .{ .j = 1, .k = n } }, &b_data);
@@ -365,6 +366,7 @@ test "mult i jk -> ijk" {
         100.0, 200.0, 300.0,
     };
     var c_data: [m * n * k]T = undefined;
+    @memset(&c_data, 0.0);
 
     const a = arr.NamedArrayConst(I, T).init(.{ .shape = .{ .i = m }, .strides = .{ .i = 1 } }, &a_data);
     const b = arr.NamedArrayConst(JK, T).init(.{ .shape = .{ .j = n, .k = k }, .strides = .{ .j = k, .k = 1 } }, &b_data);
@@ -605,7 +607,7 @@ test "reduceAll i" {
 
     const r_max = reduceAllWithArg(I, T, .MAX, a);
     try std.testing.expectEqual(@as(T, 5.0), r_max.value);
-    try std.testing.expectEqual(@as(C.zig_len_type, 4), r_max.index.i);
+    try std.testing.expectEqual(@as(usize, 4), r_max.index.i);
 }
 
 test "reduceAll honors non-zero offset view" {

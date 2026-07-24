@@ -1,6 +1,17 @@
 #pragma once
 
+#include <stddef.h>
+
 #include "tci.h"
+
+// Pull in TBLIS config if it is available so zig_* index/stride types match
+// the compiled library ABI exactly (typically ptrdiff_t on 64-bit builds).
+#if defined(__has_include)
+#  if __has_include("tblis/tblis_config.h")
+#    include "tblis/tblis_config.h"
+#  endif
+#endif
+
 // Try to read config, otherwise choose defaults.
 #ifdef _TBLIS_CONFIG_H_
     typedef TBLIS_LABEL_TYPE zig_label_type;

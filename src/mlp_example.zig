@@ -18,13 +18,11 @@ const root = @import("zarray");
 const NamedArray = root.NamedArray;
 const NamedArrayConst = root.NamedArrayConst;
 const blas = root.bindings.blas;
-const tblis = root.bindings.tblis;
 
 const InputAxis = enum { batch, in };
 const OutputAxis = enum { batch, out };
 const WeightsAxis = enum { in, out };
 const BiasAxis = enum { out };
-const Batch = enum { batch };
 
 const mean = 0.1307;
 const stddev = 0.3081;
@@ -125,7 +123,6 @@ pub fn main(init: std.process.Init) !void {
         pro.* -= mean;
         pro.* /= stddev;
     }
-
     const batch = NamedArrayConst(InputAxis, f32).init(
         .initContiguous(.{
             .batch = labels_shape[0],
@@ -137,6 +134,7 @@ pub fn main(init: std.process.Init) !void {
     batch_sample.idx = batch_sample.idx.sliceAxis(.batch, 0, 2).sliceAxis(.in, 28 * 14 + 7, 28 * 14 + 21);
     log.debug("Batch sample (two images):\n{f}", .{batch_sample});
 
+    // Run through the network
     const mlp = MLP(f32){ .buffer = mlp_buffer };
     log.debug("Final layer:\n{f}", .{mlp.buffer.layers[2].biases_1d});
     const output = try mlp.forward(gpa, batch);
@@ -146,20 +144,31 @@ pub fn main(init: std.process.Init) !void {
     softmaxInplace(f32, output);
     log.info("Probs:\n{any}", .{output_sample.buf[0..10]});
 
+    // Calculate accuracy
     var n_correct: usize = 0;
     var total_prob: f64 = 0;
-    const output_max = try NamedArray(Batch, f32).initAlloc(gpa, .{ .batch = labels_shape[0] });
-    defer output_max.deinit(gpa);
-    const Hack = root.axis_meta.DifferenceAxesStruct(OutputAxis, Batch);
-    const output_argmax = try NamedArray(Batch, Hack).initAlloc(gpa, .{ .batch = labels_shape[0] });
-    defer output_argmax.deinit(gpa);
-    tblis.reduceWithArgInto(OutputAxis, Batch, f32, .MAX, output.asConst(), output_max, output_argmax);
-    for (0..labels_shape[0]) |i| {
-        const label = labels[i];
-        if (output_argmax.at(.{ .batch = i }).*.out == label) {
+    if (output.idx.strides.out != 1) {
+        @panic("Expected output.out to be unit stride");
+    }
+    const out_size = output.idx.shape.out;
+    for (0..labels_shape[0]) |b| {
+        const row_start = output.idx.linear(.{ .batch = b, .out = 0 });
+        const row = output.buf[row_start..];
+        var best_class: usize = 0;
+        var best_value = row[0];
+        for (1..out_size) |j| {
+            const value = row[j];
+            if (value > best_value) {
+                best_value = value;
+                best_class = j;
+            }
+        }
+
+        const label: usize = labels[b];
+        if (best_class == label) {
             n_correct += 1;
         }
-        total_prob += output.at(.{ .batch = i, .out = @intCast(label) }).*;
+        total_prob += row[label];
     }
     const accuracy: f64 = @as(f64, @floatFromInt(n_correct)) / labels_shape[0];
     const avg_prob = total_prob / labels_shape[0];

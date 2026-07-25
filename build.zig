@@ -165,6 +165,33 @@ pub fn build(b: *std.Build) !void {
         run_bench_cmd.addArgs(args);
     }
 
+    const mlp_example_exe = b.addExecutable(.{
+        .name = "mlp_example",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/mlp_example.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "zarray", .module = root_mod },
+            },
+        }),
+    });
+
+    mlp_example_exe.root_module.linkLibrary(libzarray);
+    b.installArtifact(mlp_example_exe);
+
+    const mlp_example_step = b.step("mlp-example", "Build the MLP example executable");
+    mlp_example_step.dependOn(&mlp_example_exe.step);
+
+    const run_mlp_example_step = b.step("run-mlp-example", "Run the MLP example");
+    const run_mlp_example_cmd = b.addRunArtifact(mlp_example_exe);
+    run_mlp_example_step.dependOn(&run_mlp_example_cmd.step);
+    run_mlp_example_cmd.step.dependOn(b.getInstallStep());
+
+    if (b.args) |args| {
+        run_mlp_example_cmd.addArgs(args);
+    }
+
     // Creates an executable that will run `test` blocks from the provided module.
     // Here `mod` needs to define a target, which is why earlier we made sure to
     // set the releative field.

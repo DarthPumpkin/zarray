@@ -23,7 +23,7 @@ pub const libs = bindings;
 
 // temporary for testing purposes
 pub const math = @import("math.zig");
-pub const mlp_example = @import("mlp_example.zig");
+// pub const mlp_example = @import("mlp_example.zig");
 
 test "root.zig" {
     std.testing.refAllDecls(@This());

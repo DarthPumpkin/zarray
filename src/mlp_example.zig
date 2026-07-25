@@ -1,100 +1,217 @@
+// x implement ReLU in MLP
+// x implement softmax
+// x implement parse safetensors header
+// x implement reading data (idx3-ubyte, id1-ubyte)
+// Improvements:
+// - implement ReLU with iter slices
+// - implement ReLU with simd
+// x test TBLIS vs CBLAS vs naïve
+// Weights: https://huggingface.co/dacorvo/mnist-mlp/resolve/main/model.safetensors
+// Test images: http://fashion-mnist.s3-website.eu-central-1.amazonaws.com/t10k-images-idx3-ubyte.gz
+// Test labels: http://fashion-mnist.s3-website.eu-central-1.amazonaws.com/t10k-labels-idx1-ubyte.gz
 const std = @import("std");
+const log = std.log;
 const mem = std.mem;
+const json = std.json;
 
-const named_array = @import("named_array.zig");
-const NamedArray = named_array.NamedArray;
-const NamedArrayConst = named_array.NamedArrayConst;
-const tblis = @import("bindings/tblis/tblis.zig");
+const root = @import("zarray");
+const NamedArray = root.NamedArray;
+const NamedArrayConst = root.NamedArrayConst;
+const blas = root.bindings.blas;
+const tblis = root.bindings.tblis;
 
 const InputAxis = enum { batch, in };
 const OutputAxis = enum { batch, out };
 const WeightsAxis = enum { in, out };
 const BiasAxis = enum { out };
+const Batch = enum { batch };
 
-test "main" {
-    try main();
-}
+const mean = 0.1307;
+const stddev = 0.3081;
 
-// pub fn main(init: std.process.Init) !void {
-pub fn main() !void {
-    var gpa = std.heap.DebugAllocator(.{}).init;
-    defer std.debug.assert(gpa.deinit() == .ok);
+pub fn main(init: std.process.Init) !void {
+    const gpa = init.gpa;
+    const io = init.io;
 
-    var arena = std.heap.ArenaAllocator.init(gpa.allocator());
-    defer arena.deinit();
-    const al = arena.allocator();
+    // Open files
+    var args = init.minimal.args.iterate();
+    _ = args.next();
+    const data_path = args.next() orelse "data";
+    const cwd = std.Io.Dir.cwd();
+    const datadir = cwd.openDir(io, data_path, .{}) catch {
+        std.debug.panic("{s} does not exist", .{data_path});
+    };
+    const checkpoint_path = "model.safetensors";
+    const images_path = "t10k-images-idx3-ubyte";
+    const labels_path = "t10k-labels-idx1-ubyte";
+    const checkpoint_file = try datadir.openFile(io, checkpoint_path, .{ .mode = .read_only });
+    defer checkpoint_file.close(io);
+    const images_file = try datadir.openFile(io, images_path, .{ .mode = .read_only });
+    defer images_file.close(io);
+    const labels_file = try datadir.openFile(io, labels_path, .{ .mode = .read_only });
+    defer labels_file.close(io);
 
-    const mlp_buffer = try MLP(f32).alloc(al, &[_]usize{ 3, 3, 2 });
-    const mlp = MLP(f32).initZeros(mlp_buffer);
-    @memset(mlp_buffer.weights_flat, 1.0);
+    // Load images
+    const magic_number_images = 2051;
+    var images_buffer: [4096]u8 = undefined;
+    var images_reader = images_file.reader(io, &images_buffer);
+    var images_header: [16]u8 = undefined;
+    try images_reader.interface.readSliceAll(&images_header);
+    const actual_magic_number_images = std.mem.readInt(u32, images_header[0..4], .big);
+    if (actual_magic_number_images != magic_number_images) {
+        std.debug.panic("Images file: Expected magic number {d}, got {d}", .{ magic_number_images, actual_magic_number_images });
+    }
+    var images_shape: [3]u32 = undefined;
+    for (0..3) |i| {
+        images_shape[i] = std.mem.readInt(u32, images_header[(i + 1) * 4 ..][0..4], .big);
+    }
+    log.info("Images shape: {any}", .{images_shape});
+    const images_bytes = try images_reader.interface.readAlloc(
+        gpa,
+        images_shape[0] * images_shape[1] * images_shape[2],
+    );
+    defer gpa.free(images_bytes);
 
-    const batch = try NamedArray(InputAxis, f32).initAlloc(al, .{
-        .batch = 2,
-        .in = 3,
-    });
-    batch.fillArange();
-    const output = try mlp.forward(al, batch.asConst());
-    std.log.debug("{f}\n", .{output});
+    // Load labels
+    const magic_number_labels = 2049;
+    var labels_buffer: [4096]u8 = undefined;
+    var labels_reader = labels_file.reader(io, &labels_buffer);
+    var labels_header: [8]u8 = undefined;
+    try labels_reader.interface.readSliceAll(&labels_header);
+    const actual_magic_number_labels = std.mem.readInt(u32, labels_header[0..4], .big);
+    if (actual_magic_number_labels != magic_number_labels) {
+        std.debug.panic("Labels file: Expected magic number {d}, got {d}", .{ magic_number_labels, actual_magic_number_labels });
+    }
+    var labels_shape: [1]u32 = undefined;
+    for (0..1) |i| {
+        labels_shape[i] = std.mem.readInt(u32, labels_header[(i + 1) * 4 ..][0..4], .big);
+    }
+    log.info("Labels shape: {any}", .{labels_shape});
+    const labels = try labels_reader.interface.readAlloc(gpa, labels_shape[0]);
+    defer gpa.free(labels);
+
+    // Load weights
+    var weights_buffer: [4096]u8 = undefined;
+    var weights_reader = checkpoint_file.reader(io, &weights_buffer);
+    var weights_header_size_buffer: [8]u8 = undefined;
+    try weights_reader.interface.readSliceAll(&weights_header_size_buffer);
+    const weights_header_size = std.mem.readInt(u64, &weights_header_size_buffer, .little);
+    log.debug("Weights header size: {d}", .{weights_header_size});
+    const weights_header_buffer = try gpa.alloc(u8, weights_header_size);
+    defer gpa.free(weights_header_buffer);
+    try weights_reader.interface.readSliceAll(weights_header_buffer);
+    const json_is_valid = try json.validate(gpa, weights_header_buffer);
+    if (!json_is_valid) {
+        std.debug.panic("JSON is invalid:\n{s}", .{weights_header_buffer});
+    }
+    const mlp_header = try json.parseFromSlice(DacorvoMlpHeader, gpa, weights_header_buffer, .{});
+    defer mlp_header.deinit();
+    log.debug("Parsed Safetensors header:\n{any}", .{mlp_header.value});
+    const mlp_buffer = try mlp_header.value.readMlpBuffer(f32, gpa, &weights_reader.interface);
+    defer mlp_buffer.deinit(gpa);
+
+    // Prepare network inputs
+    const images_proper = try gpa.alloc(f32, images_shape[0] * images_shape[1] * images_shape[2]);
+    defer gpa.free(images_proper);
+    for (images_bytes, images_proper) |byt, *pro| {
+        pro.* = @as(f32, @floatFromInt(byt)) / 255.0;
+    }
+    for (images_proper) |*pro| {
+        pro.* -= mean;
+        pro.* /= stddev;
+    }
+
+    const batch = NamedArrayConst(InputAxis, f32).init(
+        .initContiguous(.{
+            .batch = labels_shape[0],
+            .in = images_shape[1] * images_shape[2],
+        }),
+        images_proper,
+    );
+    var batch_sample = batch;
+    batch_sample.idx = batch_sample.idx.sliceAxis(.batch, 0, 2).sliceAxis(.in, 28 * 14 + 7, 28 * 14 + 21);
+    log.debug("Batch sample (two images):\n{f}", .{batch_sample});
+
+    const mlp = MLP(f32){ .buffer = mlp_buffer };
+    log.debug("Final layer:\n{f}", .{mlp.buffer.layers[2].biases_1d});
+    const output = try mlp.forward(gpa, batch);
+    defer output.deinit(gpa);
+    const output_sample = output.indexAxesChecked(enum { out }, .{ .batch = 0 }).?;
+    log.info("Logits:\n{any}", .{output_sample.buf[0..10]});
+    softmaxInplace(f32, output);
+    log.info("Probs:\n{any}", .{output_sample.buf[0..10]});
+
+    var n_correct: usize = 0;
+    var total_prob: f64 = 0;
+    const output_max = try NamedArray(Batch, f32).initAlloc(gpa, .{ .batch = labels_shape[0] });
+    defer output_max.deinit(gpa);
+    const Hack = root.axis_meta.DifferenceAxesStruct(OutputAxis, Batch);
+    const output_argmax = try NamedArray(Batch, Hack).initAlloc(gpa, .{ .batch = labels_shape[0] });
+    defer output_argmax.deinit(gpa);
+    tblis.reduceWithArgInto(OutputAxis, Batch, f32, .MAX, output.asConst(), output_max, output_argmax);
+    for (0..labels_shape[0]) |i| {
+        const label = labels[i];
+        if (output_argmax.at(.{ .batch = i }).*.out == label) {
+            n_correct += 1;
+        }
+        total_prob += output.at(.{ .batch = i, .out = @intCast(label) }).*;
+    }
+    const accuracy: f64 = @as(f64, @floatFromInt(n_correct)) / labels_shape[0];
+    const avg_prob = total_prob / labels_shape[0];
+    log.info("Accuracy: {d}", .{accuracy});
+    log.info("Average confidence in correct label: {d}", .{avg_prob});
 }
 
 fn MLP(comptime Scalar_: type) type {
     const MlpInput = NamedArray(InputAxis, Scalar_);
     const MlpInputConst = NamedArrayConst(InputAxis, Scalar_);
     const MlpOutput = NamedArray(OutputAxis, Scalar_);
-    // const MlpOutputConst = NamedArrayConst(OutputAxis, Scalar);
 
+    // Owns its data. Must call `deinit()`.
     const Buffer_ = struct {
         const Scalar = Scalar_;
 
-        weights_flat: []Scalar,
-        biases_flat: []Scalar,
-        layer_sizes: []const usize,
+        layers: []const Layer(Scalar),
 
         pub fn initAlloc(al: mem.Allocator, layer_sizes: []const usize) !@This() {
-            const self_layer_sizes: []usize = try al.alloc(usize, layer_sizes.len);
-            @memcpy(self_layer_sizes, layer_sizes);
-
             const n_layers = layer_sizes.len - 1;
-            var n_biases: usize = 0;
-            var n_weights: usize = 0;
-            for (layer_sizes[0..n_layers], layer_sizes[1..]) |lin, lout| {
-                n_biases += lout;
-                n_weights += lin * lout;
+            const layers = try al.alloc(Layer(Scalar), n_layers);
+            for (layer_sizes[0..n_layers], layer_sizes[1..], layers) |lin, lout, *layer| {
+                const weights = try NamedArray(WeightsAxis, Scalar).initAlloc(al, .{
+                    .in = lin,
+                    .out = lout,
+                });
+                const biases = try NamedArray(BiasAxis, Scalar).initAlloc(al, .{
+                    .out = lout,
+                });
+                layer.* = .{
+                    .weights_2d = weights,
+                    .biases_1d = biases,
+                };
             }
-            const biases_flat = try al.alloc(Scalar_, n_biases);
-            const weights_flat = try al.alloc(Scalar_, n_weights);
-
-            return .{
-                .weights_flat = weights_flat,
-                .biases_flat = biases_flat,
-                .layer_sizes = self_layer_sizes,
-            };
+            return .{ .layers = layers };
         }
 
         pub fn deinit(self: @This(), al: mem.Allocator) void {
-            al.free(self.weights_flat);
-            al.free(self.biases_flat);
-            al.free(self.layer_sizes);
+            for (self.layers) |layer| {
+                layer.biases_1d.deinit(al);
+                layer.weights_2d.deinit(al);
+            }
+            al.free(self.layers);
         }
     };
 
     return struct {
-        const Scalar: type = Scalar_;
-        const Buffer: type = Buffer_;
+        pub const Scalar: type = Scalar_;
+        pub const Buffer: type = Buffer_;
 
         buffer: Buffer,
 
-        pub fn alloc(al: mem.Allocator, layer_sizes: []const usize) !Buffer {
-            return try Buffer.initAlloc(al, layer_sizes);
-        }
-
         pub fn initZeros(buffer: Buffer) @This() {
-            var self: @This() = .{ .buffer = buffer };
-            var layers = self.iterLayers();
-            while (layers.next()) |layer| {
+            for (buffer.layers) |layer| {
                 fillZeros(Scalar, layer);
             }
-            return self;
+            return .{ .buffer = buffer };
         }
 
         pub fn iterLayers(self: @This()) LayerIterator(Scalar) {
@@ -103,12 +220,28 @@ fn MLP(comptime Scalar_: type) type {
 
         pub fn forward(self: @This(), al: mem.Allocator, batch: MlpInputConst) !MlpOutput {
             var input: MlpInput = try batch.toContiguous(al);
-            var layers = self.iterLayers();
-            while (layers.next()) |layer| {
+            const n_relu_layers = self.buffer.layers.len - 1; // no activation in final layer
+            for (self.buffer.layers, 0..) |layer, li| {
                 const batch_size = input.idx.shape.batch;
                 const biases_2d: MlpOutput = layer.biases_1d.conformAxes(OutputAxis).broadcastAxis(.batch, batch_size);
                 const output = try biases_2d.toContiguous(al);
-                tblis.mult(InputAxis, WeightsAxis, OutputAxis, Scalar, input.asConst(), layer.weights_2d.asConst(), output);
+                blas.gemm(
+                    Scalar,
+                    InputAxis,
+                    WeightsAxis,
+                    OutputAxis,
+                    input.asConst(),
+                    layer.weights_2d.asConst(),
+                    output,
+                    .{},
+                );
+                if (li < n_relu_layers) {
+                    var iter_output = output.idx.iterKeys();
+                    while (iter_output.next()) |key| {
+                        const ptr = output.at(key);
+                        ptr.* = relu(ptr.*);
+                    }
+                }
 
                 al.free(input.buf);
                 input = output.renameAxes(InputAxis, &.{.{ .old = "out", .new = "in" }});
@@ -155,7 +288,84 @@ fn LayerIterator(comptime Scalar: type) type {
     };
 }
 
+fn relu(x: anytype) @TypeOf(x) {
+    return @max(0, x);
+}
+
+fn softmaxInplace(comptime Scalar: type, x: NamedArray(OutputAxis, Scalar)) void {
+    for (0..x.idx.shape.batch) |b| {
+        var max: Scalar = -std.math.inf(Scalar);
+        for (0..x.idx.shape.out) |j| {
+            max = @max(max, x.at(.{ .batch = b, .out = j }).*);
+        }
+        var sum: Scalar = 0;
+        for (0..x.idx.shape.out) |j| {
+            const x_j = x.at(.{ .batch = b, .out = j }).*;
+            const term = @exp(x_j - max);
+            sum += term;
+        }
+        for (0..x.idx.shape.out) |j| {
+            const ptr = x.at(.{ .batch = b, .out = j });
+            ptr.* = @exp(ptr.* - max) / sum;
+        }
+    }
+}
+
 fn fillZeros(comptime Scalar: type, layer: Layer(Scalar)) void {
     layer.biases_1d.fill(0);
     layer.weights_2d.fill(0);
 }
+
+const DacorvoMlpHeader = struct {
+    __metadata__: json.Value,
+    @"input_layer.bias": SafetensorsInfo,
+    @"input_layer.weight": SafetensorsInfo,
+    @"mid_layer.bias": SafetensorsInfo,
+    @"mid_layer.weight": SafetensorsInfo,
+    @"output_layer.bias": SafetensorsInfo,
+    @"output_layer.weight": SafetensorsInfo,
+
+    pub fn readMlpBuffer(self: @This(), comptime Scalar: type, al: mem.Allocator, reader: *std.Io.Reader) !MLP(Scalar).Buffer {
+        const layer_names = [_][]const u8{ "input_layer", "mid_layer", "output_layer" };
+        const layers = try al.alloc(Layer(Scalar), layer_names.len);
+        // var offset: usize = 0;
+        // TODO: I'll assume the fields are in memory order and densely packed. That's a big assumption.
+        // inline for (std.meta.fieldNames(@This())) |fname| {
+        //     if (mem.eql(u8, fname, "__metadata__")) {
+        //         continue;
+        //     }
+        inline for (layer_names, 0..) |lname, li| {
+            const bias_name = lname ++ ".bias";
+            const bias_info: SafetensorsInfo = @field(self, bias_name);
+            const bias_na = try NamedArray(BiasAxis, Scalar).initAlloc(al, .{ .out = bias_info.shape[0] });
+            try @This().readFieldScalars(Scalar, bias_na.buf, reader);
+
+            const weight_name = lname ++ ".weight";
+            const weight_info: SafetensorsInfo = @field(self, weight_name);
+            const weight_buf = try al.alloc(Scalar, weight_info.shape[0] * weight_info.shape[1]);
+            const weight_na = NamedArray(WeightsAxis, Scalar).init(.{
+                .shape = .{
+                    .in = weight_info.shape[1],
+                    .out = weight_info.shape[0],
+                },
+                .strides = .{
+                    .in = 1,
+                    .out = @intCast(weight_info.shape[1]),
+                },
+            }, weight_buf);
+            try @This().readFieldScalars(Scalar, weight_na.buf, reader);
+            layers[li] = Layer(Scalar){
+                .biases_1d = bias_na,
+                .weights_2d = weight_na,
+            };
+        }
+        return .{ .layers = layers };
+    }
+
+    fn readFieldScalars(comptime Scalar: type, out: []Scalar, reader: *std.Io.Reader) !void {
+        const scalar_bytes = std.mem.sliceAsBytes(out);
+        try reader.readSliceAll(scalar_bytes);
+    }
+};
+
+const SafetensorsInfo = struct { dtype: []u8, shape: []usize, data_offsets: [2]usize };

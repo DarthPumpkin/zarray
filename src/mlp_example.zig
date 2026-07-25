@@ -1,15 +1,13 @@
-// x implement ReLU in MLP
-// x implement softmax
-// x implement parse safetensors header
-// x implement reading data (idx3-ubyte, id1-ubyte)
 // Improvements:
+// - Make MLP buffer borrow instead of owning
+// - Implement mmap
 // - implement ReLU with iter slices
 // - implement ReLU with simd
-// x test TBLIS vs CBLAS vs naïve
 // Weights: https://huggingface.co/dacorvo/mnist-mlp/resolve/main/model.safetensors
-// Test images: http://fashion-mnist.s3-website.eu-central-1.amazonaws.com/t10k-images-idx3-ubyte.gz
-// Test labels: http://fashion-mnist.s3-website.eu-central-1.amazonaws.com/t10k-labels-idx1-ubyte.gz
+// Test images: https://github.com/aimacode/aima-data/raw/f6cbea61ad0c21c6b7be826d17af5a8d3a7c2c86/MNIST/Digits/t10k-images-idx3-ubyte
+// Test labels: https://github.com/aimacode/aima-data/raw/f6cbea61ad0c21c6b7be826d17af5a8d3a7c2c86/MNIST/Digits/t10k-labels-idx1-ubyte
 const std = @import("std");
+const builtin = @import("builtin");
 const log = std.log;
 const mem = std.mem;
 const json = std.json;
@@ -36,8 +34,9 @@ pub fn main(init: std.process.Init) !void {
     _ = args.next();
     const data_path = args.next() orelse "data";
     const cwd = std.Io.Dir.cwd();
-    const datadir = cwd.openDir(io, data_path, .{}) catch {
-        std.debug.panic("{s} does not exist", .{data_path});
+    const datadir = cwd.openDir(io, data_path, .{}) catch |err| {
+        log.err("Could not open data directory '{s}': {s}", .{ data_path, @errorName(err) });
+        return err;
     };
     const checkpoint_path = "model.safetensors";
     const images_path = "t10k-images-idx3-ubyte";
@@ -50,19 +49,9 @@ pub fn main(init: std.process.Init) !void {
     defer labels_file.close(io);
 
     // Load images
-    const magic_number_images = 2051;
     var images_buffer: [4096]u8 = undefined;
     var images_reader = images_file.reader(io, &images_buffer);
-    var images_header: [16]u8 = undefined;
-    try images_reader.interface.readSliceAll(&images_header);
-    const actual_magic_number_images = std.mem.readInt(u32, images_header[0..4], .big);
-    if (actual_magic_number_images != magic_number_images) {
-        std.debug.panic("Images file: Expected magic number {d}, got {d}", .{ magic_number_images, actual_magic_number_images });
-    }
-    var images_shape: [3]u32 = undefined;
-    for (0..3) |i| {
-        images_shape[i] = std.mem.readInt(u32, images_header[(i + 1) * 4 ..][0..4], .big);
-    }
+    const images_shape = try readIdxHeader(&images_reader.interface, 3, 2051);
     log.info("Images shape: {any}", .{images_shape});
     const images_bytes = try images_reader.interface.readAlloc(
         gpa,
@@ -71,22 +60,17 @@ pub fn main(init: std.process.Init) !void {
     defer gpa.free(images_bytes);
 
     // Load labels
-    const magic_number_labels = 2049;
     var labels_buffer: [4096]u8 = undefined;
     var labels_reader = labels_file.reader(io, &labels_buffer);
-    var labels_header: [8]u8 = undefined;
-    try labels_reader.interface.readSliceAll(&labels_header);
-    const actual_magic_number_labels = std.mem.readInt(u32, labels_header[0..4], .big);
-    if (actual_magic_number_labels != magic_number_labels) {
-        std.debug.panic("Labels file: Expected magic number {d}, got {d}", .{ magic_number_labels, actual_magic_number_labels });
-    }
-    var labels_shape: [1]u32 = undefined;
-    for (0..1) |i| {
-        labels_shape[i] = std.mem.readInt(u32, labels_header[(i + 1) * 4 ..][0..4], .big);
-    }
+    const labels_shape = try readIdxHeader(&labels_reader.interface, 1, 2049);
     log.info("Labels shape: {any}", .{labels_shape});
     const labels = try labels_reader.interface.readAlloc(gpa, labels_shape[0]);
     defer gpa.free(labels);
+
+    if (images_shape[0] != labels_shape[0]) {
+        log.err("Image count ({d}) does not match label count ({d})", .{ images_shape[0], labels_shape[0] });
+        return error.ImageLabelCountMismatch;
+    }
 
     // Load weights
     var weights_buffer: [4096]u8 = undefined;
@@ -100,7 +84,8 @@ pub fn main(init: std.process.Init) !void {
     try weights_reader.interface.readSliceAll(weights_header_buffer);
     const json_is_valid = try json.validate(gpa, weights_header_buffer);
     if (!json_is_valid) {
-        std.debug.panic("JSON is invalid:\n{s}", .{weights_header_buffer});
+        log.err("Safetensors header is not valid JSON:\n{s}", .{weights_header_buffer});
+        return error.InvalidSafetensorsHeader;
     }
     const mlp_header = try json.parseFromSlice(DacorvoMlpHeader, gpa, weights_header_buffer, .{});
     defer mlp_header.deinit();
@@ -136,21 +121,19 @@ pub fn main(init: std.process.Init) !void {
 
     // Run through the network
     const mlp = MLP(f32){ .buffer = mlp_buffer };
-    log.debug("Final layer:\n{f}", .{mlp.buffer.layers[2].biases_1d});
+    log.debug("Final layer:\n{f}", .{mlp.buffer.layers[mlp.buffer.layers.len - 1].biases_1d});
     const output = try mlp.forward(gpa, batch);
     defer output.deinit(gpa);
+    if (output.idx.strides.out != 1) return error.NonUnitOutputStride;
+    const out_size = output.idx.shape.out;
     const output_sample = output.indexAxesChecked(enum { out }, .{ .batch = 0 }).?;
-    log.info("Logits:\n{any}", .{output_sample.buf[0..10]});
+    log.info("Logits:\n{any}", .{output_sample.buf[0..out_size]});
     softmaxInplace(f32, output);
-    log.info("Probs:\n{any}", .{output_sample.buf[0..10]});
+    log.info("Probs:\n{any}", .{output_sample.buf[0..out_size]});
 
     // Calculate accuracy
     var n_correct: usize = 0;
     var total_prob: f64 = 0;
-    if (output.idx.strides.out != 1) {
-        @panic("Expected output.out to be unit stride");
-    }
-    const out_size = output.idx.shape.out;
     for (0..labels_shape[0]) |b| {
         const row_start = output.idx.linear(.{ .batch = b, .out = 0 });
         const row = output.buf[row_start..];
@@ -173,7 +156,7 @@ pub fn main(init: std.process.Init) !void {
     const accuracy: f64 = @as(f64, @floatFromInt(n_correct)) / labels_shape[0];
     const avg_prob = total_prob / labels_shape[0];
     log.info("Accuracy: {d}", .{accuracy});
-    log.info("Average confidence in correct label: {d}", .{avg_prob});
+    log.info("Average probability assigned to the true label: {d}", .{avg_prob});
 }
 
 fn MLP(comptime Scalar_: type) type {
@@ -221,17 +204,6 @@ fn MLP(comptime Scalar_: type) type {
 
         buffer: Buffer,
 
-        pub fn initZeros(buffer: Buffer) @This() {
-            for (buffer.layers) |layer| {
-                fillZeros(Scalar, layer);
-            }
-            return .{ .buffer = buffer };
-        }
-
-        pub fn iterLayers(self: @This()) LayerIterator(Scalar) {
-            return .{ .buffer = self.buffer };
-        }
-
         pub fn forward(self: @This(), al: mem.Allocator, batch: MlpInputConst) !MlpOutput {
             var input: MlpInput = try batch.toContiguous(al);
             const n_relu_layers = self.buffer.layers.len - 1; // no activation in final layer
@@ -271,34 +243,22 @@ fn Layer(comptime Scalar: type) type {
     };
 }
 
-fn LayerIterator(comptime Scalar: type) type {
-    return struct {
-        buffer: MLP(Scalar).Buffer,
-        layer_offset: usize = 0,
-        weights_offset: usize = 0,
-        biases_offset: usize = 0,
-
-        pub fn next(self: *@This()) ?Layer(Scalar) {
-            const layer_sizes = self.buffer.layer_sizes;
-            if (self.layer_offset + 1 >= layer_sizes.len) {
-                return null;
-            }
-            const lin = layer_sizes[self.layer_offset];
-            const lout = layer_sizes[self.layer_offset + 1];
-            const layer: Layer(Scalar) = .{
-                .weights_2d = NamedArray(WeightsAxis, Scalar).init(.{
-                    .shape = .{ .in = @intCast(lin), .out = lout },
-                    .strides = .{ .in = @intCast(lout), .out = 1 },
-                }, self.buffer.weights_flat[self.weights_offset..][0 .. lin * lout]),
-                .biases_1d = NamedArray(BiasAxis, Scalar).init(.initContiguous(.{ .out = lout }), self.buffer.biases_flat[self.biases_offset..][0..lout]),
-            };
-
-            self.layer_offset += 1;
-            self.weights_offset += lin * lout;
-            self.biases_offset += lout;
-            return layer;
-        }
-    };
+/// Read the header of an IDX file (4-byte big-endian magic number followed by
+/// `n_dims` big-endian dimension sizes), returning the shape. Leaves the reader
+/// positioned at the start of the tensor data.
+fn readIdxHeader(reader: anytype, comptime n_dims: usize, expected_magic: u32) ![n_dims]u32 {
+    var header: [4 + n_dims * 4]u8 = undefined;
+    try reader.readSliceAll(&header);
+    const magic = std.mem.readInt(u32, header[0..4], .big);
+    if (magic != expected_magic) {
+        log.err("IDX file: expected magic number {d}, got {d}", .{ expected_magic, magic });
+        return error.MagicNumberMismatch;
+    }
+    var shape: [n_dims]u32 = undefined;
+    for (0..n_dims) |i| {
+        shape[i] = std.mem.readInt(u32, header[(i + 1) * 4 ..][0..4], .big);
+    }
+    return shape;
 }
 
 fn relu(x: anytype) @TypeOf(x) {
@@ -306,27 +266,23 @@ fn relu(x: anytype) @TypeOf(x) {
 }
 
 fn softmaxInplace(comptime Scalar: type, x: NamedArray(OutputAxis, Scalar)) void {
+    std.debug.assert(x.idx.strides.out == 1);
+    const out_size = x.idx.shape.out;
     for (0..x.idx.shape.batch) |b| {
-        var max: Scalar = -std.math.inf(Scalar);
-        for (0..x.idx.shape.out) |j| {
-            max = @max(max, x.at(.{ .batch = b, .out = j }).*);
-        }
-        var sum: Scalar = 0;
-        for (0..x.idx.shape.out) |j| {
-            const x_j = x.at(.{ .batch = b, .out = j }).*;
-            const term = @exp(x_j - max);
-            sum += term;
-        }
-        for (0..x.idx.shape.out) |j| {
-            const ptr = x.at(.{ .batch = b, .out = j });
-            ptr.* = @exp(ptr.* - max) / sum;
-        }
-    }
-}
+        const row_start = x.idx.linear(.{ .batch = b, .out = 0 });
+        const row = x.buf[row_start..][0..out_size];
 
-fn fillZeros(comptime Scalar: type, layer: Layer(Scalar)) void {
-    layer.biases_1d.fill(0);
-    layer.weights_2d.fill(0);
+        var max: Scalar = -std.math.inf(Scalar);
+        for (row) |v| max = @max(max, v);
+
+        var sum: Scalar = 0;
+        for (row) |*v| {
+            v.* = @exp(v.* - max);
+            sum += v.*;
+        }
+
+        for (row) |*v| v.* /= sum;
+    }
 }
 
 const DacorvoMlpHeader = struct {
@@ -339,19 +295,12 @@ const DacorvoMlpHeader = struct {
     @"output_layer.weight": SafetensorsInfo,
 
     pub fn maxTensorDataEnd(self: @This()) usize {
-        const tensor_names = [_][]const u8{
-            "input_layer.bias",
-            "input_layer.weight",
-            "mid_layer.bias",
-            "mid_layer.weight",
-            "output_layer.bias",
-            "output_layer.weight",
-        };
-
         var max_end: usize = 0;
-        inline for (tensor_names) |tname| {
-            const info: SafetensorsInfo = @field(self, tname);
-            max_end = @max(max_end, info.data_offsets[1]);
+        inline for (std.meta.fields(@This())) |field| {
+            if (field.type == SafetensorsInfo) {
+                const info: SafetensorsInfo = @field(self, field.name);
+                max_end = @max(max_end, info.data_offsets[1]);
+            }
         }
         return max_end;
     }
@@ -403,6 +352,11 @@ const DacorvoMlpHeader = struct {
     }
 
     fn copyTensorIntoScalars(comptime Scalar: type, out: []Scalar, info: SafetensorsInfo, tensor_data: []const u8) !void {
+        // Safetensors always stores tensor data little-endian. We reinterpret the
+        // raw bytes as host-native scalars below, so this only works on
+        // little-endian hosts. A big-endian host would need to byte-swap.
+        comptime std.debug.assert(builtin.cpu.arch.endian() == .little);
+
         const expected_dtype = comptime scalarSafetensorDtype(Scalar);
         if (!mem.eql(u8, info.dtype, expected_dtype)) return error.UnexpectedTensorDType;
 
@@ -416,7 +370,7 @@ const DacorvoMlpHeader = struct {
 
         const src = tensor_data[begin..end];
         const dst = std.mem.sliceAsBytes(out);
-        std.mem.copyForwards(u8, dst, src);
+        @memcpy(dst, src);
     }
 
     fn scalarSafetensorDtype(comptime Scalar: type) []const u8 {

@@ -250,10 +250,9 @@ fn MLP(comptime Scalar_: type) type {
                     .{},
                 );
                 if (li < n_relu_layers) {
-                    var iter_output = output.idx.iterKeys();
-                    while (iter_output.next()) |key| {
-                        const ptr = output.at(key);
-                        ptr.* = relu(ptr.*);
+                    std.debug.assert(output.idx.isContiguous());
+                    for (output.buf) |*x| {
+                        x.* = relu(x.*);
                     }
                 }
 

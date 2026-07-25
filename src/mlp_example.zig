@@ -107,16 +107,21 @@ pub fn main(init: std.process.Init) !void {
     const mlp_header = try json.parseFromSlice(DacorvoMlpHeader, gpa, weights_header_buffer, .{});
     defer mlp_header.deinit();
     log.debug("Parsed Safetensors header:\n{any}", .{mlp_header.value});
-    const mlp_buffer = try mlp_header.value.readMlpBuffer(f32, gpa, &weights_reader.interface);
+    const tensor_data_len = mlp_header.value.maxTensorDataEnd();
+    const tensor_data = try gpa.alloc(u8, tensor_data_len);
+    defer gpa.free(tensor_data);
+    try weights_reader.interface.readSliceAll(tensor_data);
+    const mlp_buffer = try mlp_header.value.readMlpBuffer(f32, gpa, tensor_data);
     defer mlp_buffer.deinit(gpa);
 
     // Prepare network inputs
     const images_proper = try gpa.alloc(f32, images_shape[0] * images_shape[1] * images_shape[2]);
     defer gpa.free(images_proper);
     for (images_bytes, images_proper) |byt, *pro| {
-        pro.* = @as(f32, @floatFromInt(byt)) / 255.0;
+        pro.* = @floatFromInt(byt);
     }
     for (images_proper) |*pro| {
+        pro.* /= 255.0;
         pro.* -= mean;
         pro.* /= stddev;
     }
@@ -325,24 +330,49 @@ const DacorvoMlpHeader = struct {
     @"output_layer.bias": SafetensorsInfo,
     @"output_layer.weight": SafetensorsInfo,
 
-    pub fn readMlpBuffer(self: @This(), comptime Scalar: type, al: mem.Allocator, reader: *std.Io.Reader) !MLP(Scalar).Buffer {
+    pub fn maxTensorDataEnd(self: @This()) usize {
+        const tensor_names = [_][]const u8{
+            "input_layer.bias",
+            "input_layer.weight",
+            "mid_layer.bias",
+            "mid_layer.weight",
+            "output_layer.bias",
+            "output_layer.weight",
+        };
+
+        var max_end: usize = 0;
+        inline for (tensor_names) |tname| {
+            const info: SafetensorsInfo = @field(self, tname);
+            max_end = @max(max_end, info.data_offsets[1]);
+        }
+        return max_end;
+    }
+
+    pub fn readMlpBuffer(self: @This(), comptime Scalar: type, al: mem.Allocator, tensor_data: []const u8) !MLP(Scalar).Buffer {
         const layer_names = [_][]const u8{ "input_layer", "mid_layer", "output_layer" };
         const layers = try al.alloc(Layer(Scalar), layer_names.len);
-        // var offset: usize = 0;
-        // TODO: I'll assume the fields are in memory order and densely packed. That's a big assumption.
-        // inline for (std.meta.fieldNames(@This())) |fname| {
-        //     if (mem.eql(u8, fname, "__metadata__")) {
-        //         continue;
-        //     }
+        var initialized_layers: usize = 0;
+        errdefer {
+            for (layers[0..initialized_layers]) |layer| {
+                layer.biases_1d.deinit(al);
+                layer.weights_2d.deinit(al);
+            }
+            al.free(layers);
+        }
+
         inline for (layer_names, 0..) |lname, li| {
             const bias_name = lname ++ ".bias";
             const bias_info: SafetensorsInfo = @field(self, bias_name);
+            if (bias_info.shape.len != 1) return error.InvalidTensorShape;
             const bias_na = try NamedArray(BiasAxis, Scalar).initAlloc(al, .{ .out = bias_info.shape[0] });
-            try @This().readFieldScalars(Scalar, bias_na.buf, reader);
+            errdefer bias_na.deinit(al);
+            try @This().copyTensorIntoScalars(Scalar, bias_na.buf, bias_info, tensor_data);
 
             const weight_name = lname ++ ".weight";
             const weight_info: SafetensorsInfo = @field(self, weight_name);
+            if (weight_info.shape.len != 2) return error.InvalidTensorShape;
             const weight_buf = try al.alloc(Scalar, weight_info.shape[0] * weight_info.shape[1]);
+            errdefer al.free(weight_buf);
             const weight_na = NamedArray(WeightsAxis, Scalar).init(.{
                 .shape = .{
                     .in = weight_info.shape[1],
@@ -353,18 +383,41 @@ const DacorvoMlpHeader = struct {
                     .out = @intCast(weight_info.shape[1]),
                 },
             }, weight_buf);
-            try @This().readFieldScalars(Scalar, weight_na.buf, reader);
+            try @This().copyTensorIntoScalars(Scalar, weight_na.buf, weight_info, tensor_data);
+
             layers[li] = Layer(Scalar){
                 .biases_1d = bias_na,
                 .weights_2d = weight_na,
             };
+            initialized_layers += 1;
         }
         return .{ .layers = layers };
     }
 
-    fn readFieldScalars(comptime Scalar: type, out: []Scalar, reader: *std.Io.Reader) !void {
-        const scalar_bytes = std.mem.sliceAsBytes(out);
-        try reader.readSliceAll(scalar_bytes);
+    fn copyTensorIntoScalars(comptime Scalar: type, out: []Scalar, info: SafetensorsInfo, tensor_data: []const u8) !void {
+        const expected_dtype = comptime scalarSafetensorDtype(Scalar);
+        if (!mem.eql(u8, info.dtype, expected_dtype)) return error.UnexpectedTensorDType;
+
+        const begin = info.data_offsets[0];
+        const end = info.data_offsets[1];
+        if (end < begin) return error.InvalidTensorOffsets;
+        if (end > tensor_data.len) return error.TensorOffsetOutOfBounds;
+
+        const expected_n_bytes = out.len * @sizeOf(Scalar);
+        if (end - begin != expected_n_bytes) return error.UnexpectedTensorSize;
+
+        const src = tensor_data[begin..end];
+        const dst = std.mem.sliceAsBytes(out);
+        std.mem.copyForwards(u8, dst, src);
+    }
+
+    fn scalarSafetensorDtype(comptime Scalar: type) []const u8 {
+        return switch (Scalar) {
+            f16 => "F16",
+            f32 => "F32",
+            f64 => "F64",
+            else => @compileError("Unsupported Scalar type for safetensors"),
+        };
     }
 };
 

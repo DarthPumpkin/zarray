@@ -86,7 +86,9 @@ pub fn main(init: std.process.Init) !void {
     defer mlp_header.deinit();
     log.debug("Parsed Safetensors header:\n{any}", .{mlp_header.value});
     const tensor_data_len = mlp_header.value.maxTensorDataEnd();
-    const tensor_data = try gpa.alloc(u8, tensor_data_len);
+    // This model is loaded as f32, so 4-byte alignment is sufficient
+    const tensor_align = comptime mem.Alignment.fromByteUnits(@alignOf(f32));
+    const tensor_data = try gpa.alignedAlloc(u8, tensor_align, tensor_data_len);
     defer gpa.free(tensor_data);
     try weights_reader.interface.readSliceAll(tensor_data);
     const mlp_buffer = try mlp_header.value.readMlpBuffer(f32, gpa, tensor_data);
@@ -95,11 +97,9 @@ pub fn main(init: std.process.Init) !void {
     // Prepare network inputs
     const images_proper = try gpa.alloc(f32, images_shape[0] * images_shape[1] * images_shape[2]);
     defer gpa.free(images_proper);
-    const inv_255: f32 = 1.0 / 255.0;
-    const inv_stddev: f32 = 1.0 / stddev;
     for (images_bytes, images_proper) |byt, *pro| {
         const x: f32 = @floatFromInt(byt);
-        pro.* = (x * inv_255 - mean) * inv_stddev;
+        pro.* = (x / 255 - mean) / stddev;
     }
     const batch = NamedArrayConst(InputAxis, f32).init(
         .initContiguous(.{
@@ -114,15 +114,16 @@ pub fn main(init: std.process.Init) !void {
 
     // Run through the network
     const mlp = MLP(f32){ .buffer = mlp_buffer };
-    log.debug("Final layer:\n{f}", .{mlp.buffer.layers[mlp.buffer.layers.len - 1].biases_1d});
+    log.debug("Biases in last layer:\n{f}", .{mlp.buffer.layers[mlp.buffer.layers.len - 1].biases_1d});
     const output = try mlp.forward(gpa, batch);
     defer output.deinit(gpa);
     if (output.idx.strides.out != 1) return error.NonUnitOutputStride;
     const out_size = output.idx.shape.out;
     const output_sample = output.indexAxesChecked(enum { out }, .{ .batch = 0 }).?;
-    log.info("Logits:\n{any}", .{output_sample.buf[0..out_size]});
+    log.debug("Logits:\n{any}", .{output_sample.buf[0..out_size]});
+
     softmaxInplace(f32, output);
-    log.info("Probs:\n{any}", .{output_sample.buf[0..out_size]});
+    log.debug("Probs:\n{any}", .{output_sample.buf[0..out_size]});
 
     // Calculate accuracy
     var n_correct: usize = 0;
@@ -156,36 +157,13 @@ fn MLP(comptime Scalar_: type) type {
     const MlpInputConst = NamedArrayConst(InputAxis, Scalar_);
     const MlpOutput = NamedArray(OutputAxis, Scalar_);
 
-    // Owns its data. Must call `deinit()`.
+    // Borrows tensor storage. Owns only the layer metadata slice.
     const Buffer_ = struct {
         const Scalar = Scalar_;
 
         layers: []const Layer(Scalar),
 
-        pub fn initAlloc(al: mem.Allocator, layer_sizes: []const usize) !@This() {
-            const n_layers = layer_sizes.len - 1;
-            const layers = try al.alloc(Layer(Scalar), n_layers);
-            for (layer_sizes[0..n_layers], layer_sizes[1..], layers) |lin, lout, *layer| {
-                const weights = try NamedArray(WeightsAxis, Scalar).initAlloc(al, .{
-                    .in = lin,
-                    .out = lout,
-                });
-                const biases = try NamedArray(BiasAxis, Scalar).initAlloc(al, .{
-                    .out = lout,
-                });
-                layer.* = .{
-                    .weights_2d = weights,
-                    .biases_1d = biases,
-                };
-            }
-            return .{ .layers = layers };
-        }
-
         pub fn deinit(self: @This(), al: mem.Allocator) void {
-            for (self.layers) |layer| {
-                layer.biases_1d.deinit(al);
-                layer.weights_2d.deinit(al);
-            }
             al.free(self.layers);
         }
     };
@@ -204,7 +182,7 @@ fn MLP(comptime Scalar_: type) type {
             const n_relu_layers = self.buffer.layers.len - 1; // no activation in final layer
             for (self.buffer.layers, 0..) |layer, li| {
                 const batch_size = input.idx.shape.batch;
-                const biases_2d: MlpOutput = layer.biases_1d.conformAxes(OutputAxis).broadcastAxis(.batch, batch_size);
+                const biases_2d = layer.biases_1d.conformAxes(OutputAxis).broadcastAxis(.batch, batch_size);
                 const output = try biases_2d.toContiguous(al);
                 blas.gemm(
                     Scalar,
@@ -212,7 +190,7 @@ fn MLP(comptime Scalar_: type) type {
                     WeightsAxis,
                     OutputAxis,
                     input,
-                    layer.weights_2d.asConst(),
+                    layer.weights_2d,
                     output,
                     .{},
                 );
@@ -238,8 +216,8 @@ fn MLP(comptime Scalar_: type) type {
 
 fn Layer(comptime Scalar: type) type {
     return struct {
-        weights_2d: NamedArray(WeightsAxis, Scalar),
-        biases_1d: NamedArray(BiasAxis, Scalar),
+        weights_2d: NamedArrayConst(WeightsAxis, Scalar),
+        biases_1d: NamedArrayConst(BiasAxis, Scalar),
     };
 }
 
@@ -308,29 +286,23 @@ const DacorvoMlpHeader = struct {
     pub fn readMlpBuffer(self: @This(), comptime Scalar: type, al: mem.Allocator, tensor_data: []const u8) !MLP(Scalar).Buffer {
         const layer_names = [_][]const u8{ "input_layer", "mid_layer", "output_layer" };
         const layers = try al.alloc(Layer(Scalar), layer_names.len);
-        var initialized_layers: usize = 0;
-        errdefer {
-            for (layers[0..initialized_layers]) |layer| {
-                layer.biases_1d.deinit(al);
-                layer.weights_2d.deinit(al);
-            }
-            al.free(layers);
-        }
+        errdefer al.free(layers);
 
         inline for (layer_names, 0..) |lname, li| {
             const bias_name = lname ++ ".bias";
             const bias_info: SafetensorsInfo = @field(self, bias_name);
             if (bias_info.shape.len != 1) return error.InvalidTensorShape;
-            const bias_na = try NamedArray(BiasAxis, Scalar).initAlloc(al, .{ .out = bias_info.shape[0] });
-            errdefer bias_na.deinit(al);
-            try @This().copyTensorIntoScalars(Scalar, bias_na.buf, bias_info, tensor_data);
+            const bias_slice = try viewSafetensorsBytesAsScalars(Scalar, bias_info, tensor_data);
+            const bias_na = NamedArrayConst(BiasAxis, Scalar).init(
+                .initContiguous(.{ .out = bias_info.shape[0] }),
+                bias_slice,
+            );
 
             const weight_name = lname ++ ".weight";
             const weight_info: SafetensorsInfo = @field(self, weight_name);
             if (weight_info.shape.len != 2) return error.InvalidTensorShape;
-            const weight_buf = try al.alloc(Scalar, weight_info.shape[0] * weight_info.shape[1]);
-            errdefer al.free(weight_buf);
-            const weight_na = NamedArray(WeightsAxis, Scalar).init(.{
+            const weight_slice = try viewSafetensorsBytesAsScalars(Scalar, weight_info, tensor_data);
+            const weight_na = NamedArrayConst(WeightsAxis, Scalar).init(.{
                 .shape = .{
                     .in = weight_info.shape[1],
                     .out = weight_info.shape[0],
@@ -339,48 +311,55 @@ const DacorvoMlpHeader = struct {
                     .in = 1,
                     .out = @intCast(weight_info.shape[1]),
                 },
-            }, weight_buf);
-            try @This().copyTensorIntoScalars(Scalar, weight_na.buf, weight_info, tensor_data);
+            }, weight_slice);
 
             layers[li] = Layer(Scalar){
                 .biases_1d = bias_na,
                 .weights_2d = weight_na,
             };
-            initialized_layers += 1;
         }
         return .{ .layers = layers };
     }
-
-    fn copyTensorIntoScalars(comptime Scalar: type, out: []Scalar, info: SafetensorsInfo, tensor_data: []const u8) !void {
-        // Safetensors always stores tensor data little-endian. We reinterpret the
-        // raw bytes as host-native scalars below, so this only works on
-        // little-endian hosts. A big-endian host would need to byte-swap.
-        comptime std.debug.assert(builtin.cpu.arch.endian() == .little);
-
-        const expected_dtype = comptime scalarSafetensorDtype(Scalar);
-        if (!mem.eql(u8, info.dtype, expected_dtype)) return error.UnexpectedTensorDType;
-
-        const begin = info.data_offsets[0];
-        const end = info.data_offsets[1];
-        if (end < begin) return error.InvalidTensorOffsets;
-        if (end > tensor_data.len) return error.TensorOffsetOutOfBounds;
-
-        const expected_n_bytes = out.len * @sizeOf(Scalar);
-        if (end - begin != expected_n_bytes) return error.UnexpectedTensorSize;
-
-        const src = tensor_data[begin..end];
-        const dst = std.mem.sliceAsBytes(out);
-        @memcpy(dst, src);
-    }
-
-    fn scalarSafetensorDtype(comptime Scalar: type) []const u8 {
-        return switch (Scalar) {
-            f16 => "F16",
-            f32 => "F32",
-            f64 => "F64",
-            else => @compileError("Unsupported Scalar type for safetensors"),
-        };
-    }
 };
+
+fn viewSafetensorsBytesAsScalars(comptime Scalar: type, info: SafetensorsInfo, tensor_data: []const u8) ![]const Scalar {
+    // Safetensors always stores tensor data little-endian. We reinterpret the
+    // raw bytes as host-native scalars below, so this only works on
+    // little-endian hosts. A big-endian host would need to byte-swap.
+    comptime std.debug.assert(builtin.cpu.arch.endian() == .little);
+
+    const expected_dtype = comptime scalarSafetensorDtype(Scalar);
+    if (!mem.eql(u8, info.dtype, expected_dtype)) return error.UnexpectedTensorDType;
+
+    const begin = info.data_offsets[0];
+    const end = info.data_offsets[1];
+    if (end < begin) return error.InvalidTensorOffsets;
+    if (end > tensor_data.len) return error.TensorOffsetOutOfBounds;
+
+    const expected_n_scalars = tensorElementCount(info.shape);
+    const expected_n_bytes = expected_n_scalars * @sizeOf(Scalar);
+    if (end - begin != expected_n_bytes) return error.UnexpectedTensorSize;
+
+    if (begin % @alignOf(Scalar) != 0) return error.UnalignedTensorData;
+
+    const src = tensor_data[begin..end];
+    const aligned_src: []align(@alignOf(Scalar)) const u8 = @alignCast(src);
+    return std.mem.bytesAsSlice(Scalar, aligned_src);
+}
+
+fn tensorElementCount(shape: []const usize) usize {
+    var n: usize = 1;
+    for (shape) |d| n *= d;
+    return n;
+}
+
+fn scalarSafetensorDtype(comptime Scalar: type) []const u8 {
+    return switch (Scalar) {
+        f16 => "F16",
+        f32 => "F32",
+        f64 => "F64",
+        else => @compileError("Unsupported Scalar type for safetensors"),
+    };
+}
 
 const SafetensorsInfo = struct { dtype: []u8, shape: []usize, data_offsets: [2]usize };

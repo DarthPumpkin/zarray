@@ -6,3 +6,9 @@
 # Agent skills. Might start tracking these later once they solidify
 /.agents
 /skills-lock.json
+
+# Zed
+/.zed
+
+/data
+/docs/agent-sesions

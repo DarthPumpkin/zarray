@@ -1,8 +1,7 @@
-// Improvements:
-// - Make MLP buffer borrow instead of owning
+// To do (nice to have):
 // - Implement mmap
-// - implement ReLU with iter slices
-// - implement ReLU with simd
+//
+// Sources for weights and data
 // Weights: https://huggingface.co/dacorvo/mnist-mlp/resolve/main/model.safetensors
 // Test images: https://github.com/aimacode/aima-data/raw/f6cbea61ad0c21c6b7be826d17af5a8d3a7c2c86/MNIST/Digits/t10k-images-idx3-ubyte
 // Test labels: https://github.com/aimacode/aima-data/raw/f6cbea61ad0c21c6b7be826d17af5a8d3a7c2c86/MNIST/Digits/t10k-labels-idx1-ubyte
@@ -71,6 +70,8 @@ pub fn main(init: std.process.Init) !void {
         log.err("Image count ({d}) does not match label count ({d})", .{ images_shape[0], labels_shape[0] });
         return error.ImageLabelCountMismatch;
     }
+    const batch_size = images_shape[0];
+    const feature_dim = images_shape[1] * images_shape[2];
 
     // Load weights
     var weights_buffer: [4096]u8 = undefined;
@@ -86,26 +87,25 @@ pub fn main(init: std.process.Init) !void {
     defer mlp_header.deinit();
     log.debug("Parsed Safetensors header:\n{any}", .{mlp_header.value});
     const tensor_data_len = mlp_header.value.maxTensorDataEnd();
-    // This model is loaded as f32, so 4-byte alignment is sufficient
+    // This model's tensors are homogeneous f32, so 4-byte alignment is sufficient
     const tensor_align = comptime mem.Alignment.fromByteUnits(@alignOf(f32));
     const tensor_data = try gpa.alignedAlloc(u8, tensor_align, tensor_data_len);
     defer gpa.free(tensor_data);
     try weights_reader.interface.readSliceAll(tensor_data);
-    const mlp_buffer = try mlp_header.value.readMlpBuffer(f32, gpa, tensor_data);
-    defer mlp_buffer.deinit(gpa);
+    const mlp = try mlp_header.value.readMlpBuffer(f32, gpa, tensor_data);
+    defer mlp.deinit(gpa);
 
     // Prepare network inputs
     const images_proper = try gpa.alloc(f32, images_shape[0] * images_shape[1] * images_shape[2]);
     defer gpa.free(images_proper);
+    const inv_255: f32 = 1.0 / 255.0;
+    const inv_stddev: f32 = 1.0 / stddev;
     for (images_bytes, images_proper) |byt, *pro| {
         const x: f32 = @floatFromInt(byt);
-        pro.* = (x / 255 - mean) / stddev;
+        pro.* = (x * inv_255 - mean) * inv_stddev;
     }
     const batch = NamedArrayConst(InputAxis, f32).init(
-        .initContiguous(.{
-            .batch = labels_shape[0],
-            .in = images_shape[1] * images_shape[2],
-        }),
+        .initContiguous(.{ .batch = batch_size, .in = feature_dim }),
         images_proper,
     );
     var batch_sample = batch;
@@ -113,8 +113,7 @@ pub fn main(init: std.process.Init) !void {
     log.debug("Batch sample (two images):\n{f}", .{batch_sample});
 
     // Run through the network
-    const mlp = MLP(f32){ .buffer = mlp_buffer };
-    log.debug("Biases in last layer:\n{f}", .{mlp.buffer.layers[mlp.buffer.layers.len - 1].biases_1d});
+    log.debug("Biases in last layer:\n{f}", .{mlp.layers[mlp.layers.len - 1].biases_1d});
     const output = try mlp.forward(gpa, batch);
     defer output.deinit(gpa);
     if (output.idx.strides.out != 1) return error.NonUnitOutputStride;
@@ -140,7 +139,6 @@ pub fn main(init: std.process.Init) !void {
                 best_class = j;
             }
         }
-
         const label: usize = labels[b];
         if (best_class == label) {
             n_correct += 1;
@@ -153,37 +151,26 @@ pub fn main(init: std.process.Init) !void {
     log.info("Average probability assigned to the true label: {d}", .{avg_prob});
 }
 
+// Borrows tensor storage. Owns only the layer metadata slice.
 fn MLP(comptime Scalar_: type) type {
     const MlpInputConst = NamedArrayConst(InputAxis, Scalar_);
     const MlpOutput = NamedArray(OutputAxis, Scalar_);
 
-    // Borrows tensor storage. Owns only the layer metadata slice.
-    const Buffer_ = struct {
-        const Scalar = Scalar_;
-
-        layers: []const Layer(Scalar),
-
-        pub fn deinit(self: @This(), al: mem.Allocator) void {
-            al.free(self.layers);
-        }
-    };
-
     return struct {
         pub const Scalar: type = Scalar_;
-        pub const Buffer: type = Buffer_;
 
-        buffer: Buffer,
+        layers: []const Layer(Scalar),
 
         pub fn forward(self: @This(), al: mem.Allocator, batch: MlpInputConst) !MlpOutput {
             var input: MlpInputConst = batch;
             var owned_input_buf: ?[]Scalar = null;
             errdefer if (owned_input_buf) |buf| al.free(buf);
 
-            const n_relu_layers = self.buffer.layers.len - 1; // no activation in final layer
-            for (self.buffer.layers, 0..) |layer, li| {
+            const n_relu_layers = self.layers.len - 1; // no activation in final layer
+            for (self.layers, 0..) |layer, li| {
                 const batch_size = input.idx.shape.batch;
-                const biases_2d = layer.biases_1d.conformAxes(OutputAxis).broadcastAxis(.batch, batch_size);
-                const output = try biases_2d.toContiguous(al);
+                const biases_broadcast = layer.biases_1d.conformAxes(OutputAxis).broadcastAxis(.batch, batch_size);
+                const output = try biases_broadcast.toContiguous(al);
                 blas.gemm(
                     Scalar,
                     InputAxis,
@@ -195,10 +182,8 @@ fn MLP(comptime Scalar_: type) type {
                     .{},
                 );
                 if (li < n_relu_layers) {
-                    std.debug.assert(output.idx.isContiguous());
-                    for (output.buf) |*x| {
-                        x.* = relu(x.*);
-                    }
+                    std.debug.assert(output.idx.isContiguous()); // guaranteed by construction
+                    for (output.buf) |*x| x.* = relu(x.*);
                 }
 
                 if (owned_input_buf) |buf| al.free(buf);
@@ -210,6 +195,10 @@ fn MLP(comptime Scalar_: type) type {
             const final_buf = owned_input_buf orelse return error.EmptyModel;
             owned_input_buf = null;
             return MlpOutput.init(input.idx.rename(OutputAxis, &.{.{ .old = "in", .new = "out" }}), final_buf);
+        }
+
+        pub fn deinit(self: @This(), al: mem.Allocator) void {
+            al.free(self.layers);
         }
     };
 }
@@ -283,7 +272,7 @@ const DacorvoMlpHeader = struct {
         return max_end;
     }
 
-    pub fn readMlpBuffer(self: @This(), comptime Scalar: type, al: mem.Allocator, tensor_data: []const u8) !MLP(Scalar).Buffer {
+    pub fn readMlpBuffer(self: @This(), comptime Scalar: type, al: mem.Allocator, tensor_data: []const u8) !MLP(Scalar) {
         const layer_names = [_][]const u8{ "input_layer", "mid_layer", "output_layer" };
         const layers = try al.alloc(Layer(Scalar), layer_names.len);
         errdefer al.free(layers);

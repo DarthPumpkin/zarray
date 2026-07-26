@@ -82,11 +82,6 @@ pub fn main(init: std.process.Init) !void {
     const weights_header_buffer = try gpa.alloc(u8, weights_header_size);
     defer gpa.free(weights_header_buffer);
     try weights_reader.interface.readSliceAll(weights_header_buffer);
-    const json_is_valid = try json.validate(gpa, weights_header_buffer);
-    if (!json_is_valid) {
-        log.err("Safetensors header is not valid JSON:\n{s}", .{weights_header_buffer});
-        return error.InvalidSafetensorsHeader;
-    }
     const mlp_header = try json.parseFromSlice(DacorvoMlpHeader, gpa, weights_header_buffer, .{});
     defer mlp_header.deinit();
     log.debug("Parsed Safetensors header:\n{any}", .{mlp_header.value});
@@ -100,13 +95,11 @@ pub fn main(init: std.process.Init) !void {
     // Prepare network inputs
     const images_proper = try gpa.alloc(f32, images_shape[0] * images_shape[1] * images_shape[2]);
     defer gpa.free(images_proper);
+    const inv_255: f32 = 1.0 / 255.0;
+    const inv_stddev: f32 = 1.0 / stddev;
     for (images_bytes, images_proper) |byt, *pro| {
-        pro.* = @floatFromInt(byt);
-    }
-    for (images_proper) |*pro| {
-        pro.* /= 255.0;
-        pro.* -= mean;
-        pro.* /= stddev;
+        const x: f32 = @floatFromInt(byt);
+        pro.* = (x * inv_255 - mean) * inv_stddev;
     }
     const batch = NamedArrayConst(InputAxis, f32).init(
         .initContiguous(.{
@@ -160,7 +153,6 @@ pub fn main(init: std.process.Init) !void {
 }
 
 fn MLP(comptime Scalar_: type) type {
-    const MlpInput = NamedArray(InputAxis, Scalar_);
     const MlpInputConst = NamedArrayConst(InputAxis, Scalar_);
     const MlpOutput = NamedArray(OutputAxis, Scalar_);
 
@@ -205,7 +197,10 @@ fn MLP(comptime Scalar_: type) type {
         buffer: Buffer,
 
         pub fn forward(self: @This(), al: mem.Allocator, batch: MlpInputConst) !MlpOutput {
-            var input: MlpInput = try batch.toContiguous(al);
+            var input: MlpInputConst = batch;
+            var owned_input_buf: ?[]Scalar = null;
+            errdefer if (owned_input_buf) |buf| al.free(buf);
+
             const n_relu_layers = self.buffer.layers.len - 1; // no activation in final layer
             for (self.buffer.layers, 0..) |layer, li| {
                 const batch_size = input.idx.shape.batch;
@@ -216,7 +211,7 @@ fn MLP(comptime Scalar_: type) type {
                     InputAxis,
                     WeightsAxis,
                     OutputAxis,
-                    input.asConst(),
+                    input,
                     layer.weights_2d.asConst(),
                     output,
                     .{},
@@ -228,10 +223,15 @@ fn MLP(comptime Scalar_: type) type {
                     }
                 }
 
-                al.free(input.buf);
-                input = output.renameAxes(InputAxis, &.{.{ .old = "out", .new = "in" }});
+                if (owned_input_buf) |buf| al.free(buf);
+                const next_input = output.renameAxes(InputAxis, &.{.{ .old = "out", .new = "in" }});
+                input = next_input.asConst();
+                owned_input_buf = next_input.buf;
             }
-            return input.renameAxes(OutputAxis, &.{.{ .old = "in", .new = "out" }});
+
+            const final_buf = owned_input_buf orelse return error.EmptyModel;
+            owned_input_buf = null;
+            return MlpOutput.init(input.idx.rename(OutputAxis, &.{.{ .old = "in", .new = "out" }}), final_buf);
         }
     };
 }

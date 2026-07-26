@@ -325,12 +325,235 @@ fn flatGeneric(self: anytype) ?@TypeOf(self.buf) {
     return self.buf[self.idx.offset..][0..self.idx.count()];
 }
 
+/// True when iterating the view in axis declaration order (last axis fastest)
+/// matches the physical order of a single forward flat slice.
+fn isDefaultContiguousLayout(index: anytype) bool {
+    const fields = @typeInfo(@TypeOf(index.shape)).@"struct".fields;
+    var expected_stride: isize = 1;
+
+    comptime var axis: usize = fields.len;
+    inline while (axis > 0) {
+        axis -= 1;
+        const field = fields[axis];
+        const dim = @field(index.shape, field.name);
+        const stride = @as(isize, @field(index.strides, field.name));
+
+        // Unit-length axes do not affect linearization order.
+        if (dim > 1 and stride != expected_stride) return false;
+        expected_stride *= @as(isize, @intCast(dim));
+    }
+    return true;
+}
+
+const CopySpan = struct {
+    src_offset: usize,
+    dst_offset: usize,
+    len: usize,
+    repeats: usize = 1,
+    dst_stride: usize = 0,
+};
+
+/// True when axes `start_axis..rank` form a forward default-contiguous region.
+/// Unit-size axes are ignored (their stride does not affect element order).
+fn isPositiveContiguousTail(comptime rank: usize, shape: [rank]usize, strides: [rank]isize, start_axis: usize) bool {
+    var expected_stride: usize = 1;
+    var axis: usize = rank;
+    while (axis > start_axis) {
+        axis -= 1;
+        const stride = strides[axis];
+        if (stride < 0) return false;
+
+        const dim = shape[axis];
+        if (dim > 1 and stride != @as(isize, @intCast(expected_stride))) return false;
+        expected_stride *= dim;
+    }
+    return true;
+}
+
+fn ContiguousCopySpanIterator(comptime Index: type) type {
+    const field_names = comptime std.meta.fieldNames(Index.Axis);
+    const rank = field_names.len;
+
+    const Frame = struct {
+        axis: usize,
+        src_index: isize,
+        dst_offset: usize,
+        next_i: usize = 0,
+    };
+
+    return struct {
+        shape: [rank]usize = undefined,
+        strides: [rank]isize = undefined,
+        suffix_counts: [rank + 1]usize = undefined,
+        stack: [rank + 1]Frame = undefined,
+        stack_len: usize = 0,
+        supported: bool = true,
+
+        pub fn init(index: Index) @This() {
+            var self: @This() = .{};
+            inline for (field_names, 0..) |fname, axis| {
+                self.shape[axis] = @field(index.shape, fname);
+                const stride = @as(isize, @field(index.strides, fname));
+                self.strides[axis] = stride;
+                if (stride < 0) self.supported = false;
+            }
+            if (!self.supported) return self;
+
+            self.suffix_counts[rank] = 1;
+            var axis: usize = rank;
+            while (axis > 0) {
+                axis -= 1;
+                self.suffix_counts[axis] = self.suffix_counts[axis + 1] * self.shape[axis];
+            }
+
+            if (self.suffix_counts[0] == 0) return self;
+
+            self.stack[0] = .{
+                .axis = 0,
+                .src_index = @intCast(index.offset),
+                .dst_offset = 0,
+                .next_i = 0,
+            };
+            self.stack_len = 1;
+            return self;
+        }
+
+        pub fn next(self: *@This()) ?CopySpan {
+            if (!self.supported) return null;
+
+            while (self.stack_len > 0) {
+                const top_i = self.stack_len - 1;
+                const frame = &self.stack[top_i];
+
+                if (frame.axis == rank) {
+                    std.debug.assert(frame.src_index >= 0);
+                    self.stack_len -= 1;
+                    return .{
+                        .src_offset = @intCast(frame.src_index),
+                        .dst_offset = frame.dst_offset,
+                        .len = 1,
+                    };
+                }
+
+                const axis = frame.axis;
+                const tail_len = self.suffix_counts[axis];
+                if (tail_len == 0) {
+                    self.stack_len -= 1;
+                    continue;
+                }
+
+                // If all remaining axes are forward contiguous, emit a single
+                // full-tail span.
+                if (isPositiveContiguousTail(rank, self.shape, self.strides, axis)) {
+                    std.debug.assert(frame.src_index >= 0);
+                    self.stack_len -= 1;
+                    return .{
+                        .src_offset = @intCast(frame.src_index),
+                        .dst_offset = frame.dst_offset,
+                        .len = tail_len,
+                    };
+                }
+
+                const dim = self.shape[axis];
+                const sub_len = self.suffix_counts[axis + 1];
+
+                // Broadcast axis with forward-contiguous remainder: emit one
+                // repeated span.
+                if (self.strides[axis] == 0 and dim > 0 and isPositiveContiguousTail(rank, self.shape, self.strides, axis + 1)) {
+                    std.debug.assert(frame.src_index >= 0);
+                    self.stack_len -= 1;
+                    return .{
+                        .src_offset = @intCast(frame.src_index),
+                        .dst_offset = frame.dst_offset,
+                        .len = sub_len,
+                        .repeats = dim,
+                        .dst_stride = sub_len,
+                    };
+                }
+
+                if (frame.next_i < dim) {
+                    const i = frame.next_i;
+                    frame.next_i += 1;
+
+                    const child = Frame{
+                        .axis = axis + 1,
+                        .src_index = frame.src_index + @as(isize, @intCast(i)) * self.strides[axis],
+                        .dst_offset = frame.dst_offset + i * sub_len,
+                        .next_i = 0,
+                    };
+                    self.stack[self.stack_len] = child;
+                    self.stack_len += 1;
+                    continue;
+                }
+
+                self.stack_len -= 1;
+            }
+
+            return null;
+        }
+    };
+}
+
+fn applyCopySpan(comptime Scalar: type, src: []const Scalar, dst: []Scalar, span: CopySpan) void {
+    std.debug.assert(span.len > 0);
+    std.debug.assert(span.repeats > 0);
+    std.debug.assert(span.src_offset + span.len <= src.len);
+    if (span.repeats > 1) {
+        std.debug.assert(span.dst_stride >= span.len);
+    }
+    const total_written = if (span.repeats == 1)
+        span.len
+    else
+        (span.repeats - 1) * span.dst_stride + span.len;
+    std.debug.assert(span.dst_offset + total_written <= dst.len);
+
+    const src_slice = src[span.src_offset..][0..span.len];
+    const first_dst = dst[span.dst_offset..][0..span.len];
+    @memcpy(first_dst, src_slice);
+
+    var r: usize = 1;
+    while (r < span.repeats) : (r += 1) {
+        const rep_offset = span.dst_offset + r * span.dst_stride;
+        @memcpy(dst[rep_offset..][0..span.len], first_dst);
+    }
+}
+
+fn copyNonNegativeStridedToContiguous(comptime Scalar: type, index: anytype, src: []const Scalar, dst: []Scalar) bool {
+    const Iter = ContiguousCopySpanIterator(@TypeOf(index));
+    var iter = Iter.init(index);
+    if (!iter.supported) return false;
+
+    while (iter.next()) |span| {
+        applyCopySpan(Scalar, src, dst, span);
+    }
+    return true;
+}
+
 // Works for both NamedArray and NamedArrayConst
 fn toContiguousGeneric(comptime Axis: type, comptime Scalar: type, self: anytype, allocator: mem.Allocator) !NamedArray(Axis, Scalar) {
     const Index = @TypeOf(self.idx);
     var buf = try allocator.alloc(Scalar, self.idx.count());
     errdefer comptime unreachable;
     const new_idx = Index.initContiguous(self.idx.shape);
+
+    if (buf.len == 0) return .init(new_idx, buf);
+
+    // Fast path 1: already flat and in default (row-major by axis order)
+    // contiguous layout.
+    if (self.flat()) |flat| {
+        if (isDefaultContiguousLayout(self.idx)) {
+            @memcpy(buf, flat);
+            return .init(new_idx, buf);
+        }
+    }
+
+    // Fast path 2: non-negative strides (including broadcast via zero-stride
+    // axes), materialized using span copies.
+    if (copyNonNegativeStridedToContiguous(Scalar, self.idx, self.buf, buf)) {
+        return .init(new_idx, buf);
+    }
+
+    // Fallback for layouts with negative strides.
     {
         var i: usize = 0;
         var keys = new_idx.iterKeys();
@@ -713,6 +936,192 @@ test "flat, toContiguous" {
     const arr_cont_const = arr_cont.asConst();
     const flat_const = arr_cont_const.flat().?;
     try std.testing.expectEqualSlices(i32, &expected, flat_const);
+}
+
+test "toContiguous preserves contiguous sliced view with offset" {
+    const IJ = enum { i, j };
+    const allocator = std.testing.allocator;
+
+    var arr = try NamedArray(IJ, i32).initAlloc(allocator, .{ .i = 4, .j = 5 });
+    defer arr.deinit(allocator);
+    arr.fillArange();
+
+    // Still logically contiguous, but starts from a non-zero offset.
+    arr.idx = arr.idx.sliceAxis(.i, 1, 3);
+
+    const copy = try arr.toContiguous(allocator);
+    defer copy.deinit(allocator);
+
+    try std.testing.expect(copy.idx.isContiguous());
+    const expected = [_]i32{
+        5,  6,  7,  8,  9,
+        10, 11, 12, 13, 14,
+    };
+    try std.testing.expectEqualSlices(i32, &expected, copy.buf);
+}
+
+test "toContiguous materializes broadcastAxis view" {
+    const IJ = enum { i, j };
+    const allocator = std.testing.allocator;
+
+    const row = NamedArrayConst(IJ, i32).init(
+        .initContiguous(.{ .i = 1, .j = 4 }),
+        &[_]i32{ 7, 8, 9, 10 },
+    );
+    const broad = row.broadcastAxis(.i, 3);
+
+    const copy = try broad.toContiguous(allocator);
+    defer copy.deinit(allocator);
+
+    const expected = [_]i32{
+        7, 8, 9, 10,
+        7, 8, 9, 10,
+        7, 8, 9, 10,
+    };
+    try std.testing.expectEqualSlices(i32, &expected, copy.buf);
+}
+
+test "toContiguous reorders column-major view into default layout" {
+    const IJ = enum { i, j };
+    const allocator = std.testing.allocator;
+
+    var idx = NamedIndex(IJ).initContiguous(.{ .i = 3, .j = 2 });
+    idx.strides = .{ .i = 1, .j = 3 }; // column-major physical layout
+
+    const col_major = NamedArrayConst(IJ, i32).init(idx, &[_]i32{ 1, 0, 1, 0, 1, 1 });
+    const copy = try col_major.toContiguous(allocator);
+    defer copy.deinit(allocator);
+
+    // Logical matrix [[1,0],[0,1],[1,1]] in default contiguous layout.
+    try std.testing.expectEqualSlices(i32, &[_]i32{ 1, 0, 0, 1, 1, 1 }, copy.buf);
+}
+
+test "toContiguous handles aliasing without broadcast" {
+    const IJ = enum { i, j };
+    const allocator = std.testing.allocator;
+
+    // Overlapping (aliasing) layout with no zero-stride broadcast axis:
+    // both axes have stride 1. Logical values should read:
+    // [[10, 20],
+    //  [20, 30]]
+    const aliased = NamedArrayConst(IJ, i32).init(
+        .{
+            .shape = .{ .i = 2, .j = 2 },
+            .strides = .{ .i = 1, .j = 1 },
+            .offset = 0,
+        },
+        &[_]i32{ 10, 20, 30 },
+    );
+
+    const copy = try aliased.toContiguous(allocator);
+    defer copy.deinit(allocator);
+
+    try std.testing.expect(copy.idx.isContiguous());
+    try std.testing.expectEqualSlices(i32, &[_]i32{ 10, 20, 20, 30 }, copy.buf);
+}
+
+test "toContiguous materializes broadcastTo view with middle broadcast axis" {
+    const IJK = enum { i, j, k };
+    const allocator = std.testing.allocator;
+
+    const base = NamedArrayConst(IJK, i32).init(
+        .initContiguous(.{ .i = 2, .j = 1, .k = 3 }),
+        &[_]i32{ 0, 1, 2, 3, 4, 5 },
+    );
+    const broad = base.broadcastTo(.{ .i = 2, .j = 4, .k = 3 }).?;
+
+    const copy = try broad.toContiguous(allocator);
+    defer copy.deinit(allocator);
+
+    try std.testing.expect(copy.idx.isContiguous());
+    for (0..2) |i| {
+        for (0..4) |j| {
+            for (0..3) |k| {
+                const key: @TypeOf(copy.idx.shape) = .{ .i = i, .j = j, .k = k };
+                try std.testing.expectEqual(broad.scalarAt(key), copy.scalarAt(key));
+            }
+        }
+    }
+}
+
+test "ContiguousCopySpanIterator emits repeated span for broadcastAxis" {
+    const IJ = enum { i, j };
+    const idx = NamedIndex(IJ).initContiguous(.{ .i = 1, .j = 4 }).broadcastAxis(.i, 3);
+
+    const Iter = ContiguousCopySpanIterator(@TypeOf(idx));
+    var iter = Iter.init(idx);
+    try std.testing.expect(iter.supported);
+
+    const span = iter.next().?;
+    try std.testing.expectEqual(@as(usize, 0), span.src_offset);
+    try std.testing.expectEqual(@as(usize, 0), span.dst_offset);
+    try std.testing.expectEqual(@as(usize, 4), span.len);
+    try std.testing.expectEqual(@as(usize, 3), span.repeats);
+    try std.testing.expectEqual(@as(usize, 4), span.dst_stride);
+    try std.testing.expect(iter.next() == null);
+}
+
+test "ContiguousCopySpanIterator emits per-outer repeated spans" {
+    const IJK = enum { i, j, k };
+    const base = NamedIndex(IJK).initContiguous(.{ .i = 2, .j = 1, .k = 3 });
+    const idx = base.broadcastAxis(.j, 4);
+
+    const Iter = ContiguousCopySpanIterator(@TypeOf(idx));
+    var iter = Iter.init(idx);
+    try std.testing.expect(iter.supported);
+
+    const s0 = iter.next().?;
+    try std.testing.expectEqual(@as(usize, 0), s0.src_offset);
+    try std.testing.expectEqual(@as(usize, 0), s0.dst_offset);
+    try std.testing.expectEqual(@as(usize, 3), s0.len);
+    try std.testing.expectEqual(@as(usize, 4), s0.repeats);
+    try std.testing.expectEqual(@as(usize, 3), s0.dst_stride);
+
+    const s1 = iter.next().?;
+    try std.testing.expectEqual(@as(usize, 3), s1.src_offset);
+    try std.testing.expectEqual(@as(usize, 12), s1.dst_offset);
+    try std.testing.expectEqual(@as(usize, 3), s1.len);
+    try std.testing.expectEqual(@as(usize, 4), s1.repeats);
+    try std.testing.expectEqual(@as(usize, 3), s1.dst_stride);
+
+    try std.testing.expect(iter.next() == null);
+}
+
+test "ContiguousCopySpanIterator supports non-broadcast aliasing" {
+    const IJ = enum { i, j };
+    const idx = NamedIndex(IJ){
+        .shape = .{ .i = 2, .j = 2 },
+        .strides = .{ .i = 1, .j = 1 },
+        .offset = 0,
+    };
+
+    const Iter = ContiguousCopySpanIterator(@TypeOf(idx));
+    var iter = Iter.init(idx);
+    try std.testing.expect(iter.supported);
+
+    const s0 = iter.next().?;
+    try std.testing.expectEqual(@as(usize, 0), s0.src_offset);
+    try std.testing.expectEqual(@as(usize, 0), s0.dst_offset);
+    try std.testing.expectEqual(@as(usize, 2), s0.len);
+    try std.testing.expectEqual(@as(usize, 1), s0.repeats);
+
+    const s1 = iter.next().?;
+    try std.testing.expectEqual(@as(usize, 1), s1.src_offset);
+    try std.testing.expectEqual(@as(usize, 2), s1.dst_offset);
+    try std.testing.expectEqual(@as(usize, 2), s1.len);
+    try std.testing.expectEqual(@as(usize, 1), s1.repeats);
+
+    try std.testing.expect(iter.next() == null);
+}
+
+test "ContiguousCopySpanIterator rejects negative strides" {
+    const IJ = enum { i, j };
+    const idx = NamedIndex(IJ).initContiguous(.{ .i = 3, .j = 4 }).strideAxis(.i, -1);
+
+    const Iter = ContiguousCopySpanIterator(@TypeOf(idx));
+    var iter = Iter.init(idx);
+    try std.testing.expect(!iter.supported);
+    try std.testing.expect(iter.next() == null);
 }
 
 test "NamedArray toContiguous from reversed view retains logical order" {

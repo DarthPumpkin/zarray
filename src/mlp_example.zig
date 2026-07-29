@@ -25,6 +25,8 @@ pub fn main(init: std.process.Init) !void {
     const gpa = init.gpa;
     const io = init.io;
 
+    const batch_size = 500;
+
     // Open files
     var args = init.minimal.args.iterate();
     _ = args.next();
@@ -44,33 +46,7 @@ pub fn main(init: std.process.Init) !void {
     const labels_file = try datadir.openFile(io, labels_path, .{ .mode = .read_only });
     defer labels_file.close(io);
 
-    // Load images
-    var images_buffer: [4096]u8 = undefined;
-    var images_reader = images_file.reader(io, &images_buffer);
-    const images_shape = try readIdxHeader(&images_reader.interface, 3, 2051);
-    log.info("Images shape: {any}", .{images_shape});
-    const images_bytes = try images_reader.interface.readAlloc(
-        gpa,
-        images_shape[0] * images_shape[1] * images_shape[2],
-    );
-    defer gpa.free(images_bytes);
-
-    // Load labels
-    var labels_buffer: [4096]u8 = undefined;
-    var labels_reader = labels_file.reader(io, &labels_buffer);
-    const labels_shape = try readIdxHeader(&labels_reader.interface, 1, 2049);
-    log.info("Labels shape: {any}", .{labels_shape});
-    const labels = try labels_reader.interface.readAlloc(gpa, labels_shape[0]);
-    defer gpa.free(labels);
-
-    if (images_shape[0] != labels_shape[0]) {
-        log.err("Image count ({d}) does not match label count ({d})", .{ images_shape[0], labels_shape[0] });
-        return error.ImageLabelCountMismatch;
-    }
-    const batch_size = images_shape[0];
-    const feature_dim = images_shape[1] * images_shape[2];
-
-    // Load weights
+    // Memory-map the tensors
     var mmap = try checkpoint_file.createMemoryMap(io, .{ .len = try checkpoint_file.length(io) });
     defer mmap.destroy(io);
     try mmap.read(io);
@@ -85,58 +61,87 @@ pub fn main(init: std.process.Init) !void {
     const mlp = try mlp_header.value.readMlpBuffer(f32, gpa, tensor_data);
     defer mlp.deinit(gpa);
 
-    // Prepare network inputs
-    const images_proper = try gpa.alloc(f32, images_shape[0] * images_shape[1] * images_shape[2]);
-    defer gpa.free(images_proper);
-    const inv_255: f32 = 1.0 / 255.0;
-    const inv_stddev: f32 = 1.0 / stddev;
-    for (images_bytes, images_proper) |byt, *pro| {
-        const x: f32 = @floatFromInt(byt);
-        pro.* = (x * inv_255 - mean) * inv_stddev;
+    // Load data headers
+    var images_buffer: [4096]u8 = undefined;
+    var images_reader = images_file.reader(io, &images_buffer);
+    const images_shape = try readIdxHeader(&images_reader.interface, 3, 2051);
+    log.info("Images shape: {any}", .{images_shape});
+    var labels_buffer: [4096]u8 = undefined;
+    var labels_reader = labels_file.reader(io, &labels_buffer);
+    const labels_shape = try readIdxHeader(&labels_reader.interface, 1, 2049);
+    log.info("Labels shape: {any}", .{labels_shape});
+
+    if (images_shape[0] != labels_shape[0]) {
+        log.err("Image count ({d}) does not match label count ({d})", .{ images_shape[0], labels_shape[0] });
+        return error.ImageLabelCountMismatch;
     }
-    const batch = NamedArrayConst(InputAxis, f32).init(
-        .initContiguous(.{ .batch = batch_size, .in = feature_dim }),
-        images_proper,
-    );
-    var batch_sample = batch;
-    batch_sample.idx = batch_sample.idx.sliceAxis(.batch, 0, 2).sliceAxis(.in, 28 * 14 + 7, 28 * 14 + 21);
-    log.debug("Batch sample (two images):\n{f}", .{batch_sample});
+    const total_n = images_shape[0];
+    const feature_dim = images_shape[1] * images_shape[2];
 
-    // Run through the network
-    log.debug("Biases in last layer:\n{f}", .{mlp.layers[mlp.layers.len - 1].biases_1d});
-    const output = try mlp.forward(gpa, batch);
-    defer output.deinit(gpa);
-    if (output.idx.strides.out != 1) return error.NonUnitOutputStride;
-    const out_size = output.idx.shape.out;
-    const output_sample = output.indexAxesChecked(enum { out }, .{ .batch = 0 }).?;
-    log.debug("Logits:\n{any}", .{output_sample.buf[0..out_size]});
-
-    softmaxInplace(f32, output);
-    log.debug("Probs:\n{any}", .{output_sample.buf[0..out_size]});
-
-    // Calculate accuracy
     var n_correct: usize = 0;
     var total_prob: f64 = 0;
-    for (0..labels_shape[0]) |b| {
-        const row_start = output.idx.linear(.{ .batch = b, .out = 0 });
-        const row = output.buf[row_start..];
-        var best_class: usize = 0;
-        var best_value = row[0];
-        for (1..out_size) |j| {
-            const value = row[j];
-            if (value > best_value) {
-                best_value = value;
-                best_class = j;
+    var n_processed: usize = 0;
+    while (n_processed < total_n) : (n_processed += @min(batch_size, total_n - n_processed)) {
+        var arena_al = std.heap.ArenaAllocator.init(gpa);
+        defer arena_al.deinit();
+        const arena = arena_al.allocator();
+
+        // Prepare network inputs
+        const actual_batch_size = @min(batch_size, total_n - n_processed);
+        const images_bytes = try images_reader.interface.readAlloc(
+            arena,
+            actual_batch_size * images_shape[1] * images_shape[2],
+        );
+        const images_proper = try arena.alloc(f32, actual_batch_size * images_shape[1] * images_shape[2]);
+        const inv_255: f32 = 1.0 / 255.0;
+        const inv_stddev: f32 = 1.0 / stddev;
+        for (images_bytes, images_proper) |byt, *pro| {
+            const x: f32 = @floatFromInt(byt);
+            pro.* = (x * inv_255 - mean) * inv_stddev;
+        }
+        const batch = NamedArrayConst(InputAxis, f32).init(
+            .initContiguous(.{ .batch = actual_batch_size, .in = feature_dim }),
+            images_proper,
+        );
+        var batch_sample = batch;
+        batch_sample.idx = batch_sample.idx.sliceAxis(.batch, 0, 2).sliceAxis(.in, 28 * 14 + 7, 28 * 14 + 21);
+        log.debug("Batch sample (two images):\n{f}", .{batch_sample});
+        const labels = try labels_reader.interface.readAlloc(arena, actual_batch_size);
+
+        // Run through the network
+        log.debug("Biases in last layer:\n{f}", .{mlp.layers[mlp.layers.len - 1].biases_1d});
+        const output = try mlp.forward(arena, batch);
+        if (output.idx.strides.out != 1) return error.NonUnitOutputStride;
+        const out_size = output.idx.shape.out;
+        const output_sample = output.indexAxesChecked(enum { out }, .{ .batch = 0 }).?;
+        log.debug("Logits:\n{any}", .{output_sample.buf[0..out_size]});
+
+        softmaxInplace(f32, output);
+        log.debug("Probs:\n{any}", .{output_sample.buf[0..out_size]});
+
+        // Track metrics
+        for (0..actual_batch_size) |b| {
+            const row_start = output.idx.linear(.{ .batch = b, .out = 0 });
+            const row = output.buf[row_start..];
+            var best_class: usize = 0;
+            var best_value = row[0];
+            for (1..out_size) |j| {
+                const value = row[j];
+                if (value > best_value) {
+                    best_value = value;
+                    best_class = j;
+                }
             }
+            const label: usize = labels[b];
+            if (best_class == label) {
+                n_correct += 1;
+            }
+            total_prob += row[label];
         }
-        const label: usize = labels[b];
-        if (best_class == label) {
-            n_correct += 1;
-        }
-        total_prob += row[label];
     }
-    const accuracy: f64 = @as(f64, @floatFromInt(n_correct)) / labels_shape[0];
-    const avg_prob = total_prob / labels_shape[0];
+
+    const accuracy: f64 = @as(f64, @floatFromInt(n_correct)) / total_n;
+    const avg_prob = total_prob / total_n;
     log.info("Accuracy: {d}", .{accuracy});
     log.info("Average probability assigned to the true label: {d}", .{avg_prob});
 }

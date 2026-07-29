@@ -105,24 +105,24 @@ pub fn main(init: std.process.Init) !void {
         );
         var batch_sample = batch;
         batch_sample.idx = batch_sample.idx.sliceAxis(.batch, 0, 2).sliceAxis(.in, 28 * 14 + 7, 28 * 14 + 21);
-        log.debug("Batch sample (two images):\n{f}", .{batch_sample});
+        log.debug("Batch sample (two images):\n{f}", .{batch_sample.fmtScalars("d:.4")});
         const labels = try labels_reader.interface.readAlloc(arena, actual_batch_size);
 
         // Run through the network
-        log.debug("Biases in last layer:\n{f}", .{mlp.layers[mlp.layers.len - 1].biases_1d});
+        log.debug("Biases in last layer:\n{f}", .{mlp.layers[mlp.layers.len - 1].biases_1d.fmtScalars("d:.4")});
         const output = try mlp.forward(arena, batch);
         if (output.idx.strides.out != 1) return error.NonUnitOutputStride;
         const out_size = output.idx.shape.out;
         const output_sample = output.indexAxesChecked(enum { out }, .{ .batch = 0 }).?;
-        log.debug("Logits:\n{any}", .{output_sample.buf[0..out_size]});
+        log.debug("Logits:\n{f}", .{output_sample.fmtScalars("d:.4")});
 
         softmaxInplace(f32, output);
-        log.debug("Probs:\n{any}", .{output_sample.buf[0..out_size]});
+        log.debug("Probs:\n{f}", .{output_sample.fmtScalars("d:.4")});
 
         // Track metrics
         for (0..actual_batch_size) |b| {
-            const row_start = output.idx.linear(.{ .batch = b, .out = 0 });
-            const row = output.buf[row_start..];
+            // Output is `out`-contiguous by construction
+            const row = output.indexAxes(enum { out }, .{ .batch = b }).flat().?;
             var best_class: usize = 0;
             var best_value = row[0];
             for (1..out_size) |j| {
@@ -178,7 +178,7 @@ fn MLP(comptime Scalar_: type) type {
                 );
                 if (li < n_relu_layers) {
                     std.debug.assert(output.idx.isContiguous()); // guaranteed by construction
-                    for (output.buf) |*x| x.* = relu(x.*);
+                    for (output.flat().?) |*x| x.* = relu(x.*);
                 }
 
                 if (owned_input_buf) |buf| al.free(buf);
@@ -228,22 +228,21 @@ fn relu(x: anytype) @TypeOf(x) {
 }
 
 fn softmaxInplace(comptime Scalar: type, x: NamedArray(OutputAxis, Scalar)) void {
-    std.debug.assert(x.idx.strides.out == 1);
-    const out_size = x.idx.shape.out;
     for (0..x.idx.shape.batch) |b| {
-        const row_start = x.idx.linear(.{ .batch = b, .out = 0 });
-        const row = x.buf[row_start..][0..out_size];
+        const row = x.indexAxes(enum { out }, .{ .batch = b });
+        std.debug.assert(row.idx.isContiguous());
+        const row_buf = row.flat().?;
 
         var max: Scalar = -std.math.inf(Scalar);
-        for (row) |v| max = @max(max, v);
+        for (row_buf) |v| max = @max(max, v);
 
         var sum: Scalar = 0;
-        for (row) |*v| {
+        for (row_buf) |*v| {
             v.* = @exp(v.* - max);
             sum += v.*;
         }
 
-        for (row) |*v| v.* /= sum;
+        for (row_buf) |*v| v.* /= sum;
     }
 }
 

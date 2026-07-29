@@ -1,6 +1,3 @@
-// To do (nice to have):
-// - Implement mmap
-//
 // Sources for weights and data
 // Weights: https://huggingface.co/dacorvo/mnist-mlp/resolve/main/model.safetensors
 // Test images: https://github.com/aimacode/aima-data/raw/f6cbea61ad0c21c6b7be826d17af5a8d3a7c2c86/MNIST/Digits/t10k-images-idx3-ubyte
@@ -40,7 +37,7 @@ pub fn main(init: std.process.Init) !void {
     const checkpoint_path = "model.safetensors";
     const images_path = "t10k-images-idx3-ubyte";
     const labels_path = "t10k-labels-idx1-ubyte";
-    const checkpoint_file = try datadir.openFile(io, checkpoint_path, .{ .mode = .read_only });
+    const checkpoint_file = try datadir.openFile(io, checkpoint_path, .{ .mode = .read_write });
     defer checkpoint_file.close(io);
     const images_file = try datadir.openFile(io, images_path, .{ .mode = .read_only });
     defer images_file.close(io);
@@ -74,24 +71,17 @@ pub fn main(init: std.process.Init) !void {
     const feature_dim = images_shape[1] * images_shape[2];
 
     // Load weights
-    var weights_buffer: [4096]u8 = undefined;
-    var weights_reader = checkpoint_file.reader(io, &weights_buffer);
-    var weights_header_size_buffer: [8]u8 = undefined;
-    try weights_reader.interface.readSliceAll(&weights_header_size_buffer);
-    const weights_header_size = std.mem.readInt(u64, &weights_header_size_buffer, .little);
+    var mmap = try checkpoint_file.createMemoryMap(io, .{ .len = try checkpoint_file.length(io) });
+    defer mmap.destroy(io);
+    try mmap.read(io);
+    const weights_header_size_buffer: *const [8]u8 = mmap.memory[0..8];
+    const weights_header_size = std.mem.readInt(u64, weights_header_size_buffer, .little);
     log.debug("Weights header size: {d}", .{weights_header_size});
-    const weights_header_buffer = try gpa.alloc(u8, weights_header_size);
-    defer gpa.free(weights_header_buffer);
-    try weights_reader.interface.readSliceAll(weights_header_buffer);
+    const weights_header_buffer = mmap.memory[8..][0..weights_header_size];
     const mlp_header = try json.parseFromSlice(DacorvoMlpHeader, gpa, weights_header_buffer, .{});
     defer mlp_header.deinit();
     log.debug("Parsed Safetensors header:\n{any}", .{mlp_header.value});
-    const tensor_data_len = mlp_header.value.maxTensorDataEnd();
-    // This model's tensors are homogeneous f32, so 4-byte alignment is sufficient
-    const tensor_align = comptime mem.Alignment.fromByteUnits(@alignOf(f32));
-    const tensor_data = try gpa.alignedAlloc(u8, tensor_align, tensor_data_len);
-    defer gpa.free(tensor_data);
-    try weights_reader.interface.readSliceAll(tensor_data);
+    const tensor_data: []const u8 = mmap.memory[8 + weights_header_size ..];
     const mlp = try mlp_header.value.readMlpBuffer(f32, gpa, tensor_data);
     defer mlp.deinit(gpa);
 

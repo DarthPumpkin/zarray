@@ -62,12 +62,12 @@ pub fn main(init: std.process.Init) !void {
     defer mlp.deinit(gpa);
 
     // Load data headers
-    var images_buffer: [4096]u8 = undefined;
-    var images_reader = images_file.reader(io, &images_buffer);
+    var images_header_buffer: [4096]u8 = undefined;
+    var images_reader = images_file.reader(io, &images_header_buffer);
     const images_shape = try readIdxHeader(&images_reader.interface, 3, 2051);
     log.info("Images shape: {any}", .{images_shape});
-    var labels_buffer: [4096]u8 = undefined;
-    var labels_reader = labels_file.reader(io, &labels_buffer);
+    var labels_header_buffer: [4096]u8 = undefined;
+    var labels_reader = labels_file.reader(io, &labels_header_buffer);
     const labels_shape = try readIdxHeader(&labels_reader.interface, 1, 2049);
     log.info("Labels shape: {any}", .{labels_shape});
 
@@ -78,21 +78,27 @@ pub fn main(init: std.process.Init) !void {
     const total_n = images_shape[0];
     const feature_dim = images_shape[1] * images_shape[2];
 
+    // Pre-allocate batch memory and re-use across iterations
+    const activations_buffer = try mlp.allocActivations(gpa, batch_size);
+    defer gpa.free(activations_buffer);
+    const labels_buffer = try gpa.alloc(u8, batch_size);
+    defer gpa.free(labels_buffer);
+    const images_buffer = try gpa.alloc(u8, batch_size * feature_dim);
+    defer gpa.free(images_buffer);
+    const batch_buffer = try gpa.alloc(f32, batch_size * feature_dim);
+    defer gpa.free(batch_buffer);
+
     var n_correct: usize = 0;
     var total_prob: f64 = 0;
     var n_processed: usize = 0;
+
     while (n_processed < total_n) : (n_processed += @min(batch_size, total_n - n_processed)) {
-        var arena_al = std.heap.ArenaAllocator.init(gpa);
-        defer arena_al.deinit();
-        const arena = arena_al.allocator();
+        const actual_batch_size = @min(batch_size, total_n - n_processed);
 
         // Prepare network inputs
-        const actual_batch_size = @min(batch_size, total_n - n_processed);
-        const images_bytes = try images_reader.interface.readAlloc(
-            arena,
-            actual_batch_size * images_shape[1] * images_shape[2],
-        );
-        const images_proper = try arena.alloc(f32, actual_batch_size * images_shape[1] * images_shape[2]);
+        const images_bytes = images_buffer[0 .. actual_batch_size * images_shape[1] * images_shape[2]];
+        try images_reader.interface.readSliceAll(images_bytes);
+        const images_proper = batch_buffer[0 .. actual_batch_size * images_shape[1] * images_shape[2]];
         const inv_255: f32 = 1.0 / 255.0;
         const inv_stddev: f32 = 1.0 / stddev;
         for (images_bytes, images_proper) |byt, *pro| {
@@ -104,24 +110,24 @@ pub fn main(init: std.process.Init) !void {
             images_proper,
         );
         var batch_sample = batch;
-        batch_sample.idx = batch_sample.idx.sliceAxis(.batch, 0, 2).sliceAxis(.in, 28 * 14 + 7, 28 * 14 + 21);
-        log.debug("Batch sample (two images):\n{f}", .{batch_sample.fmtScalars("d:.4")});
-        const labels = try labels_reader.interface.readAlloc(arena, actual_batch_size);
+        batch_sample.idx = batch_sample.idx.sliceAxis(.batch, 0, 2).sliceAxis(.in, 28 * 14, 29 * 14);
+        const labels = labels_buffer[0..actual_batch_size];
+        try labels_reader.interface.readSliceAll(labels);
 
         // Run through the network
-        log.debug("Biases in last layer:\n{f}", .{mlp.layers[mlp.layers.len - 1].biases_1d.fmtScalars("d:.4")});
-        const output = try mlp.forward(arena, batch);
-        if (output.idx.strides.out != 1) return error.NonUnitOutputStride;
+        const output = try mlp.forward(batch, activations_buffer);
         const out_size = output.idx.shape.out;
-        const output_sample = output.indexAxesChecked(enum { out }, .{ .batch = 0 }).?;
-        log.debug("Logits:\n{f}", .{output_sample.fmtScalars("d:.4")});
+
+        if (n_processed == 0) {
+            log.debug("Batch sample (two images, center crop):\n{f}", .{batch_sample.fmtScalars("d:.4")});
+            log.debug("Logits:\n{f}", .{output.fmtScalars("d:.4")});
+        }
 
         softmaxInplace(f32, output);
-        log.debug("Probs:\n{f}", .{output_sample.fmtScalars("d:.4")});
+        if (n_processed == 0) log.debug("Probs:\n{f}", .{output.fmtScalars("d:.4")});
 
         // Track metrics
         for (0..actual_batch_size) |b| {
-            // Output is `out`-contiguous by construction
             const row = output.indexAxes(enum { out }, .{ .batch = b }).flat().?;
             var best_class: usize = 0;
             var best_value = row[0];
@@ -156,44 +162,60 @@ fn MLP(comptime Scalar_: type) type {
 
         layers: []const Layer(Scalar),
 
-        pub fn forward(self: @This(), al: mem.Allocator, batch: MlpInputConst) !MlpOutput {
-            var input: MlpInputConst = batch;
-            var owned_input_buf: ?[]Scalar = null;
-            errdefer if (owned_input_buf) |buf| al.free(buf);
-
+        /// Forward pass.
+        /// Allocate `memory` with `allocActivations`.
+        /// Returned array is a view into `memory`.
+        pub fn forward(self: @This(), batch: MlpInputConst, memory: []Scalar) !MlpOutput {
+            const batch_size = batch.idx.shape.batch;
             const n_relu_layers = self.layers.len - 1; // no activation in final layer
+
+            var input = batch;
+            var output: MlpOutput = undefined;
             for (self.layers, 0..) |layer, li| {
-                const batch_size = input.idx.shape.batch;
-                const biases_broadcast = layer.biases_1d.conformAxes(OutputAxis).broadcastAxis(.batch, batch_size);
-                const output = try biases_broadcast.toContiguous(al);
-                blas.gemm(
-                    Scalar,
-                    InputAxis,
-                    WeightsAxis,
-                    OutputAxis,
-                    input,
-                    layer.weights_2d,
-                    output,
-                    .{},
-                );
-                if (li < n_relu_layers) {
-                    std.debug.assert(output.idx.isContiguous()); // guaranteed by construction
-                    for (output.flat().?) |*x| x.* = relu(x.*);
+                const out_size = layer.biases_1d.idx.shape.out;
+                const out_scalars = batch_size * out_size;
+                const output_buf = if (li % 2 == 0) memory[0..out_scalars] else memory[memory.len - out_scalars ..];
+                output = .{ .buf = output_buf, .idx = .initContiguous(.{
+                    .batch = batch_size,
+                    .out = out_size,
+                }) };
+                for (0..batch_size) |bi| {
+                    const row = output.indexAxes(enum { out }, .{ .batch = bi });
+                    @memcpy(row.flat().?, layer.biases_1d.buf);
                 }
+                matmul(input, layer.weights_2d, output);
 
-                if (owned_input_buf) |buf| al.free(buf);
-                const next_input = output.renameAxes(InputAxis, &.{.{ .old = "out", .new = "in" }});
-                input = next_input.asConst();
-                owned_input_buf = next_input.buf;
+                if (li < n_relu_layers) {
+                    for (output.flat().?) |*x| x.* = relu(x.*);
+                    input = output.renameAxes(InputAxis, &.{.{ .old = "out", .new = "in" }}).asConst();
+                }
             }
+            return output;
+        }
 
-            const final_buf = owned_input_buf orelse return error.EmptyModel;
-            owned_input_buf = null;
-            return MlpOutput.init(input.idx.rename(OutputAxis, &.{.{ .old = "in", .new = "out" }}), final_buf);
+        pub fn allocActivations(self: @This(), al: mem.Allocator, batch_size: usize) ![]Scalar {
+            // Pre-allocate a single buffer to hold two subsequent layers of activations.
+            // We alternate between using the head and the tail as storage for the next layer.
+            var memsize: usize = 0;
+            for (self.layers[1..]) |layer| { // the first layer's inputs don't need allocation (input arg)
+                const lsize = layer.weights_2d.idx.shape.in + layer.weights_2d.idx.shape.out;
+                memsize = @max(memsize, lsize);
+            }
+            memsize *= batch_size;
+            const memory = try al.alloc(Scalar, memsize);
+            return memory;
         }
 
         pub fn deinit(self: @This(), al: mem.Allocator) void {
             al.free(self.layers);
+        }
+
+        fn matmul(
+            x: NamedArrayConst(InputAxis, Scalar),
+            w: NamedArrayConst(WeightsAxis, Scalar),
+            out: NamedArray(OutputAxis, Scalar),
+        ) void {
+            blas.gemm(Scalar, InputAxis, WeightsAxis, OutputAxis, x, w, out, .{});
         }
     };
 }

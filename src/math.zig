@@ -1,6 +1,7 @@
 const std = @import("std");
 const mem = std.mem;
 const meta = std.meta;
+const simd = std.simd;
 
 const named_array = @import("named_array.zig");
 const named_index = @import("named_index.zig");
@@ -21,6 +22,78 @@ fn hasField(names: []const []const u8, name: []const u8) bool {
         }
     }
     return false;
+}
+
+fn isSimdDotSupported(comptime Scalar: type) bool {
+    return switch (@typeInfo(Scalar)) {
+        .int, .float => true,
+        else => false,
+    };
+}
+
+fn dotFastScalar(comptime Scalar: type, lhs: []const Scalar, rhs: []const Scalar) Scalar {
+    var acc: Scalar = 0;
+    var i: usize = 0;
+    while (i < lhs.len) : (i += 1) {
+        acc += lhs[i] * rhs[i];
+    }
+    return acc;
+}
+
+/// Fast dot product for two same-length vectors.
+///
+/// Optimizations:
+/// - Small fixed-size specializations (unrolled): 1,2,3,4,5,7,8
+/// - SIMD accumulation for larger vectors when Scalar supports SIMD
+pub fn dotFast(comptime Scalar: type, lhs: []const Scalar, rhs: []const Scalar) Scalar {
+    if (lhs.len != rhs.len)
+        @panic("dotFast: lhs/rhs length mismatch");
+
+    switch (lhs.len) {
+        0 => return 0,
+        1 => return lhs[0] * rhs[0],
+        2 => return lhs[0] * rhs[0] + lhs[1] * rhs[1],
+        3 => return lhs[0] * rhs[0] + lhs[1] * rhs[1] + lhs[2] * rhs[2],
+        4 => return lhs[0] * rhs[0] + lhs[1] * rhs[1] + lhs[2] * rhs[2] + lhs[3] * rhs[3],
+        5 => return lhs[0] * rhs[0] + lhs[1] * rhs[1] + lhs[2] * rhs[2] + lhs[3] * rhs[3] + lhs[4] * rhs[4],
+        7 => return lhs[0] * rhs[0] + lhs[1] * rhs[1] + lhs[2] * rhs[2] + lhs[3] * rhs[3] + lhs[4] * rhs[4] + lhs[5] * rhs[5] + lhs[6] * rhs[6],
+        8 => return lhs[0] * rhs[0] + lhs[1] * rhs[1] + lhs[2] * rhs[2] + lhs[3] * rhs[3] + lhs[4] * rhs[4] + lhs[5] * rhs[5] + lhs[6] * rhs[6] + lhs[7] * rhs[7],
+        else => {},
+    }
+
+    if (comptime isSimdDotSupported(Scalar)) {
+        if (comptime simd.suggestVectorLength(Scalar)) |lanes| {
+            if (comptime lanes >= 2) {
+                // Keep very short vectors scalar even when SIMD is available.
+                if (lhs.len < lanes * 2)
+                    return dotFastScalar(Scalar, lhs, rhs);
+
+                const Vec = @Vector(lanes, Scalar);
+                var vec_acc: Vec = @splat(0);
+                var i: usize = 0;
+
+                while (i + lanes <= lhs.len) : (i += lanes) {
+                    const lhs_chunk: *const [lanes]Scalar = @ptrCast(lhs.ptr + i);
+                    const rhs_chunk: *const [lanes]Scalar = @ptrCast(rhs.ptr + i);
+                    const lhs_vec: Vec = lhs_chunk.*;
+                    const rhs_vec: Vec = rhs_chunk.*;
+                    vec_acc += lhs_vec * rhs_vec;
+                }
+
+                var acc: Scalar = 0;
+                inline for (0..lanes) |lane| {
+                    acc += vec_acc[lane];
+                }
+
+                while (i < lhs.len) : (i += 1) {
+                    acc += lhs[i] * rhs[i];
+                }
+                return acc;
+            }
+        }
+    }
+
+    return dotFastScalar(Scalar, lhs, rhs);
 }
 
 /// If `idx_out` has overlapping linear indices, the output is undefined.
@@ -321,6 +394,36 @@ test "inner 2d row-major col-major" {
     // = 10 + 40 + 90 + 160 + 250 + 360 = 910
 
     try std.testing.expectEqual(result, 910);
+}
+
+test "dotFast small fixed widths" {
+    const a3 = [_]f32{ 1, 2, 3 };
+    const b3 = [_]f32{ 4, 5, 6 };
+    try std.testing.expectEqual(@as(f32, 32), dotFast(f32, &a3, &b3));
+
+    const a5 = [_]f32{ 1, 2, 3, 4, 5 };
+    const b5 = [_]f32{ 5, 4, 3, 2, 1 };
+    try std.testing.expectEqual(@as(f32, 35), dotFast(f32, &a5, &b5));
+
+    const a7 = [_]f32{ 1, 2, 3, 4, 5, 6, 7 };
+    const b7 = [_]f32{ 7, 6, 5, 4, 3, 2, 1 };
+    try std.testing.expectEqual(@as(f32, 84), dotFast(f32, &a7, &b7));
+}
+
+test "dotFast matches scalar reference" {
+    var a: [37]f32 = undefined;
+    var b: [37]f32 = undefined;
+
+    for (0..a.len) |i| {
+        a[i] = @as(f32, @floatFromInt(i + 1)) * 0.125;
+        b[i] = @as(f32, @floatFromInt((i * 3) % 11)) - 4.0;
+    }
+
+    var ref: f32 = 0;
+    for (a, b) |x, y| ref += x * y;
+
+    const got = dotFast(f32, &a, &b);
+    try std.testing.expectApproxEqAbs(ref, got, 1e-5);
 }
 
 test "einsum matrix multiplication" {

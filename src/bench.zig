@@ -8,6 +8,7 @@ const C = @cImport({
 
 const blas = za.bindings.blas;
 const tblis = za.bindings.tblis;
+const conv = za.conv;
 
 const T = f32;
 const SIMD_LANES: comptime_int = std.simd.suggestVectorLength(T) orelse 8;
@@ -36,6 +37,7 @@ const MatIK = za.NamedArray(AxisIK, T);
 const MatMK = za.NamedArray(AxisMK, T);
 const MatKN = za.NamedArray(AxisKN, T);
 const MatMN = za.NamedArray(AxisMN, T);
+const MatHW = za.NamedArray(conv.HW, T);
 
 const BenchTimer = struct {
     start_ns: u64,
@@ -63,7 +65,25 @@ const BenchResult = struct {
     }
 };
 
-pub fn main() !void {
+pub fn main(init: std.process.Init) !void {
+    const allocator = std.heap.c_allocator;
+    const args = try init.minimal.args.toSlice(init.arena.allocator());
+
+    if (args.len > 1 and std.mem.eql(u8, args[1], "conv")) {
+        try outPrint("conv2dSingleChannel benchmark (f32)\n", .{});
+        try outPrint("==================================\n", .{});
+        try outPrint("\n", .{});
+        try outPrint("Includes mixed-layout cases:\n", .{});
+        try outPrint("  - row-major vs column-major combinations\n", .{});
+        try outPrint("  - one-dimension-contiguous padded layouts\n", .{});
+        try outPrint("\n", .{});
+        try outPrint("Run with ReleaseFast for meaningful numbers:\n", .{});
+        try outPrint("  zig build -Doptimize=ReleaseFast bench -- conv\n", .{});
+        try outPrint("\n", .{});
+        try benchConv2dSingleChannel(allocator);
+        return;
+    }
+
     try outPrint("TBLIS vs CBLAS vs pure Zig benchmark (f32)\n", .{});
     try outPrint("===========================================\n", .{});
     try outPrint("\n", .{});
@@ -72,13 +92,12 @@ pub fn main() !void {
     try outPrint("\n", .{});
     try outPrint("Sizes use a larger geometric step to keep small inputs while reaching bigger ones quickly.\n", .{});
 
-    const allocator = std.heap.c_allocator;
-
     // Geometric progression (x2): includes small sizes and reaches much larger
     // inputs than before.
     const gemm_sizes = [_]usize{ 16, 32, 64, 128, 256, 512, 1024, 2048, 4096 };
 
     try benchGemm(allocator, &gemm_sizes);
+    try outPrint("\nTip: run `zig build -Doptimize=ReleaseFast bench -- conv` to benchmark conv2dSingleChannel.\n", .{});
 }
 
 fn benchDot(allocator: std.mem.Allocator, sizes: []const usize) !void {
@@ -571,6 +590,163 @@ fn benchGemm(allocator: std.mem.Allocator, sizes: []const usize) !void {
     }
 }
 
+const IndexHW = za.index.NamedIndex(conv.HW);
+
+const ConvCase = struct {
+    im_h: usize,
+    im_w: usize,
+    k_h: usize,
+    k_w: usize,
+};
+
+const ConvLayout = enum {
+    row_major,
+    col_major,
+    row_padded,
+    col_padded,
+};
+
+const ConvVariant = struct {
+    name: []const u8,
+    im_layout: ConvLayout,
+    kernel_layout: ConvLayout,
+    out_layout: ConvLayout,
+    im_pad: usize = 0,
+    kernel_pad: usize = 0,
+    out_pad: usize = 0,
+};
+
+fn benchConv2dSingleChannel(allocator: std.mem.Allocator) !void {
+    // Smaller than before (for quicker iteration), but with more repetitions per
+    // data point for lower timing noise.
+    const cases = [_]ConvCase{
+        .{ .im_h = 64, .im_w = 64, .k_h = 3, .k_w = 3 },
+        .{ .im_h = 128, .im_w = 128, .k_h = 3, .k_w = 3 },
+        .{ .im_h = 192, .im_w = 192, .k_h = 3, .k_w = 3 },
+        .{ .im_h = 192, .im_w = 192, .k_h = 7, .k_w = 7 },
+    };
+
+    const variants = [_]ConvVariant{
+        .{
+            .name = "all_row_major",
+            .im_layout = .row_major,
+            .kernel_layout = .row_major,
+            .out_layout = .row_major,
+        },
+        .{
+            .name = "im_col__kernel_row__out_row",
+            .im_layout = .col_major,
+            .kernel_layout = .row_major,
+            .out_layout = .row_major,
+        },
+        .{
+            .name = "im_row__kernel_col__out_row",
+            .im_layout = .row_major,
+            .kernel_layout = .col_major,
+            .out_layout = .row_major,
+        },
+        .{
+            .name = "im_row_padded__kernel_col__out_row",
+            .im_layout = .row_padded,
+            .kernel_layout = .col_major,
+            .out_layout = .row_major,
+            .im_pad = 7,
+        },
+        .{
+            .name = "im_col_padded__kernel_row_padded__out_col",
+            .im_layout = .col_padded,
+            .kernel_layout = .row_padded,
+            .out_layout = .col_major,
+            .im_pad = 5,
+            .kernel_pad = 3,
+        },
+    };
+
+    try outPrint("variant | im(HxW) | k(HxW) | out(HxW) | iters | ns/op | MPix/s | GMAC/s | checksum\n", .{});
+
+    for (variants) |variant| {
+        try outPrint("\n[{s}]\n", .{variant.name});
+
+        for (cases) |c| {
+            const out_h = c.im_h - c.k_h + 1;
+            const out_w = c.im_w - c.k_w + 1;
+            const out_elems = out_h * out_w;
+            const macs_per_iter = out_elems * c.k_h * c.k_w;
+            const iters = conv2dIters(macs_per_iter);
+
+            const im = try allocMatHWWithLayout(allocator, c.im_h, c.im_w, variant.im_layout, variant.im_pad);
+            defer im.deinit(allocator);
+            const kernel = try allocMatHWWithLayout(allocator, c.k_h, c.k_w, variant.kernel_layout, variant.kernel_pad);
+            defer kernel.deinit(allocator);
+            const out = try allocMatHWWithLayout(allocator, out_h, out_w, variant.out_layout, variant.out_pad);
+            defer out.deinit(allocator);
+
+            fillDeterministic(im.buf, 0xA01 + c.im_h * 17 + c.im_w * 31);
+            fillDeterministic(kernel.buf, 0xB01 + c.k_h * 19 + c.k_w * 37);
+            fillDeterministic(out.buf, 0xC01 + out_h * 13 + out_w * 29);
+
+            // Warm-up so first timed run isn't dominated by cold-start effects.
+            conv.conv2dSingleChannel(T, im.asConst(), kernel.asConst(), out);
+
+            var timer = try BenchTimer.start();
+            var i: usize = 0;
+            while (i < iters) : (i += 1) {
+                conv.conv2dSingleChannel(T, im.asConst(), kernel.asConst(), out);
+            }
+
+            const ns_total = timer.read();
+            const ns_per_iter = @as(f64, @floatFromInt(ns_total)) / @as(f64, @floatFromInt(iters));
+            const sec_per_iter = ns_per_iter / @as(f64, @floatFromInt(std.time.ns_per_s));
+            const mpix_per_s = @as(f64, @floatFromInt(out_elems)) / sec_per_iter / 1_000_000.0;
+            const gmac_per_s = @as(f64, @floatFromInt(macs_per_iter)) / sec_per_iter / 1_000_000_000.0;
+            const checksum = @as(f64, out.scalarAt(.{ .h = 0, .w = 0 })) + @as(f64, out.scalarAt(.{ .h = out_h - 1, .w = out_w - 1 }));
+
+            try outPrint(
+                "im={}x{}, k={}x{}, out={}x{}, iters={}, ns/op={d:.2}, MPix/s={d:.2}, GMAC/s={d:.2}, checksum={d:.6}\n",
+                .{ c.im_h, c.im_w, c.k_h, c.k_w, out_h, out_w, iters, ns_per_iter, mpix_per_s, gmac_per_s, checksum },
+            );
+        }
+    }
+}
+
+fn allocMatHWWithLayout(allocator: std.mem.Allocator, h: usize, w: usize, layout: ConvLayout, pad: usize) !MatHW {
+    const idx = makeHWIndex(h, w, layout, pad);
+    const len = indexRequiredBufferLen(idx);
+    const buf = try allocator.alloc(T, len);
+    return MatHW.init(idx, buf);
+}
+
+fn makeHWIndex(h: usize, w: usize, layout: ConvLayout, pad: usize) IndexHW {
+    return switch (layout) {
+        .row_major => .{
+            .shape = .{ .h = h, .w = w },
+            .strides = .{ .h = @as(isize, @intCast(w)), .w = 1 },
+            .offset = 0,
+        },
+        .col_major => .{
+            .shape = .{ .h = h, .w = w },
+            .strides = .{ .h = 1, .w = @as(isize, @intCast(h)) },
+            .offset = 0,
+        },
+        .row_padded => .{
+            .shape = .{ .h = h, .w = w },
+            .strides = .{ .h = @as(isize, @intCast(w + pad)), .w = 1 },
+            .offset = 0,
+        },
+        .col_padded => .{
+            .shape = .{ .h = h, .w = w },
+            .strides = .{ .h = 1, .w = @as(isize, @intCast(h + pad)) },
+            .offset = 0,
+        },
+    };
+}
+
+fn indexRequiredBufferLen(idx: IndexHW) usize {
+    if (idx.shape.h == 0 or idx.shape.w == 0) return 0;
+    const last = idx.linear(.{ .h = idx.shape.h - 1, .w = idx.shape.w - 1 });
+    return last + 1;
+}
+
 fn pureDot(x: []const T, y: []const T) T {
     var acc: T = 0;
     for (x, y) |xv, yv| acc += xv * yv;
@@ -687,6 +863,11 @@ fn gemvIters(m: usize, n: usize) usize {
 fn gemmIters(m: usize, n: usize, k: usize) usize {
     // Roughly target a constant total amount of O(m*n*k) work.
     return clampUsize(12_000_000 / (m * n * k), 1, 200);
+}
+
+fn conv2dIters(macs_per_iter: usize) usize {
+    // Target a larger fixed MAC budget to reduce timing noise.
+    return clampUsize(600_000_000 / macs_per_iter, 50, 40_000);
 }
 
 fn clampUsize(v: usize, lo: usize, hi: usize) usize {

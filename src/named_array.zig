@@ -92,9 +92,14 @@ pub fn NamedArray(comptime Axis: type, comptime Scalar: type) type {
         }
 
         pub fn fill(self: *const @This(), val: Scalar) void {
-            var keys = self.idx.iterKeys();
-            while (keys.next()) |key| {
-                self.buf[self.idx.linear(key)] = val;
+            // Fast path
+            if (self.flat()) |flat_| {
+                @memset(flat_, val);
+            } else {
+                var keys = self.idx.iterKeys();
+                while (keys.next()) |key| {
+                    self.buf[self.idx.linear(key)] = val;
+                }
             }
         }
 
@@ -104,6 +109,28 @@ pub fn NamedArray(comptime Axis: type, comptime Scalar: type) type {
             while (keys.next()) |key| {
                 self.buf[self.idx.linear(key)] = i;
                 i += 1;
+            }
+        }
+
+        /// Copy all scalars from `other` into `self` such that `self.at(key).* == other.at(key).*`
+        /// for any `key`.
+        pub fn fillCopy(self: *const @This(), other: anytype) void {
+            // TODO: assert non-aliasing layout?
+            const self_order = self.idx.axisOrder();
+            const other_order = other.idx.axisOrder();
+            const self_flat = self.flat();
+            const other_flat = other.flat();
+            const both_contiguous = self_flat != null and other_flat != null;
+            const can_memcpy = both_contiguous and self_order == other_order;
+
+            // Fast path: can memcpy the whole buffer
+            if (can_memcpy) {
+                @memcpy(self_flat.?, other_flat.?);
+            } else {
+                var keys = self.idx.iterKeys();
+                while (keys.next()) |key| {
+                    self.at(key).* = other.at(key).*;
+                }
             }
         }
 
@@ -120,6 +147,10 @@ pub fn NamedArray(comptime Axis: type, comptime Scalar: type) type {
         /// To get a contiguous copy, see `toContiguous`.
         pub fn flat(self: *const @This()) ?[]Scalar {
             return flatGeneric(self);
+        }
+
+        pub fn flatUnsafe(self: *const @This()) []Scalar {
+            return flatUnsafeGeneric(self);
         }
 
         /// Make a contiguous copy of the array.
@@ -285,6 +316,10 @@ pub fn NamedArrayConst(comptime Axis: type, comptime Scalar: type) type {
         /// To get a contiguous copy, see `toContiguous`.
         pub fn flat(self: *const @This()) ?[]const Scalar {
             return flatGeneric(self);
+        }
+
+        pub fn flatUnsafe(self: *const @This()) []const Scalar {
+            return flatUnsafeGeneric(self);
         }
 
         /// Make a contiguous copy of the array.
@@ -478,6 +513,10 @@ fn flatGeneric(self: anytype) ?@TypeOf(self.buf) {
             return null;
     }
 
+    return flatUnsafeGeneric(self);
+}
+
+fn flatUnsafeGeneric(self: anytype) @TypeOf(self.buf) {
     return self.buf[self.idx.offset..][0..self.idx.count()];
 }
 

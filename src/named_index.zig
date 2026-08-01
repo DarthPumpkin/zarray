@@ -88,7 +88,7 @@ pub fn NamedIndex(comptime AxisEnum: type) type {
                 const idx: isize = @intCast(@field(index, fname));
                 sum += stride_ * idx;
             }
-            if (sum < 0) @panic("linear: negative buffer address (offset/stride mismatch)");
+            assert(sum >= 0);
             return @intCast(sum);
         }
 
@@ -168,10 +168,16 @@ pub fn NamedIndex(comptime AxisEnum: type) type {
 
         /// Slice axis (start:end). Does not itself reverse; combine with strideAxis(step = -1).
         pub fn sliceAxis(self: *const @This(), comptime axis: Axis, start: usize, end: usize) @This() {
+            var new = self.*;
+            new.sliceAxisInplace(axis, start, end);
+            return new;
+        }
+
+        pub fn sliceAxisInplace(self: *@This(), comptime axis: Axis, start: usize, end: usize) void {
             const axis_name = @tagName(axis);
             const old_size = @field(self.shape, axis_name);
-            if (end > old_size) @panic("sliceAxis: end out of bounds");
-            if (start >= end) @panic("sliceAxis: start must be < end");
+            assert(end <= old_size);
+            assert(start < end);
 
             var new_shape = self.shape;
             @field(new_shape, axis_name) = end - start;
@@ -181,11 +187,8 @@ pub fn NamedIndex(comptime AxisEnum: type) type {
             // linear uses signed strides correctly
             const new_offset = self.linear(offset_lookup);
 
-            return .{
-                .shape = new_shape,
-                .strides = self.strides,
-                .offset = new_offset,
-            };
+            self.shape = new_shape;
+            self.offset = new_offset;
         }
 
         pub fn squeezeAxis(self: *const @This(), comptime axis: Axis) NamedIndex(Removed(Axis, @tagName(axis))) {

@@ -381,6 +381,83 @@ test "pad: circular mode wraps around" {
     }
 }
 
+test "pad: circular mode wraps multiple times (pad >= dim)" {
+    const Axes = enum { t };
+    const f = f32;
+    const al = std.testing.allocator;
+
+    const src = try za.NamedArray(Axes, f).initAlloc(al, .{ .t = 4 });
+    defer src.deinit(al);
+    src.fillArange();
+
+    // [0 1 2 3] with before=6, after=5: pads larger than the axis wrap via @mod.
+    const padded = try pad(Axes, f, al, src.asConst(), .{ .t = .{ .before = 6, .after = 5, .mode = .circular } });
+    defer padded.deinit(al);
+
+    try std.testing.expectEqual(@as(usize, 15), padded.idx.shape.t);
+    const expected = [_]f32{ 2, 3, 0, 1, 2, 3, 0, 1, 2, 3, 0, 1, 2, 3, 0 };
+    var i: usize = 0;
+    while (i < expected.len) : (i += 1) {
+        try expectAt(Axes, f, padded.asConst(), .{ .t = i }, expected[i]);
+    }
+}
+
+test "pad: replicate and circular on a size-1 axis" {
+    const Axes = enum { t };
+    const f = f32;
+    const al = std.testing.allocator;
+
+    const src = try za.NamedArray(Axes, f).initAlloc(al, .{ .t = 1 });
+    defer src.deinit(al);
+    src.buf[0] = 5;
+
+    // replicate: clamp to the single edge -> constant.
+    const rep = try pad(Axes, f, al, src.asConst(), .{ .t = .{ .before = 2, .after = 2, .mode = .replicate } });
+    defer rep.deinit(al);
+    const rep_expected = [_]f32{ 5, 5, 5, 5, 5 };
+    var i: usize = 0;
+    while (i < rep_expected.len) : (i += 1) {
+        try expectAt(Axes, f, rep.asConst(), .{ .t = i }, rep_expected[i]);
+    }
+
+    // circular: @mod wraps to the single element.
+    const circ = try pad(Axes, f, al, src.asConst(), .{ .t = .{ .before = 2, .after = 2, .mode = .circular } });
+    defer circ.deinit(al);
+    const circ_expected = [_]f32{ 5, 5, 5, 5, 5 };
+    var j: usize = 0;
+    while (j < circ_expected.len) : (j += 1) {
+        try expectAt(Axes, f, circ.asConst(), .{ .t = j }, circ_expected[j]);
+    }
+}
+
+test "pad: zero-padding axis with non-constant mode" {
+    const Axes = enum { h, w };
+    const f = f32;
+    const al = std.testing.allocator;
+
+    const src = try za.NamedArray(Axes, f).initAlloc(al, .{ .h = 3, .w = 3 });
+    defer src.deinit(al);
+    src.fillArange();
+
+    // w is a zero-padding axis but declares `.reflect`: it imposes no fill
+    // constraint and must not affect which path is taken.
+    const padded = try pad(Axes, f, al, src.asConst(), .{
+        .h = .{ .before = 1, .after = 1, .mode = .replicate },
+        .w = .{ .before = 0, .after = 0, .mode = .reflect },
+    });
+    defer padded.deinit(al);
+
+    try std.testing.expectEqual(@as(usize, 5), padded.idx.shape.h);
+    try std.testing.expectEqual(@as(usize, 3), padded.idx.shape.w);
+
+    // h rows repeat [0 0 1 2 2]; w is unchanged.
+    try expectAt(Axes, f, padded.asConst(), .{ .h = 0, .w = 0 }, 0);
+    try expectAt(Axes, f, padded.asConst(), .{ .h = 0, .w = 2 }, 2);
+    try expectAt(Axes, f, padded.asConst(), .{ .h = 1, .w = 1 }, 1);
+    try expectAt(Axes, f, padded.asConst(), .{ .h = 2, .w = 0 }, 3);
+    try expectAt(Axes, f, padded.asConst(), .{ .h = 4, .w = 2 }, 8);
+}
+
 test "pad: mixed modes per axis" {
     const Axes = enum { h, w };
     const f = f32;

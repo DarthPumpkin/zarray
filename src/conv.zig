@@ -851,6 +851,75 @@ test "conv: dilated kernel (dilation 2)" {
     try runConvAndCheckGeneric(f, ImA, KerA, OutA, al, im.asConst(), kernel.asConst(), out, P{ .dilation = .{ .h = 2, .w = 2 } });
 }
 
+test "conv: combined stride and dilation" {
+    const ImA = enum { h, w };
+    const KerA = enum { h, w };
+    const OutA = enum { h, w };
+    const f = f32;
+    const al = testing.allocator;
+    const P = ConvParams(ImA, KerA, OutA);
+
+    const im = try za.NamedArray(ImA, f).initAlloc(al, .{ .h = 13, .w = 13 });
+    defer im.deinit(al);
+    im.fillArange();
+
+    const kernel = try za.NamedArray(KerA, f).initAlloc(al, .{ .h = 3, .w = 3 });
+    defer kernel.deinit(al);
+    kernel.fillArange();
+
+    // o = (13 - (3-1)*2 - 1)/2 + 1 = 5 per axis.
+    const out = try za.NamedArray(OutA, f).initAlloc(al, .{ .h = 5, .w = 5 });
+    defer out.deinit(al);
+
+    try runConvAndCheckGeneric(f, ImA, KerA, OutA, al, im.asConst(), kernel.asConst(), out, P{ .stride = .{ .h = 2, .w = 2 }, .dilation = .{ .h = 2, .w = 2 } });
+}
+
+test "conv: asymmetric stride per axis with channels" {
+    const ImA = enum { ci, h, w };
+    const KerA = enum { ci, co, h, w };
+    const OutA = enum { co, h, w };
+    const f = f32;
+    const al = testing.allocator;
+    const P = ConvParams(ImA, KerA, OutA);
+
+    const im = try za.NamedArray(ImA, f).initAlloc(al, .{ .ci = 2, .h = 11, .w = 7 });
+    defer im.deinit(al);
+    im.fillArange();
+
+    const kernel = try za.NamedArray(KerA, f).initAlloc(al, .{ .ci = 2, .co = 2, .h = 3, .w = 3 });
+    defer kernel.deinit(al);
+    kernel.fillArange();
+
+    // h: (11-3)/2+1 = 5; w: (7-3)/1+1 = 5.
+    const out = try za.NamedArray(OutA, f).initAlloc(al, .{ .co = 2, .h = 5, .w = 5 });
+    defer out.deinit(al);
+
+    try runConvAndCheckGeneric(f, ImA, KerA, OutA, al, im.asConst(), kernel.asConst(), out, P{ .stride = .{ .h = 2, .w = 1 } });
+}
+
+test "conv: channels with dilated kernel" {
+    const ImA = enum { ci, h, w };
+    const KerA = enum { ci, co, h, w };
+    const OutA = enum { co, h, w };
+    const f = f32;
+    const al = testing.allocator;
+    const P = ConvParams(ImA, KerA, OutA);
+
+    const im = try za.NamedArray(ImA, f).initAlloc(al, .{ .ci = 2, .h = 13, .w = 13 });
+    defer im.deinit(al);
+    im.fillArange();
+
+    const kernel = try za.NamedArray(KerA, f).initAlloc(al, .{ .ci = 2, .co = 2, .h = 3, .w = 3 });
+    defer kernel.deinit(al);
+    kernel.fillArange();
+
+    // o = 13 - (3-1)*2 - 1 + 1 = 9 per axis (stride 1, dilation 2).
+    const out = try za.NamedArray(OutA, f).initAlloc(al, .{ .co = 2, .h = 9, .w = 9 });
+    defer out.deinit(al);
+
+    try runConvAndCheckGeneric(f, ImA, KerA, OutA, al, im.asConst(), kernel.asConst(), out, P{ .dilation = .{ .h = 2, .w = 2 } });
+}
+
 test "conv: 1D (single spatial axis) with channels" {
     const ImA = enum { ci, t };
     const KerA = enum { ci, co, t };

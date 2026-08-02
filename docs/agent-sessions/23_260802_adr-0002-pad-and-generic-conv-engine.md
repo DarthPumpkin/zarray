@@ -27,9 +27,11 @@ validation.
     `convGeneric` (outer loop over output keys, inner reduction over
     in-channel ∪ kernel-spatial taps via `indexAxes`-fixed reduced kernel).
     Layout-agnostic, allocation-free.
-  - 10 tests: 2D single-channel, in/out channels, batch, stride 2, dilation 2,
-    1D, 3D spatial, column-major operands, pad-then-conv same-padding, 1x1→gemm
-    degeneration. All validated against a naive `convReference`.
+  - 13 tests: 2D single-channel, in/out channels, batch, stride 2, dilation 2,
+    combined stride+dilation, asymmetric stride per axis with channels, channels
+    with dilation, 1D, 3D spatial, column-major operands, pad-then-conv
+    same-padding, 1x1→gemm degeneration. All validated against a naive
+    `convReference`.
 - ✅ **Latent bug fix** (`src/named_array.zig:124`): `fillCopy`'s memcpy fast path
   used `self_order == other_order` — array `==` is illegal in Zig 0.16; never
   instantiated before because `fillCopy` had no callers. `pad` exercises it.
@@ -68,9 +70,10 @@ validation.
     `pad`; overlap regions would otherwise be ambiguous). Fast path then
     degenerates to `fill` + interior `fillCopy`; generic path's `const_fill` is
     validated once up front instead of per key.
-  - Tests grew 5 → 12: added constant non-zero fill, replicate, reflect 1D,
+  - Tests grew 5 → 16: added constant non-zero fill, replicate, reflect 1D,
     reflect 2D (corners), circular, mixed modes per axis, constant mixed with
-    replicate.
+    replicate, circular wrap ≥ dim, replicate/circular on a size-1 axis,
+    zero-padding axis with non-constant mode.
 
 ## Zig 0.16 comptime gotchas hit (worth remembering)
 1. `inline for (std.meta.fieldNames(T))` — the loop variable is NOT comptime-known
@@ -91,7 +94,7 @@ validation.
 - 1x1 kernel and zero-spatial cases degenerate naturally (no special casing).
 
 ## Validation run in this session
-- ✅ `zig build test` (627/627 Debug; 633/633 after padding-mode work)
+- ✅ `zig build test` (627/627 Debug; 639/639 after padding-mode + gap-test work)
 - ✅ `zig build test -Doptimize=ReleaseFast` (only pre-existing `blas.rotmg`
   tolerance failure; all conv/pad tests pass)
 - ✅ `zig build`

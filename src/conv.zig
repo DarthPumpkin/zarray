@@ -1,10 +1,15 @@
 const std = @import("std");
 const assert = std.debug.assert;
+const mem = std.mem;
+const meta = std.meta;
 const simd = std.simd;
 const testing = std.testing;
 
 const za = @import("root.zig");
 const blas = za.bindings.blas;
+const axis_meta = za.axis_meta;
+const NamedIndex = za.index.NamedIndex;
+const Writer = std.Io.Writer;
 
 pub const HW = enum { h, w };
 pub const Row = enum { w };
@@ -262,6 +267,356 @@ fn conv2dReference(
     }
 }
 
+// ============================================================================
+// General convolution (ADR-0002): role inference over named axes.
+// ============================================================================
+//
+// Instead of a fixed positional layout (NCHW, NHWC, ...), each axis's role is
+// inferred from which of the three operands (`im`, `kernel`, `out`) share its
+// tag:
+//
+//   | present in…            | role        | shape constraint                          |
+//   |------------------------|-------------|-------------------------------------------|
+//   | im, kernel, out        | spatial     | im = (out-1)*stride + (kernel-1)*dil + 1  |
+//   | im, kernel             | in-channel  | im == kernel                              |
+//   | kernel, out            | out-channel | kernel == out                             |
+//   | im, out                | batch       | im == out                                 |
+//   | one operand only       | —           | @compileError                             |
+//
+// Channels and arbitrary rank are therefore the same mechanism: every distinct
+// tag in `im ∩ kernel` is an in-channel, every tag in `kernel ∩ out` an
+// out-channel, and every tag in all three operands a spatial axis.
+
+/// Comptime classification of every axis tag of a convolution.
+pub const RoleInfo = struct {
+    /// Present in all three operands: sliding-window coupling
+    /// `im[s*stride + k*dilation]`.
+    spatial: []const [:0]const u8,
+    /// Present in im and kernel only: contraction (summed away).
+    in_channel: []const [:0]const u8,
+    /// Present in kernel and out only: free index sourced from kernel.
+    out_channel: []const [:0]const u8,
+    /// Present in im and out only: shared free index (pass-through).
+    batch: []const [:0]const u8,
+};
+
+fn contains(comptime names: []const [:0]const u8, comptime name: [:0]const u8) bool {
+    for (names) |n| {
+        if (mem.eql(u8, n, name)) return true;
+    }
+    return false;
+}
+
+fn roleName(
+    comptime name: [:0]const u8,
+    comptime im_names: []const [:0]const u8,
+    comptime ker_names: []const [:0]const u8,
+    comptime out_names: []const [:0]const u8,
+) []const u8 {
+    const in_im = contains(im_names, name);
+    const in_ker = contains(ker_names, name);
+    const in_out = contains(out_names, name);
+    if (in_im and in_ker and in_out) return "spatial";
+    if (in_im and in_ker) return "in-channel";
+    if (in_ker and in_out) return "out-channel";
+    if (in_im and in_out) return "batch";
+    return "orphan";
+}
+
+/// Infer the role of every axis tag from its presence across the three
+/// operands (ADR-0002 section 1). Axes present in only one operand are
+/// compile errors; the message lists the inferred role of every axis so naming
+/// mismatches (e.g. kernel axis `kh` vs image axis `h`) are easy to diagnose.
+pub fn inferRoles(comptime ImAxis: type, comptime KerAxis: type, comptime OutAxis: type) RoleInfo {
+    const union_names = comptime axis_meta.unionOfAxisNames(&.{ ImAxis, KerAxis, OutAxis });
+    const im_names = meta.fieldNames(ImAxis);
+    const ker_names = meta.fieldNames(KerAxis);
+    const out_names = meta.fieldNames(OutAxis);
+
+    comptime var spatial: [union_names.len][:0]const u8 = undefined;
+    comptime var in_channel: [union_names.len][:0]const u8 = undefined;
+    comptime var out_channel: [union_names.len][:0]const u8 = undefined;
+    comptime var batch: [union_names.len][:0]const u8 = undefined;
+    comptime var s_c: usize = 0;
+    comptime var i_c: usize = 0;
+    comptime var o_c: usize = 0;
+    comptime var b_c: usize = 0;
+    comptime var orphan: ?[:0]const u8 = null;
+
+    for (union_names) |name| {
+        const in_im = contains(im_names, name);
+        const in_ker = contains(ker_names, name);
+        const in_out = contains(out_names, name);
+        if (in_im and in_ker and in_out) {
+            spatial[s_c] = name;
+            s_c += 1;
+        } else if (in_im and in_ker) {
+            in_channel[i_c] = name;
+            i_c += 1;
+        } else if (in_ker and in_out) {
+            out_channel[o_c] = name;
+            o_c += 1;
+        } else if (in_im and in_out) {
+            batch[b_c] = name;
+            b_c += 1;
+        } else {
+            if (orphan == null) orphan = name;
+        }
+    }
+
+    if (comptime orphan) |orphan_name| {
+        var buf: [2048]u8 = undefined;
+        var w: Writer = .fixed(&buf);
+        w.print("conv: axis '{s}' occurs in only one operand and cannot be assigned a role. Inferred roles of every axis:\n", .{orphan_name}) catch unreachable;
+        for (union_names) |n| {
+            w.print("  {s}: {s}\n", .{ n, roleName(n, im_names, ker_names, out_names) }) catch unreachable;
+        }
+        w.print("Every axis must be shared by two or three operands. Valid roles: spatial (im+kernel+out), in-channel (im+kernel), out-channel (kernel+out), batch (im+out).", .{}) catch unreachable;
+        @compileError(buf[0..w.end]);
+    }
+
+    // Copy the comptime-var staging arrays into comptime consts so the
+    // returned slices are usable outside comptime-var scope.
+    const spatial_arr: [s_c][:0]const u8 = spatial[0..s_c].*;
+    const in_channel_arr: [i_c][:0]const u8 = in_channel[0..i_c].*;
+    const out_channel_arr: [o_c][:0]const u8 = out_channel[0..o_c].*;
+    const batch_arr: [b_c][:0]const u8 = batch[0..b_c].*;
+
+    return .{
+        .spatial = &spatial_arr,
+        .in_channel = &in_channel_arr,
+        .out_channel = &out_channel_arr,
+        .batch = &batch_arr,
+    };
+}
+
+/// Per-spatial-axis stride/dilation specification for `conv`. Keyed by the
+/// spatial axis names, so specifying a non-spatial axis fails to compile.
+pub fn ConvParams(comptime ImAxis: type, comptime KerAxis: type, comptime OutAxis: type) type {
+    const roles = comptime inferRoles(ImAxis, KerAxis, OutAxis);
+    const SpatialSpec = axis_meta.AxesOptionalStructOf(roles.spatial, usize);
+    return struct {
+        /// Output stride per spatial axis; absent axes default to 1.
+        stride: SpatialSpec = .{},
+        /// Kernel dilation per spatial axis; absent axes default to 1.
+        dilation: SpatialSpec = .{},
+    };
+}
+
+/// Generic convolution of `im` with `kernel` into `out`, valid-mode only.
+///
+/// Axis roles are inferred at compile time from the operand axis enums (see
+/// `inferRoles`), so the operand layouts (NCHW, NHWC, …) need not match any
+/// fixed convention — axes communicate by shared tag names. Shape constraints
+/// are validated per role (fail fast), and orphan axes are compile errors.
+///
+/// The engine is layout-agnostic and allocation-free; layout-specific fast
+/// paths are added behind dispatch as profiling dictates (ADR-0002 section 5).
+pub fn conv(
+    comptime Scalar: type,
+    comptime ImAxis: type,
+    comptime KerAxis: type,
+    comptime OutAxis: type,
+    im: za.NamedArrayConst(ImAxis, Scalar),
+    kernel: za.NamedArrayConst(KerAxis, Scalar),
+    out: za.NamedArray(OutAxis, Scalar),
+    params: ConvParams(ImAxis, KerAxis, OutAxis),
+) void {
+    const roles = comptime inferRoles(ImAxis, KerAxis, OutAxis);
+
+    inline for (meta.fields(@TypeOf(params.stride))) |f| {
+        const stride: usize = @field(params.stride, f.name) orelse 1;
+        const dilation: usize = @field(params.dilation, f.name) orelse 1;
+        assert(stride >= 1);
+        assert(dilation >= 1);
+        const im_n = @field(im.idx.shape, f.name);
+        const k_n = @field(kernel.idx.shape, f.name);
+        const o_n = @field(out.idx.shape, f.name);
+        assert(im_n == (o_n - 1) * stride + (k_n - 1) * dilation + 1);
+    }
+    inline for (meta.fields(NamedIndex(ImAxis).Axes)) |f| {
+        if (comptime contains(roles.in_channel, f.name)) {
+            assert(@field(im.idx.shape, f.name) == @field(kernel.idx.shape, f.name));
+        }
+    }
+    inline for (meta.fields(NamedIndex(OutAxis).Axes)) |f| {
+        if (comptime contains(roles.out_channel, f.name)) {
+            assert(@field(kernel.idx.shape, f.name) == @field(out.idx.shape, f.name));
+        }
+    }
+    inline for (meta.fields(NamedIndex(ImAxis).Axes)) |f| {
+        if (comptime contains(roles.batch, f.name)) {
+            assert(@field(im.idx.shape, f.name) == @field(out.idx.shape, f.name));
+        }
+    }
+
+    convGeneric(Scalar, ImAxis, KerAxis, OutAxis, roles, im, kernel, out, params);
+}
+
+/// Kernel axes that participate in the reduction: in-channels plus kernel
+/// spatial axes (out-channels are free axes fixed per output position).
+fn reducedKernelAxis(comptime KerAxis: type, comptime roles: RoleInfo) type {
+    const ker_names = meta.fieldNames(KerAxis);
+    comptime var red: [ker_names.len][:0]const u8 = undefined;
+    comptime var n: usize = 0;
+    for (ker_names) |name| {
+        if (contains(roles.in_channel, name) or contains(roles.spatial, name)) {
+            red[n] = name;
+            n += 1;
+        }
+    }
+    return axis_meta.KeyEnum(red[0..n]);
+}
+
+/// Position for every kernel axis dropped by the reduction: the out-channel
+/// indices, taken from the current output key.
+fn kernelIndices(comptime KerAxis: type, comptime RedKer: type, ok: anytype) axis_meta.DifferenceAxesStruct(KerAxis, RedKer) {
+    var idx: axis_meta.DifferenceAxesStruct(KerAxis, RedKer) = undefined;
+    inline for (meta.fields(axis_meta.DifferenceAxesStruct(KerAxis, RedKer))) |f| {
+        @field(idx, f.name) = @field(ok, f.name);
+    }
+    return idx;
+}
+
+/// Rebuild a full kernel key from a reduced kernel key plus the output key
+/// (out-channel fields come from `ok`).
+fn kernelKey(comptime KerAxis: type, comptime roles: RoleInfo, ok: anytype, kk: anytype) NamedIndex(KerAxis).Axes {
+    var key: NamedIndex(KerAxis).Axes = undefined;
+    inline for (meta.fields(NamedIndex(KerAxis).Axes)) |f| {
+        if (comptime contains(roles.in_channel, f.name) or contains(roles.spatial, f.name)) {
+            @field(key, f.name) = @field(kk, f.name);
+        } else {
+            @field(key, f.name) = @field(ok, f.name);
+        }
+    }
+    return key;
+}
+
+/// Image key for one (output position, kernel tap) pair. Batch axes pass the
+/// output position through, in-channels come from the tap, and spatial axes
+/// couple the two with the sliding-window formula `im = ok*stride + kk*dilation`.
+fn imKey(
+    comptime ImAxis: type,
+    comptime roles: RoleInfo,
+    ok: anytype,
+    kk: anytype,
+    stride_spec: anytype,
+    dilation_spec: anytype,
+) NamedIndex(ImAxis).Axes {
+    var key: NamedIndex(ImAxis).Axes = undefined;
+    inline for (meta.fields(NamedIndex(ImAxis).Axes)) |f| {
+        if (comptime contains(roles.batch, f.name)) {
+            @field(key, f.name) = @field(ok, f.name);
+        } else if (comptime contains(roles.in_channel, f.name)) {
+            @field(key, f.name) = @field(kk, f.name);
+        } else {
+            const stride: usize = @field(stride_spec, f.name) orelse 1;
+            const dilation: usize = @field(dilation_spec, f.name) orelse 1;
+            @field(key, f.name) = @field(ok, f.name) * stride + @field(kk, f.name) * dilation;
+        }
+    }
+    return key;
+}
+
+/// Layout-agnostic engine: outer loop over output keys, inner reduction over
+/// (in-channel, kernel-spatial) taps. Any stride pattern is handled through
+/// the named-index machinery.
+fn convGeneric(
+    comptime Scalar: type,
+    comptime ImAxis: type,
+    comptime KerAxis: type,
+    comptime OutAxis: type,
+    comptime roles: RoleInfo,
+    im: za.NamedArrayConst(ImAxis, Scalar),
+    kernel: za.NamedArrayConst(KerAxis, Scalar),
+    out: za.NamedArray(OutAxis, Scalar),
+    params: anytype,
+) void {
+    const RedKer = comptime reducedKernelAxis(KerAxis, roles);
+
+    var out_iter = out.idx.iterKeys();
+    while (out_iter.next()) |ok| {
+        var acc: Scalar = 0;
+        const k_idx = kernel.idx.indexAxes(RedKer, kernelIndices(KerAxis, RedKer, ok));
+        var k_iter = k_idx.iterKeys();
+        while (k_iter.next()) |kk| {
+            const im_key = imKey(ImAxis, roles, ok, kk, params.stride, params.dilation);
+            acc += kernel.scalarAt(kernelKey(KerAxis, roles, ok, kk)) * im.scalarAt(im_key);
+        }
+        out.at(ok).* = acc;
+    }
+}
+
+/// Naive reference for tests: same semantics as `conv`, iterating the full
+/// kernel without any fast paths.
+fn convReference(
+    comptime Scalar: type,
+    comptime ImAxis: type,
+    comptime KerAxis: type,
+    comptime OutAxis: type,
+    im: za.NamedArrayConst(ImAxis, Scalar),
+    kernel: za.NamedArrayConst(KerAxis, Scalar),
+    out: za.NamedArray(OutAxis, Scalar),
+    params: anytype,
+) void {
+    const roles = comptime inferRoles(ImAxis, KerAxis, OutAxis);
+
+    var out_iter = out.idx.iterKeys();
+    while (out_iter.next()) |ok| {
+        var acc: Scalar = 0;
+        var k_iter = kernel.idx.iterKeys();
+        while (k_iter.next()) |kk| {
+            // Skip taps whose out-channel position differs from this output
+            // (out-channel axes are free indices sourced from the kernel).
+            var matches = true;
+            inline for (meta.fields(NamedIndex(KerAxis).Axes)) |f| {
+                if (comptime contains(roles.out_channel, f.name)) {
+                    if (@field(kk, f.name) != @field(ok, f.name)) matches = false;
+                }
+            }
+            if (!matches) continue;
+            const im_key = imKey(ImAxis, roles, ok, kk, params.stride, params.dilation);
+            acc += kernel.scalarAt(kk) * im.scalarAt(im_key);
+        }
+        out.at(ok).* = acc;
+    }
+}
+
+fn expectSame(
+    comptime Scalar: type,
+    expected: anytype,
+    actual: anytype,
+) !void {
+    try testing.expectEqual(expected.idx.shape, actual.idx.shape);
+    var keys = expected.idx.iterKeys();
+    while (keys.next()) |key| {
+        switch (@typeInfo(Scalar)) {
+            .float => try testing.expectApproxEqAbs(expected.scalarAt(key), actual.scalarAt(key), @as(Scalar, 1e-4)),
+            else => try testing.expectEqual(expected.scalarAt(key), actual.scalarAt(key)),
+        }
+    }
+}
+
+fn runConvAndCheckGeneric(
+    comptime Scalar: type,
+    comptime ImAxis: type,
+    comptime KerAxis: type,
+    comptime OutAxis: type,
+    allocator: std.mem.Allocator,
+    im: za.NamedArrayConst(ImAxis, Scalar),
+    kernel: za.NamedArrayConst(KerAxis, Scalar),
+    out: za.NamedArray(OutAxis, Scalar),
+    params: anytype,
+) !void {
+    const expected = try za.NamedArray(OutAxis, Scalar).initAlloc(allocator, out.idx.shape);
+    defer expected.deinit(allocator);
+
+    convReference(Scalar, ImAxis, KerAxis, OutAxis, im, kernel, expected, params);
+    conv(Scalar, ImAxis, KerAxis, OutAxis, im, kernel, out, params);
+
+    try expectSame(Scalar, expected.asConst(), out.asConst());
+}
+
 fn expectSame2d(
     comptime Scalar: type,
     expected: za.NamedArrayConst(HW, Scalar),
@@ -384,6 +739,257 @@ test "conv2dSingleChannel h-contiguous layout path (axis-rename recursion)" {
     try testing.expectEqual(@as(isize, 1), kernel.idx.strides.h);
 
     try runConvAndCheck(f, al, im.asConst(), kernel.asConst(), out);
+}
+
+test "conv: 2D single channel matches reference" {
+    const ImA = enum { h, w };
+    const KerA = enum { h, w };
+    const OutA = enum { h, w };
+    const f = f32;
+    const al = testing.allocator;
+    const P = ConvParams(ImA, KerA, OutA);
+
+    const im = try za.NamedArray(ImA, f).initAlloc(al, .{ .h = 8, .w = 9 });
+    defer im.deinit(al);
+    im.fillArange();
+
+    const kernel = try za.NamedArray(KerA, f).initAlloc(al, .{ .h = 3, .w = 3 });
+    defer kernel.deinit(al);
+    kernel.fillArange();
+
+    const out = try za.NamedArray(OutA, f).initAlloc(al, .{ .h = 6, .w = 7 });
+    defer out.deinit(al);
+
+    try runConvAndCheckGeneric(f, ImA, KerA, OutA, al, im.asConst(), kernel.asConst(), out, P{});
+}
+
+test "conv: 2D with in- and out-channels" {
+    const ImA = enum { ci, h, w };
+    const KerA = enum { ci, co, h, w };
+    const OutA = enum { co, h, w };
+    const f = f64;
+    const al = testing.allocator;
+    const P = ConvParams(ImA, KerA, OutA);
+
+    const im = try za.NamedArray(ImA, f).initAlloc(al, .{ .ci = 4, .h = 7, .w = 6 });
+    defer im.deinit(al);
+    im.fillArange();
+
+    const kernel = try za.NamedArray(KerA, f).initAlloc(al, .{ .ci = 4, .co = 2, .h = 3, .w = 3 });
+    defer kernel.deinit(al);
+    kernel.fillArange();
+
+    const out = try za.NamedArray(OutA, f).initAlloc(al, .{ .co = 2, .h = 5, .w = 4 });
+    defer out.deinit(al);
+
+    try runConvAndCheckGeneric(f, ImA, KerA, OutA, al, im.asConst(), kernel.asConst(), out, P{});
+}
+
+test "conv: batch axis passes through" {
+    const ImA = enum { b, ci, h, w };
+    const KerA = enum { ci, co, h, w };
+    const OutA = enum { b, co, h, w };
+    const f = f32;
+    const al = testing.allocator;
+    const P = ConvParams(ImA, KerA, OutA);
+
+    const im = try za.NamedArray(ImA, f).initAlloc(al, .{ .b = 3, .ci = 2, .h = 5, .w = 5 });
+    defer im.deinit(al);
+    im.fillArange();
+
+    const kernel = try za.NamedArray(KerA, f).initAlloc(al, .{ .ci = 2, .co = 3, .h = 3, .w = 3 });
+    defer kernel.deinit(al);
+    kernel.fillArange();
+
+    const out = try za.NamedArray(OutA, f).initAlloc(al, .{ .b = 3, .co = 3, .h = 3, .w = 3 });
+    defer out.deinit(al);
+
+    try runConvAndCheckGeneric(f, ImA, KerA, OutA, al, im.asConst(), kernel.asConst(), out, P{});
+}
+
+test "conv: strided output (stride 2 on both spatial axes)" {
+    const ImA = enum { ci, h, w };
+    const KerA = enum { ci, co, h, w };
+    const OutA = enum { co, h, w };
+    const f = f32;
+    const al = testing.allocator;
+    const P = ConvParams(ImA, KerA, OutA);
+
+    const im = try za.NamedArray(ImA, f).initAlloc(al, .{ .ci = 2, .h = 11, .w = 9 });
+    defer im.deinit(al);
+    im.fillArange();
+
+    const kernel = try za.NamedArray(KerA, f).initAlloc(al, .{ .ci = 2, .co = 2, .h = 3, .w = 3 });
+    defer kernel.deinit(al);
+    kernel.fillArange();
+
+    const out = try za.NamedArray(OutA, f).initAlloc(al, .{ .co = 2, .h = 5, .w = 4 });
+    defer out.deinit(al);
+
+    try runConvAndCheckGeneric(f, ImA, KerA, OutA, al, im.asConst(), kernel.asConst(), out, P{ .stride = .{ .h = 2, .w = 2 } });
+}
+
+test "conv: dilated kernel (dilation 2)" {
+    const ImA = enum { h, w };
+    const KerA = enum { h, w };
+    const OutA = enum { h, w };
+    const f = f32;
+    const al = testing.allocator;
+    const P = ConvParams(ImA, KerA, OutA);
+
+    const im = try za.NamedArray(ImA, f).initAlloc(al, .{ .h = 9, .w = 9 });
+    defer im.deinit(al);
+    im.fillArange();
+
+    const kernel = try za.NamedArray(KerA, f).initAlloc(al, .{ .h = 3, .w = 3 });
+    defer kernel.deinit(al);
+    kernel.fillArange();
+
+    const out = try za.NamedArray(OutA, f).initAlloc(al, .{ .h = 5, .w = 5 });
+    defer out.deinit(al);
+
+    try runConvAndCheckGeneric(f, ImA, KerA, OutA, al, im.asConst(), kernel.asConst(), out, P{ .dilation = .{ .h = 2, .w = 2 } });
+}
+
+test "conv: 1D (single spatial axis) with channels" {
+    const ImA = enum { ci, t };
+    const KerA = enum { ci, co, t };
+    const OutA = enum { co, t };
+    const f = f32;
+    const al = testing.allocator;
+    const P = ConvParams(ImA, KerA, OutA);
+
+    const im = try za.NamedArray(ImA, f).initAlloc(al, .{ .ci = 3, .t = 8 });
+    defer im.deinit(al);
+    im.fillArange();
+
+    const kernel = try za.NamedArray(KerA, f).initAlloc(al, .{ .ci = 3, .co = 2, .t = 4 });
+    defer kernel.deinit(al);
+    kernel.fillArange();
+
+    const out = try za.NamedArray(OutA, f).initAlloc(al, .{ .co = 2, .t = 5 });
+    defer out.deinit(al);
+
+    try runConvAndCheckGeneric(f, ImA, KerA, OutA, al, im.asConst(), kernel.asConst(), out, P{});
+}
+
+test "conv: 3D spatial (three shared axes)" {
+    const ImA = enum { ci, d, h, w };
+    const KerA = enum { ci, co, d, h, w };
+    const OutA = enum { co, d, h, w };
+    const f = f32;
+    const al = testing.allocator;
+    const P = ConvParams(ImA, KerA, OutA);
+
+    const im = try za.NamedArray(ImA, f).initAlloc(al, .{ .ci = 2, .d = 4, .h = 4, .w = 4 });
+    defer im.deinit(al);
+    im.fillArange();
+
+    const kernel = try za.NamedArray(KerA, f).initAlloc(al, .{ .ci = 2, .co = 2, .d = 2, .h = 2, .w = 2 });
+    defer kernel.deinit(al);
+    kernel.fillArange();
+
+    const out = try za.NamedArray(OutA, f).initAlloc(al, .{ .co = 2, .d = 3, .h = 3, .w = 3 });
+    defer out.deinit(al);
+
+    try runConvAndCheckGeneric(f, ImA, KerA, OutA, al, im.asConst(), kernel.asConst(), out, P{});
+}
+
+test "conv: non-contiguous (column-major) image and kernel" {
+    const ImA = enum { h, w };
+    const KerA = enum { h, w };
+    const OutA = enum { h, w };
+    const f = f32;
+    const al = testing.allocator;
+    const P = ConvParams(ImA, KerA, OutA);
+
+    const im_buf = try al.alloc(f, 8 * 9);
+    defer al.free(im_buf);
+    const im = za.NamedArray(ImA, f).init(.{
+        .shape = .{ .h = 8, .w = 9 },
+        .strides = .{ .h = 1, .w = 8 }, // h fastest (column-major)
+        .offset = 0,
+    }, im_buf);
+    var im_i: usize = 0;
+    for (im_buf) |*v| {
+        v.* = @floatFromInt(im_i);
+        im_i += 1;
+    }
+
+    const kernel_buf = try al.alloc(f, 3 * 3);
+    defer al.free(kernel_buf);
+    const kernel = za.NamedArray(KerA, f).init(.{
+        .shape = .{ .h = 3, .w = 3 },
+        .strides = .{ .h = 1, .w = 3 }, // h fastest
+        .offset = 0,
+    }, kernel_buf);
+    var k_i: usize = 0;
+    for (kernel_buf) |*v| {
+        v.* = @floatFromInt(k_i);
+        k_i += 1;
+    }
+
+    const out = try za.NamedArray(OutA, f).initAlloc(al, .{ .h = 6, .w = 7 });
+    defer out.deinit(al);
+
+    try runConvAndCheckGeneric(f, ImA, KerA, OutA, al, im.asConst(), kernel.asConst(), out, P{});
+}
+
+test "conv: pad-then-conv gives same-padding" {
+    const ImA = enum { ci, h, w };
+    const KerA = enum { ci, co, h, w };
+    const OutA = enum { co, h, w };
+    const f = f32;
+    const al = testing.allocator;
+    const P = ConvParams(ImA, KerA, OutA);
+
+    const im = try za.NamedArray(ImA, f).initAlloc(al, .{ .ci = 2, .h = 5, .w = 5 });
+    defer im.deinit(al);
+    im.fillArange();
+
+    const kernel = try za.NamedArray(KerA, f).initAlloc(al, .{ .ci = 2, .co = 2, .h = 3, .w = 3 });
+    defer kernel.deinit(al);
+    kernel.fillArange();
+
+    // Same-padding via the composable pad op: padded im keeps the output the
+    // same size as the original input.
+    const padded_im = try za.pad.pad(ImA, f, al, im.asConst(), .{
+        .h = .{ .before = 1, .after = 1, .mode = .{ .constant = 0 } },
+        .w = .{ .before = 1, .after = 1, .mode = .{ .constant = 0 } },
+    });
+    defer padded_im.deinit(al);
+
+    const out = try za.NamedArray(OutA, f).initAlloc(al, .{ .co = 2, .h = 5, .w = 5 });
+    defer out.deinit(al);
+
+    const expected = try za.NamedArray(OutA, f).initAlloc(al, out.idx.shape);
+    defer expected.deinit(al);
+    convReference(f, ImA, KerA, OutA, padded_im.asConst(), kernel.asConst(), expected, P{});
+    conv(f, ImA, KerA, OutA, padded_im.asConst(), kernel.asConst(), out, P{});
+
+    try expectSame(f, expected.asConst(), out.asConst());
+}
+
+test "conv: 1x1 kernel degenerates to channel contraction (gemm-like)" {
+    const ImA = enum { ci, h, w };
+    const KerA = enum { ci, co, h, w };
+    const OutA = enum { co, h, w };
+    const f = f32;
+    const al = testing.allocator;
+    const P = ConvParams(ImA, KerA, OutA);
+
+    const im = try za.NamedArray(ImA, f).initAlloc(al, .{ .ci = 4, .h = 3, .w = 3 });
+    defer im.deinit(al);
+    im.fillArange();
+
+    const kernel = try za.NamedArray(KerA, f).initAlloc(al, .{ .ci = 4, .co = 3, .h = 1, .w = 1 });
+    defer kernel.deinit(al);
+    kernel.fillArange();
+
+    const out = try za.NamedArray(OutA, f).initAlloc(al, .{ .co = 3, .h = 3, .w = 3 });
+    defer out.deinit(al);
+
+    try runConvAndCheckGeneric(f, ImA, KerA, OutA, al, im.asConst(), kernel.asConst(), out, P{});
 }
 
 test "conv2dSingleChannel generic fallback with non-unit strides on im and kernel" {

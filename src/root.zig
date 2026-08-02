@@ -24,6 +24,7 @@ pub const libs = bindings;
 // temporary for testing purposes
 pub const math = @import("math.zig");
 pub const conv = @import("conv.zig");
+pub const pad = @import("pad.zig");
 // pub const mlp_example = @import("mlp_example.zig");
 
 test "root.zig" {

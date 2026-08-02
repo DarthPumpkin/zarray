@@ -121,7 +121,7 @@ pub fn NamedArray(comptime Axis: type, comptime Scalar: type) type {
             const self_flat = self.flat();
             const other_flat = other.flat();
             const both_contiguous = self_flat != null and other_flat != null;
-            const can_memcpy = both_contiguous and self_order == other_order;
+            const can_memcpy = both_contiguous and mem.eql(Axis, &self_order, &other_order);
 
             // Fast path: can memcpy the whole buffer
             if (can_memcpy) {
